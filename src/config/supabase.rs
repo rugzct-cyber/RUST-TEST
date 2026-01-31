@@ -19,7 +19,7 @@ pub enum SupabaseConfigError {
 /// Supabase configuration loaded from environment variables
 #[derive(Debug, Clone)]
 pub struct SupabaseConfig {
-    /// Supabase project URL (e.g., https://xxx.supabase.co)
+    /// Supabase project URL (e.g., <https://xxx.supabase.co>)
     pub url: String,
     /// Supabase anonymous key for API access
     pub anon_key: String,

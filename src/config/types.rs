@@ -1,7 +1,7 @@
 //! Configuration types for bot settings
 //!
 //! This module defines all configuration structs that are loaded from YAML
-//! and shared across the application via Arc<RwLock<AppConfig>>.
+//! and shared across the application via `Arc<RwLock<AppConfig>>`.
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

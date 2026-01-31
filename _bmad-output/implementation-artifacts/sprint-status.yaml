@@ -44,7 +44,7 @@ development_status:
   epic-0: in-progress
   0-1-suppression-pattern-scout: done
   0-2-suppression-code-v3-residuel: done
-  0-3-validation-structure-modulaire: backlog
+  0-3-validation-structure-modulaire: review
   epic-0-retrospective: optional
 
   # Epic 1: Market Data Connection
