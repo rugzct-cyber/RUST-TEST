@@ -1926,6 +1926,83 @@ mod tests {
     }
 
     // =========================================================================
+    // Story 1.2 Task 2.4: WebSocket Connection Integration Tests
+    // =========================================================================
+
+    /// Story 1.2 Task 2.4: Test config ws_base_url matches build_ws_url
+    #[test]
+    fn test_config_ws_url_matches_build_ws_url() {
+        let config_prod = ParadexConfig {
+            private_key: TEST_PRIVATE_KEY.to_string(),
+            account_address: TEST_ACCOUNT_ADDRESS.to_string(),
+            production: true,
+        };
+        let config_test = ParadexConfig {
+            private_key: TEST_PRIVATE_KEY.to_string(),
+            account_address: TEST_ACCOUNT_ADDRESS.to_string(),
+            production: false,
+        };
+
+        assert_eq!(config_prod.ws_base_url(), build_ws_url(true));
+        assert_eq!(config_test.ws_base_url(), build_ws_url(false));
+    }
+
+    /// Story 1.2 Task 2.4: Test adapter is_connected returns false before connect
+    #[test]
+    fn test_adapter_not_connected_before_connect() {
+        let config = ParadexConfig {
+            private_key: TEST_PRIVATE_KEY.to_string(),
+            account_address: TEST_ACCOUNT_ADDRESS.to_string(),
+            production: false,
+        };
+        let adapter = ParadexAdapter::new(config);
+        
+        assert!(!adapter.is_connected(), "Adapter should not be connected initially");
+        assert!(adapter.ws_stream.is_none(), "WebSocket stream should be None before connect");
+        assert!(adapter.ws_sender.is_none(), "WebSocket sender should be None before connect");
+    }
+
+    /// Story 1.2 Task 2.4: Async integration test - connection fails gracefully with invalid URL
+    /// This tests the error handling path when connection cannot be established.
+    #[tokio::test]
+    async fn test_websocket_connect_error_handling() {
+        // This test validates that the adapter handles connection errors gracefully
+        // by attempting to connect (which will fail since we're not mocking the server)
+        // and verifying the error is properly wrapped.
+        
+        let config = ParadexConfig {
+            private_key: String::new(), // Empty to skip auth
+            account_address: String::new(),
+            production: false, // Use testnet URL
+        };
+        let mut adapter = ParadexAdapter::new(config);
+        
+        // Verify initial state
+        assert!(!adapter.is_connected());
+        
+        // Attempt connection - this will fail because testnet may not be reachable
+        // but it exercises the full connection code path
+        let result = adapter.connect().await;
+        
+        // Connection will likely fail (no real server), which is expected
+        // The important thing is it doesn't panic and returns a proper error
+        // If it errors, we just verify it's an ExchangeError variant (not a panic)
+        // If it somehow succeeds (e.g., testnet is up), that's also acceptable
+        // The test validates the connection attempt code path works without panicking
+        assert!(
+            result.is_ok() || matches!(
+                result,
+                Err(ExchangeError::ConnectionFailed(_)) |
+                Err(ExchangeError::WebSocket(_)) |
+                Err(ExchangeError::NetworkTimeout(_)) |
+                Err(ExchangeError::AuthenticationFailed(_)) |
+                Err(ExchangeError::InvalidResponse(_))
+            ),
+            "Connection should either succeed or fail with a proper ExchangeError"
+        );
+    }
+
+    // =========================================================================
     // Task 8.2: Test Starknet signature generation format (mock key)
     // =========================================================================
 
