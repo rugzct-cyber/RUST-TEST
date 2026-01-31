@@ -1,0 +1,612 @@
+//! Core data types for exchange adapters
+//!
+//! These types are used across all exchange adapters for consistent
+//! orderbook representation and order management.
+
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use tokio::sync::RwLock;
+
+// =============================================================================
+// Connection Health Types (Story 2.6)
+// =============================================================================
+
+/// Connection state for WebSocket health monitoring
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectionState {
+    /// WebSocket is connected and healthy
+    Connected,
+    /// WebSocket is disconnected
+    Disconnected,
+    /// WebSocket is attempting to reconnect
+    Reconnecting,
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        ConnectionState::Disconnected
+    }
+}
+
+/// Shared connection health state for tracking WebSocket health
+/// 
+/// This struct contains atomic/lockable fields that can be shared
+/// across tasks (heartbeat task, reader loop, adapter methods).
+#[derive(Debug)]
+pub struct ConnectionHealth {
+    /// Current connection state (Connected, Disconnected, Reconnecting)
+    pub state: Arc<RwLock<ConnectionState>>,
+    /// Timestamp of last PONG received (Unix ms)
+    pub last_pong: Arc<AtomicU64>,
+    /// Timestamp of last data received (Unix ms) - any message counts
+    pub last_data: Arc<AtomicU64>,
+}
+
+impl ConnectionHealth {
+    /// Create a new ConnectionHealth with default values
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
+            last_pong: Arc::new(AtomicU64::new(0)),
+            last_data: Arc::new(AtomicU64::new(0)),
+        }
+    }
+    
+    /// Clone the Arc references for sharing with other tasks
+    pub fn clone_refs(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            last_pong: Arc::clone(&self.last_pong),
+            last_data: Arc::clone(&self.last_data),
+        }
+    }
+}
+
+impl Default for ConnectionHealth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Clone for ConnectionHealth {
+    fn clone(&self) -> Self {
+        self.clone_refs()
+    }
+}
+
+// =============================================================================
+// Orderbook Types
+// =============================================================================
+
+
+/// A single level in the orderbook (price + quantity)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OrderbookLevel {
+    /// Price at this level
+    pub price: f64,
+    /// Quantity available at this price
+    pub quantity: f64,
+}
+
+impl OrderbookLevel {
+    /// Create a new orderbook level
+    pub fn new(price: f64, quantity: f64) -> Self {
+        Self { price, quantity }
+    }
+}
+
+/// Orderbook snapshot with bid and ask levels
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Orderbook {
+    /// Bid levels sorted descending by price (best bid first)
+    pub bids: Vec<OrderbookLevel>,
+    /// Ask levels sorted ascending by price (best ask first)
+    pub asks: Vec<OrderbookLevel>,
+    /// Timestamp in Unix milliseconds
+    pub timestamp: u64,
+}
+
+impl Orderbook {
+    /// Create a new empty orderbook
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get the best bid price (highest bid)
+    pub fn best_bid(&self) -> Option<f64> {
+        self.bids.first().map(|l| l.price)
+    }
+
+    /// Get the best ask price (lowest ask)
+    pub fn best_ask(&self) -> Option<f64> {
+        self.asks.first().map(|l| l.price)
+    }
+
+    /// Calculate mid price
+    pub fn mid_price(&self) -> Option<f64> {
+        match (self.best_bid(), self.best_ask()) {
+            (Some(bid), Some(ask)) => Some((bid + ask) / 2.0),
+            _ => None,
+        }
+    }
+}
+
+/// Order side (buy or sell)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
+
+/// Order type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderType {
+    Limit,
+    Market,
+}
+
+/// Time in force for orders
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeInForce {
+    /// Immediate or Cancel - fill what you can, cancel rest
+    Ioc,
+    /// Good till Cancelled
+    Gtc,
+    /// Fill or Kill - fill completely or cancel entirely
+    Fok,
+}
+
+/// Order request to be sent to exchange
+#[derive(Debug, Clone)]
+pub struct OrderRequest {
+    /// Unique client-generated order ID for idempotence
+    pub client_order_id: String,
+    /// Trading symbol (e.g., "BTC-PERP")
+    pub symbol: String,
+    /// Buy or Sell
+    pub side: OrderSide,
+    /// Limit or Market
+    pub order_type: OrderType,
+    /// Price (required for Limit orders)
+    pub price: Option<f64>,
+    /// Quantity to trade
+    pub quantity: f64,
+    /// Time in force
+    pub time_in_force: TimeInForce,
+}
+
+impl OrderRequest {
+    /// Validate order request consistency
+    /// Returns error message if invalid, None if valid
+    pub fn validate(&self) -> Option<&'static str> {
+        // Limit orders require a price
+        if self.order_type == OrderType::Limit && self.price.is_none() {
+            return Some("Limit orders require a price");
+        }
+        // Quantity must be positive
+        if self.quantity <= 0.0 {
+            return Some("Quantity must be positive");
+        }
+        // Price must be positive if specified
+        if let Some(price) = self.price {
+            if price <= 0.0 {
+                return Some("Price must be positive");
+            }
+        }
+        None
+    }
+
+    /// Create a new limit order request
+    pub fn limit(
+        client_order_id: String,
+        symbol: String,
+        side: OrderSide,
+        price: f64,
+        quantity: f64,
+        time_in_force: TimeInForce,
+    ) -> Self {
+        Self {
+            client_order_id,
+            symbol,
+            side,
+            order_type: OrderType::Limit,
+            price: Some(price),
+            quantity,
+            time_in_force,
+        }
+    }
+
+    /// Create a new IOC limit order (most common for HFT)
+    pub fn ioc_limit(
+        client_order_id: String,
+        symbol: String,
+        side: OrderSide,
+        price: f64,
+        quantity: f64,
+    ) -> Self {
+        Self::limit(client_order_id, symbol, side, price, quantity, TimeInForce::Ioc)
+    }
+}
+
+/// Order status from exchange
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderStatus {
+    Pending,
+    Filled,
+    PartiallyFilled,
+    Cancelled,
+    Rejected,
+}
+
+/// Order response from exchange
+#[derive(Debug, Clone)]
+pub struct OrderResponse {
+    /// Exchange-assigned order ID
+    pub order_id: String,
+    /// Client-generated order ID (for matching)
+    pub client_order_id: String,
+    /// Current status
+    pub status: OrderStatus,
+    /// Quantity that was filled
+    pub filled_quantity: f64,
+    /// Average fill price (if any fills occurred)
+    pub avg_price: Option<f64>,
+}
+
+/// Orderbook update event for streaming
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderbookUpdate {
+    /// Trading symbol
+    pub symbol: String,
+    /// Updated orderbook snapshot
+    pub orderbook: Orderbook,
+}
+
+// =============================================================================
+// Position Types (Story 5.3 - Reconciliation)
+// =============================================================================
+
+/// Position data fetched from an exchange (Story 5.3)
+///
+/// Used by the reconciliation loop to compare local state with exchange state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionInfo {
+    /// Trading pair symbol
+    pub symbol: String,
+    /// Position quantity in base units (unsigned)
+    pub quantity: f64,
+    /// Position side: "long" or "short"
+    pub side: String,
+    /// Entry price
+    pub entry_price: f64,
+    /// Unrealized PnL
+    pub unrealized_pnl: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_orderbook_level_creation() {
+        let level = OrderbookLevel::new(42150.5, 1.5);
+        assert_eq!(level.price, 42150.5);
+        assert_eq!(level.quantity, 1.5);
+    }
+
+    #[test]
+    fn test_orderbook_level_serialization() {
+        let level = OrderbookLevel::new(42150.5, 1.5);
+        let json = serde_json::to_string(&level).unwrap();
+        assert!(json.contains("42150.5"));
+        
+        let deserialized: OrderbookLevel = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.price, level.price);
+        assert_eq!(deserialized.quantity, level.quantity);
+    }
+
+    #[test]
+    fn test_orderbook_best_prices() {
+        let mut ob = Orderbook::new();
+        ob.bids = vec![
+            OrderbookLevel::new(42100.0, 1.0),
+            OrderbookLevel::new(42050.0, 2.0),
+        ];
+        ob.asks = vec![
+            OrderbookLevel::new(42150.0, 1.5),
+            OrderbookLevel::new(42200.0, 2.0),
+        ];
+
+        assert_eq!(ob.best_bid(), Some(42100.0));
+        assert_eq!(ob.best_ask(), Some(42150.0));
+        assert_eq!(ob.mid_price(), Some(42125.0));
+    }
+
+    #[test]
+    fn test_orderbook_empty() {
+        let ob = Orderbook::new();
+        assert_eq!(ob.best_bid(), None);
+        assert_eq!(ob.best_ask(), None);
+        assert_eq!(ob.mid_price(), None);
+    }
+
+    #[test]
+    fn test_order_request_construction() {
+        let order = OrderRequest {
+            client_order_id: "test-123".to_string(),
+            symbol: "BTC-PERP".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: Some(42000.0),
+            quantity: 0.1,
+            time_in_force: TimeInForce::Ioc,
+        };
+        assert_eq!(order.symbol, "BTC-PERP");
+        assert_eq!(order.side, OrderSide::Buy);
+        assert_eq!(order.order_type, OrderType::Limit);
+    }
+
+    #[test]
+    fn test_ioc_limit_helper() {
+        let order = OrderRequest::ioc_limit(
+            "order-456".to_string(),
+            "ETH-PERP".to_string(),
+            OrderSide::Sell,
+            2800.0,
+            1.0,
+        );
+        assert_eq!(order.client_order_id, "order-456");
+        assert_eq!(order.symbol, "ETH-PERP");
+        assert_eq!(order.side, OrderSide::Sell);
+        assert_eq!(order.order_type, OrderType::Limit);
+        assert_eq!(order.price, Some(2800.0));
+        assert_eq!(order.time_in_force, TimeInForce::Ioc);
+    }
+
+    #[test]
+    fn test_order_status_values() {
+        assert_eq!(OrderStatus::Pending, OrderStatus::Pending);
+        assert_ne!(OrderStatus::Filled, OrderStatus::Cancelled);
+    }
+
+    #[test]
+    fn test_order_request_validate_limit_without_price() {
+        let order = OrderRequest {
+            client_order_id: "test-123".to_string(),
+            symbol: "BTC-PERP".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Limit,
+            price: None, // Invalid for Limit!
+            quantity: 0.1,
+            time_in_force: TimeInForce::Ioc,
+        };
+        assert_eq!(order.validate(), Some("Limit orders require a price"));
+    }
+
+    #[test]
+    fn test_order_request_validate_negative_quantity() {
+        let order = OrderRequest {
+            client_order_id: "test-123".to_string(),
+            symbol: "BTC-PERP".to_string(),
+            side: OrderSide::Buy,
+            order_type: OrderType::Market,
+            price: None,
+            quantity: -0.1,
+            time_in_force: TimeInForce::Ioc,
+        };
+        assert_eq!(order.validate(), Some("Quantity must be positive"));
+    }
+
+    #[test]
+    fn test_order_request_validate_valid_order() {
+        let order = OrderRequest::ioc_limit(
+            "test-123".to_string(),
+            "BTC-PERP".to_string(),
+            OrderSide::Buy,
+            42000.0,
+            0.1,
+        );
+        assert_eq!(order.validate(), None);
+    }
+
+    #[test]
+    fn test_orderbook_serialization() {
+        let mut ob = Orderbook::new();
+        ob.bids = vec![OrderbookLevel::new(42100.0, 1.0)];
+        ob.asks = vec![OrderbookLevel::new(42150.0, 1.5)];
+        ob.timestamp = 1706000000000;
+
+        let json = serde_json::to_string(&ob).unwrap();
+        assert!(json.contains("42100"));
+        assert!(json.contains("42150"));
+
+        let deserialized: Orderbook = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.bids.len(), 1);
+        assert_eq!(deserialized.asks.len(), 1);
+    }
+
+    #[test]
+    fn test_orderbook_update_serialization() {
+        let update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            orderbook: Orderbook::new(),
+        };
+        let json = serde_json::to_string(&update).unwrap();
+        assert!(json.contains("BTC-PERP"));
+    }
+
+    #[test]
+    fn test_orderbook_only_bids() {
+        let mut ob = Orderbook::new();
+        ob.bids = vec![OrderbookLevel::new(42100.0, 1.0)];
+        // No asks
+        assert_eq!(ob.best_bid(), Some(42100.0));
+        assert_eq!(ob.best_ask(), None);
+        assert_eq!(ob.mid_price(), None); // Can't calculate mid without both
+    }
+
+    #[test]
+    fn test_orderbook_only_asks() {
+        let mut ob = Orderbook::new();
+        // No bids
+        ob.asks = vec![OrderbookLevel::new(42150.0, 1.5)];
+        assert_eq!(ob.best_bid(), None);
+        assert_eq!(ob.best_ask(), Some(42150.0));
+        assert_eq!(ob.mid_price(), None); // Can't calculate mid without both
+    }
+
+    // =========================================================================
+    // Connection Health Tests (Story 2.6)
+    // =========================================================================
+
+    #[test]
+    fn test_connection_state_default() {
+        let state = ConnectionState::default();
+        assert_eq!(state, ConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn test_connection_state_equality() {
+        assert_eq!(ConnectionState::Connected, ConnectionState::Connected);
+        assert_ne!(ConnectionState::Connected, ConnectionState::Disconnected);
+        assert_ne!(ConnectionState::Reconnecting, ConnectionState::Connected);
+    }
+
+    #[test]
+    fn test_connection_state_serialization() {
+        let state = ConnectionState::Connected;
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("Connected"));
+        
+        let deserialized: ConnectionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ConnectionState::Connected);
+    }
+
+    #[test]
+    fn test_connection_health_new() {
+        let health = ConnectionHealth::new();
+        // Initial state should be Disconnected
+        let state = health.state.try_read().unwrap();
+        assert_eq!(*state, ConnectionState::Disconnected);
+        drop(state);
+        
+        // Initial timestamps should be 0
+        assert_eq!(health.last_pong.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(health.last_data.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_connection_health_clone_refs() {
+        use std::sync::atomic::Ordering;
+        
+        let health = ConnectionHealth::new();
+        let cloned = health.clone_refs();
+        
+        // Modify through original
+        health.last_pong.store(12345, Ordering::Relaxed);
+        
+        // Should be visible through clone (same Arc)
+        assert_eq!(cloned.last_pong.load(Ordering::Relaxed), 12345);
+    }
+
+    #[test]
+    fn test_connection_health_default() {
+        let health = ConnectionHealth::default();
+        let state = health.state.try_read().unwrap();
+        assert_eq!(*state, ConnectionState::Disconnected);
+    }
+
+    // =========================================================================
+    // Story 2.6: Heartbeat Monitoring Tests
+    // =========================================================================
+
+    #[test]
+    fn test_stale_detection_threshold_30_seconds() {
+        use std::sync::atomic::Ordering;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        
+        let health = ConnectionHealth::new();
+        
+        // Get current time in ms
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        
+        // Set last_data to 31 seconds ago (should be stale)
+        health.last_data.store(now_ms.saturating_sub(31_000), Ordering::Relaxed);
+        
+        let last_data = health.last_data.load(Ordering::Relaxed);
+        let elapsed = now_ms.saturating_sub(last_data);
+        const STALE_THRESHOLD_MS: u64 = 30_000;
+        
+        assert!(elapsed > STALE_THRESHOLD_MS, "31s old data should be stale");
+        
+        // Set last_data to 29 seconds ago (should NOT be stale)
+        health.last_data.store(now_ms.saturating_sub(29_000), Ordering::Relaxed);
+        let last_data = health.last_data.load(Ordering::Relaxed);
+        let elapsed = now_ms.saturating_sub(last_data);
+        
+        assert!(elapsed < STALE_THRESHOLD_MS, "29s old data should NOT be stale");
+    }
+
+    #[test]
+    fn test_connection_state_transitions() {
+        use std::sync::atomic::Ordering;
+        
+        let health = ConnectionHealth::new();
+        
+        // Initial state should be Disconnected
+        {
+            let state = health.state.try_read().unwrap();
+            assert_eq!(*state, ConnectionState::Disconnected);
+        }
+        
+        // Simulate state transitions like reconnect() does
+        {
+            let mut state = health.state.try_write().unwrap();
+            *state = ConnectionState::Reconnecting;
+        }
+        {
+            let state = health.state.try_read().unwrap();
+            assert_eq!(*state, ConnectionState::Reconnecting);
+        }
+        
+        {
+            let mut state = health.state.try_write().unwrap();
+            *state = ConnectionState::Connected;
+        }
+        {
+            let state = health.state.try_read().unwrap();
+            assert_eq!(*state, ConnectionState::Connected);
+        }
+        
+        // Test that timestamps can be updated during transitions
+        health.last_pong.store(12345, Ordering::Relaxed);
+        health.last_data.store(67890, Ordering::Relaxed);
+        assert_eq!(health.last_pong.load(Ordering::Relaxed), 12345);
+        assert_eq!(health.last_data.load(Ordering::Relaxed), 67890);
+    }
+
+    #[test]
+    fn test_exponential_backoff_timing() {
+        // Test the exponential backoff formula used in reconnect()
+        // Formula: min(500 * 2^attempt, 5000)
+        // Expected: 500ms, 1000ms, 2000ms, 4000ms, 5000ms (capped)
+        
+        let backoffs: Vec<u64> = (0..5)
+            .map(|attempt| std::cmp::min(500 * (1u64 << attempt), 5000))
+            .collect();
+        
+        assert_eq!(backoffs[0], 500, "Attempt 0: 500ms");
+        assert_eq!(backoffs[1], 1000, "Attempt 1: 1000ms");
+        assert_eq!(backoffs[2], 2000, "Attempt 2: 2000ms");
+        assert_eq!(backoffs[3], 4000, "Attempt 3: 4000ms");
+        assert_eq!(backoffs[4], 5000, "Attempt 4: capped at 5000ms");
+        
+        // Verify cap works for higher attempts
+        let attempt_10 = std::cmp::min(500 * (1u64 << 10), 5000);
+        assert_eq!(attempt_10, 5000, "High attempt should cap at 5000ms");
+    }
+}

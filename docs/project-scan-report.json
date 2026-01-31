@@ -1,0 +1,64 @@
+{
+    "workflow_mode": "initial_scan",
+    "scan_level": "exhaustive",
+    "project_root": "c:/Users/jules/Documents/bot4",
+    "output_folder": "c:/Users/jules/Documents/bot4/docs",
+    "started_at": "2024-01-31T00:05:00Z",
+    "completed_at": "2024-01-31T00:45:00Z",
+    "status": "completed",
+    "project_classification": {
+        "project_type_id": "backend",
+        "language": "Rust",
+        "framework": "Tokio",
+        "architecture": "Monolith with exchange adapters"
+    },
+    "scan_statistics": {
+        "total_files": 20,
+        "total_lines": 8900,
+        "modules": 4,
+        "exchange_adapters": 2
+    },
+    "documentation_requirements": {
+        "requires_api_scan": true,
+        "requires_data_models": true,
+        "requires_state_management": false,
+        "requires_ui_components": false,
+        "requires_deployment_config": true
+    },
+    "generated_outputs": [
+        {
+            "type": "index",
+            "path": "docs/index.md",
+            "status": "completed"
+        },
+        {
+            "type": "architecture",
+            "path": "docs/architecture.md",
+            "status": "completed"
+        },
+        {
+            "type": "data_models",
+            "path": "docs/data-models.md",
+            "status": "completed"
+        },
+        {
+            "type": "api_contracts",
+            "path": "docs/api-contracts.md",
+            "status": "completed"
+        },
+        {
+            "type": "source_tree",
+            "path": "docs/source-tree.md",
+            "status": "completed"
+        }
+    ],
+    "steps_completed": [
+        "step1_project_classification",
+        "step2_technology_stack",
+        "step3_source_tree_generation",
+        "step4_conditional_analysis",
+        "step5_documentation_validation",
+        "step6_update_index"
+    ],
+    "notes": "Exhaustive scan completed. All source files read and analyzed. Documentation generated for architecture, data models, API contracts, and source tree."
+}

@@ -1,0 +1,20 @@
+# Environment variables (NEVER commit secrets!)
+.env
+
+# Build artifacts
+/target/
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
