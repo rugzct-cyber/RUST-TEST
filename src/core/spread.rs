@@ -263,18 +263,12 @@ use crate::core::channels::SpreadOpportunity;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info};
 
-/// Monitor task that consumes orderbook updates and calculates spreads
-/// 
-/// # Story 1.4 Implementation
-/// - Consumes `OrderbookUpdate` from `orderbook_rx` channel
-/// - Stores orderbooks by exchange (vest/paradex)
-/// - Calculates entry/exit spreads via `SpreadCalculator.calculate_dual_spreads()`
-/// - Emits `SpreadOpportunity` via `opportunity_tx` when significant spreads detected
-/// 
-/// # Performance
-/// Target: < 2ms per spread calculation (NFR1)
+// =============================================================================
+// SpreadThresholds (Story 1.5)
+// =============================================================================
+
 /// Configuration for spread thresholds
-/// 
+///
 /// # Story 1.5
 /// Used to filter spread opportunities - only emit when spread >= threshold.
 #[derive(Debug, Clone, Copy)]
@@ -299,6 +293,16 @@ impl Default for SpreadThresholds {
     }
 }
 
+/// Monitor task that consumes orderbook updates and calculates spreads
+///
+/// # Story 1.4 Implementation
+/// - Consumes `OrderbookUpdate` from `orderbook_rx` channel
+/// - Stores orderbooks by exchange (vest/paradex)
+/// - Calculates entry/exit spreads via `SpreadCalculator.calculate_dual_spreads()`
+/// - Emits `SpreadOpportunity` via `opportunity_tx` when significant spreads detected
+///
+/// # Performance
+/// Target: < 2ms per spread calculation (NFR1)
 pub struct SpreadMonitor {
     calculator: SpreadCalculator,
     vest_orderbook: Option<Orderbook>,

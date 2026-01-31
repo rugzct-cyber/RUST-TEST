@@ -1,6 +1,6 @@
 # Story 1.5: Détection de Dépassement de Seuil
 
-Status: review
+Status: done
 
 <!-- Note: Epic 1 Story 5 - Add threshold filtering to SpreadMonitor to detect when spreads exceed configured thresholds. -->
 
@@ -255,12 +255,12 @@ src/core/
 
 Claude Sonnet 4
 
-### Change Log
-
 | Date | Change | Files |
 |------|--------|-------|
 | 2026-01-31 | Added SpreadThresholds struct and threshold filtering logic | src/core/spread.rs |
 | 2026-01-31 | Updated existing tests + added 8 new threshold tests | src/core/spread.rs |
+| 2026-01-31 | **[CODE-REVIEW]** Added SpreadThresholds to public exports | src/core/mod.rs |
+| 2026-01-31 | **[CODE-REVIEW]** Fixed orphaned doc comment placement | src/core/spread.rs |
 
 ### Completion Notes List
 
@@ -274,8 +274,14 @@ Claude Sonnet 4
 - Added 8 new threshold-specific tests (3 unit, 5 async)
 - All 237 tests pass, clippy clean
 
+### Code Review Fixes Applied
+
+- **[HIGH-1 FIXED]** Added `SpreadThresholds` to `core/mod.rs` exports
+- **[LOW-1 FIXED]** Moved orphaned SpreadMonitor doc comment to correct position above struct
+
 ### File List
 
 | File | Action | Description |
 |------|--------|-------------|
 | src/core/spread.rs | MODIFIED | Added SpreadThresholds struct, threshold fields to SpreadMonitor, threshold detection logic, threshold in logs, updated and new tests |
+| src/core/mod.rs | MODIFIED | Added SpreadThresholds to public exports (code review fix) |
