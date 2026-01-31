@@ -21,7 +21,7 @@ pub type SharedConfig = Arc<RwLock<AppConfig>>;
 // ============================================================================
 
 /// Supported trading pairs
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum TradingPair {
     #[serde(rename = "BTC-PERP")]
     BtcPerp,
@@ -42,7 +42,7 @@ impl std::fmt::Display for TradingPair {
 }
 
 /// Supported DEX exchanges
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Dex {
     Vest,

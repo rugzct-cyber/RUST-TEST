@@ -187,6 +187,7 @@ pub fn log_configuration() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_default_values() {
@@ -199,6 +200,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]  // Shares serial group with supabase.rs env tests
     fn test_env_override() {
         // Set environment variable
         std::env::set_var("MAX_RETRY_ATTEMPTS", "5");

@@ -1,6 +1,6 @@
 # Story 0.3: Validation de la Structure Modulaire
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -117,13 +117,16 @@ Gemini 2.5 Pro
 
 ### File List
 
-- `src/core/mod.rs` — Refactored from glob to explicit exports
-- `src/config/types.rs` — Fixed rustdoc HTML tag warning
-- `src/config/supabase.rs` — Fixed rustdoc bare URL warning
+- `src/core/mod.rs` — Refactored from glob to explicit exports, added documentation
+- `src/config/types.rs` — Fixed rustdoc HTML tag warning, added Hash derive to TradingPair/Dex
+- `src/config/supabase.rs` — Fixed rustdoc bare URL warning, added #[serial(env)] to tests
+- `src/config/constants.rs` — Added #[serial(env)] to test_env_override
+- `Cargo.toml` — Added serial_test dev dependency
 
 ### Change Log
 
 | Date | Change |
 |------|--------|
 | 2026-01-31 | Story 0.3 implementation complete |
+| 2026-01-31 | Code Review: Fixed flaky tests (CR-1/CR-3), added Hash derives (CR-2), improved docs (CR-4) |
 

@@ -105,6 +105,7 @@ impl SupabaseConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
 
     fn clear_supabase_env() {
@@ -114,6 +115,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn test_disabled_when_env_not_set() {
         clear_supabase_env();
         
@@ -123,6 +125,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn test_disabled_when_explicitly_false() {
         clear_supabase_env();
         env::set_var("SUPABASE_ENABLED", "false");
@@ -137,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn test_disabled_when_url_has_placeholder() {
         clear_supabase_env();
         env::set_var("SUPABASE_URL", "https://your-project.supabase.co");
@@ -150,6 +154,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn test_error_when_url_invalid_format() {
         clear_supabase_env();
         env::set_var("SUPABASE_URL", "http://not-supabase.com");
@@ -162,6 +167,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn test_error_when_key_missing() {
         clear_supabase_env();
         env::set_var("SUPABASE_URL", "https://test.supabase.co");
@@ -173,6 +179,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn test_success_with_valid_config() {
         clear_supabase_env();
         env::set_var("SUPABASE_URL", "https://test.supabase.co");

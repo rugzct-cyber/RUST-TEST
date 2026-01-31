@@ -1,4 +1,19 @@
 //! Core module - Spread calculation, VWAP, state management, channels, logging
+//!
+//! # Module Architecture (Story 0.3)
+//!
+//! This module uses **explicit re-exports** instead of glob exports (`pub use module::*`)
+//! to provide better API visibility and prevent accidental public API changes.
+//!
+//! ## Usage
+//! Prefer importing from `crate::core`:
+//! ```ignore
+//! use crate::core::{SpreadCalculator, VwapResult, AppState};
+//! ```
+//!
+//! ## Adding New Public Types
+//! When adding new public types to submodules, explicitly add them to the
+//! re-exports below to make them part of the public API.
 
 pub mod channels;
 pub mod logging;
