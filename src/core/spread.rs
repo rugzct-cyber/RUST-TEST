@@ -273,22 +273,64 @@ use tracing::{debug, info};
 /// 
 /// # Performance
 /// Target: < 2ms per spread calculation (NFR1)
+/// Configuration for spread thresholds
+/// 
+/// # Story 1.5
+/// Used to filter spread opportunities - only emit when spread >= threshold.
+#[derive(Debug, Clone, Copy)]
+pub struct SpreadThresholds {
+    /// Entry threshold in percentage (e.g., 0.30 = 0.30%)
+    pub entry: f64,
+    /// Exit threshold in percentage (e.g., 0.05 = 0.05%)
+    pub exit: f64,
+}
+
+impl SpreadThresholds {
+    /// Create new thresholds with entry and exit values
+    pub fn new(entry: f64, exit: f64) -> Self {
+        Self { entry, exit }
+    }
+}
+
+impl Default for SpreadThresholds {
+    /// Default thresholds (emit on any positive spread)
+    fn default() -> Self {
+        Self { entry: 0.0, exit: 0.0 }
+    }
+}
+
 pub struct SpreadMonitor {
     calculator: SpreadCalculator,
     vest_orderbook: Option<Orderbook>,
     paradex_orderbook: Option<Orderbook>,
     pair: String,
+    /// Threshold for entry spread detection (Story 1.5)
+    entry_threshold: f64,
+    /// Threshold for exit spread detection (Story 1.5)
+    exit_threshold: f64,
 }
 
 impl SpreadMonitor {
-    /// Create a new SpreadMonitor for a trading pair
-    pub fn new(pair: impl Into<String>) -> Self {
+    /// Create a new SpreadMonitor for a trading pair with thresholds
+    /// 
+    /// # Arguments
+    /// * `pair` - Trading pair (e.g., "BTC-PERP")
+    /// * `entry_threshold` - Minimum entry spread % to emit opportunity (e.g., 0.30)
+    /// * `exit_threshold` - Minimum exit spread % to emit opportunity (e.g., 0.05)
+    pub fn new(pair: impl Into<String>, entry_threshold: f64, exit_threshold: f64) -> Self {
         Self {
             calculator: SpreadCalculator::new("vest", "paradex"),
             vest_orderbook: None,
             paradex_orderbook: None,
             pair: pair.into(),
+            entry_threshold,
+            exit_threshold,
         }
+    }
+    
+    /// Create a SpreadMonitor with SpreadThresholds config
+    pub fn with_thresholds(pair: impl Into<String>, thresholds: SpreadThresholds) -> Self {
+        Self::new(pair, thresholds.entry, thresholds.exit)
     }
     
     /// Run the monitor, processing orderbook updates until shutdown
@@ -341,11 +383,12 @@ impl SpreadMonitor {
                     "Spread calculated"
                 );
                 
-                // Emit opportunity if entry spread is positive (buy on vest, sell on paradex)
-                if entry_spread > 0.0 {
+                // Emit opportunity if entry spread >= threshold (Story 1.5)
+                if entry_spread >= self.entry_threshold {
                     info!(
                         pair = %self.pair,
                         spread = %format!("{:.4}%", entry_spread),
+                        threshold = %format!("{:.4}%", self.entry_threshold),
                         direction = "entry",
                         "Spread opportunity detected"
                     );
@@ -362,11 +405,12 @@ impl SpreadMonitor {
                     tx.send(opportunity).await.map_err(|_| SpreadMonitorError::ChannelClosed)?;
                 }
                 
-                // Emit opportunity if exit spread is positive (sell on vest, buy back on paradex)
-                if exit_spread > 0.0 {
+                // Emit opportunity if exit spread >= threshold (Story 1.5)
+                if exit_spread >= self.exit_threshold {
                     info!(
                         pair = %self.pair,
                         spread = %format!("{:.4}%", exit_spread),
+                        threshold = %format!("{:.4}%", self.exit_threshold),
                         direction = "exit",
                         "Spread opportunity detected"
                     );
@@ -886,14 +930,14 @@ mod tests {
 
     #[test]
     fn test_spread_monitor_creation() {
-        let monitor = SpreadMonitor::new("BTC-PERP");
+        let monitor = SpreadMonitor::new("BTC-PERP", 0.30, 0.05);
         assert!(!monitor.has_both_orderbooks());
     }
 
     #[tokio::test]
     async fn test_spread_monitor_processes_orderbook_update() {
-        // Create monitor
-        let mut monitor = SpreadMonitor::new("ETH-PERP");
+        // Create monitor with 0.0 thresholds (emit on any positive spread)
+        let mut monitor = SpreadMonitor::new("ETH-PERP", 0.0, 0.0);
         
         // Create channels
         let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
@@ -937,7 +981,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_spread_opportunity_emitted_on_spread_change() {
-        let mut monitor = SpreadMonitor::new("BTC-PERP");
+        // Use 0.0 threshold to emit on any positive spread
+        let mut monitor = SpreadMonitor::new("BTC-PERP", 0.0, 0.0);
         
         let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
@@ -977,7 +1022,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spread_monitor_handles_missing_orderbook() {
-        let mut monitor = SpreadMonitor::new("ETH-PERP");
+        let mut monitor = SpreadMonitor::new("ETH-PERP", 0.0, 0.0);
         
         let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
@@ -1046,5 +1091,238 @@ mod tests {
             elapsed
         );
     }
-}
 
+    // =========================================================================
+    // Story 1.5: Threshold Detection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_spread_thresholds_creation() {
+        let thresholds = SpreadThresholds::new(0.30, 0.05);
+        assert!((thresholds.entry - 0.30).abs() < 0.0001);
+        assert!((thresholds.exit - 0.05).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_spread_thresholds_default() {
+        let thresholds = SpreadThresholds::default();
+        assert_eq!(thresholds.entry, 0.0);
+        assert_eq!(thresholds.exit, 0.0);
+    }
+
+    #[test]
+    fn test_spread_monitor_with_thresholds() {
+        let thresholds = SpreadThresholds::new(0.30, 0.05);
+        let monitor = SpreadMonitor::with_thresholds("BTC-PERP", thresholds);
+        assert!(!monitor.has_both_orderbooks());
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_detects_entry_above_threshold() {
+        // Entry threshold = 1.0%, spread will be ~1.5%
+        let mut monitor = SpreadMonitor::new("BTC-PERP", 1.0, 0.0);
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Vest Ask=102, Bid=101 | Paradex Ask=101, Bid=100
+        // Entry spread: (102 - 100) / 101 * 100 ≈ 1.98% > 1.0% threshold
+        let vest_update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(102.0, 101.0),
+        };
+        let paradex_update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(101.0, 100.0),
+        };
+        
+        orderbook_tx.send(vest_update).await.unwrap();
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should emit opportunity since spread (1.98%) >= threshold (1.0%)
+        let opp = opportunity_rx.try_recv().expect("Should emit opportunity above threshold");
+        assert!(opp.spread_percent >= 1.0, "Spread {} should be >= 1.0%", opp.spread_percent);
+        assert_eq!(opp.direction, SpreadDirection::AOverB);
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_ignores_entry_below_threshold() {
+        // Entry threshold = 5.0%, Exit threshold = 10.0% (high to prevent exit triggers)
+        // Spread will be ~1.98% (below entry threshold)
+        let mut monitor = SpreadMonitor::new("ETH-PERP", 5.0, 10.0);
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Entry spread: (102 - 100) / 101 * 100 ≈ 1.98% < 5.0% threshold
+        let vest_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(102.0, 101.0),
+        };
+        let paradex_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(101.0, 100.0),
+        };
+        
+        orderbook_tx.send(vest_update).await.unwrap();
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should NOT emit opportunity since spread (1.98%) < threshold (5.0%)
+        assert!(opportunity_rx.try_recv().is_err(), "Should NOT emit opportunity below threshold");
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_detects_exit_above_threshold() {
+        // Exit threshold = 0.5%, spread will be positive (unusual but testable)
+        // Using reversed prices to get positive exit spread
+        let mut monitor = SpreadMonitor::new("BTC-PERP", 10.0, 0.5);
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Vest Ask=99, Bid=101 (crossed) | Paradex Ask=99, Bid=97
+        // Exit spread: (101 - 99) / 100 * 100 = 2.0% > 0.5% threshold
+        let vest_update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(99.0, 101.0), // Crossed for positive exit
+        };
+        let paradex_update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(99.0, 97.0),
+        };
+        
+        orderbook_tx.send(vest_update).await.unwrap();
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should emit exit opportunity
+        let opp = opportunity_rx.try_recv().expect("Should emit exit opportunity above threshold");
+        assert_eq!(opp.direction, SpreadDirection::BOverA, "Exit direction should be BOverA");
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_ignores_exit_below_threshold() {
+        // Exit threshold = 10.0%, typical exit spread is negative so won't trigger
+        let mut monitor = SpreadMonitor::new("ETH-PERP", 0.0, 10.0);
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Normal market: exit spread is typically negative or small positive
+        // Exit spread: (101 - 101.5) / 101.25 * 100 ≈ -0.49% < 10.0% threshold
+        let vest_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(102.0, 101.0),
+        };
+        let paradex_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(101.5, 100.0),
+        };
+        
+        orderbook_tx.send(vest_update).await.unwrap();
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Entry might trigger (entry spread ~2%), but exit should NOT trigger
+        // Clear any entry opportunities
+        let _ = opportunity_rx.try_recv();
+        
+        // Send another update to potentially trigger exit - but threshold is too high
+        // Should NOT have additional exit opportunity
+        assert!(opportunity_rx.try_recv().is_err(), "Should NOT emit exit opportunity below threshold");
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_different_entry_exit_thresholds() {
+        // Entry = 1.0%, Exit = 2.0% - realistic config
+        let mut monitor = SpreadMonitor::new("SOL-PERP", 1.0, 2.0);
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Entry spread: (105 - 100) / 102.5 * 100 ≈ 4.88% > 1.0% (triggers)
+        // Exit spread: (104 - 103) / 103.5 * 100 ≈ 0.97% < 2.0% (doesn't trigger)
+        let vest_update = OrderbookUpdate {
+            symbol: "SOL-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(105.0, 104.0),
+        };
+        let paradex_update = OrderbookUpdate {
+            symbol: "SOL-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(103.0, 100.0),
+        };
+        
+        orderbook_tx.send(vest_update).await.unwrap();
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should only get entry opportunity, not exit
+        let opp = opportunity_rx.try_recv().expect("Should emit entry opportunity");
+        assert_eq!(opp.direction, SpreadDirection::AOverB, "Should be entry direction");
+        assert!(opp.spread_percent > 1.0, "Entry spread should be > 1.0%");
+        
+        // No exit opportunity
+        assert!(opportunity_rx.try_recv().is_err(), "Exit below threshold should not emit");
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+}
