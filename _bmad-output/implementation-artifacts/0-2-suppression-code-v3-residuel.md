@@ -1,6 +1,6 @@
 # Story 0.2: Suppression du Code v3 Résiduel
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -75,3 +75,30 @@ so that le codebase soit propre, maintenable et sans warnings avant l'implément
 - `src/adapters/paradex.rs`: ligne ~678
 - `src/core/logging.rs`: ligne ~143
 - `src/config/types.rs`: ligne ~185
+
+## Dev Agent Record
+
+### File List
+
+| File | Change Type | Description |
+|------|-------------|-------------|
+| `src/adapters/paradex.rs` | MODIFIED | Added `OrderSignParams` struct (L654-667), refactored `sign_order_message` to use params struct |
+| `src/core/logging.rs` | MODIFIED | Simplified `sanitize_signature` function (L140-146) |
+| `src/config/types.rs` | MODIFIED | Optimized `Default` impls for `RiskConfig`, `ApiConfig` (L185-201) |
+| `src/adapters/traits.rs` | MODIFIED | Fixed concurrency comment at L121 ("arc-mutex" → "arc-rwlock") |
+
+### Change Log
+
+| Date | Task | Changes |
+|------|------|---------|
+| 2026-01-31 | Task 1 | Created `OrderSignParams<'a>` struct with 10 fields, refactored `sign_order_message` signature |
+| 2026-01-31 | Task 2 | Simplified `sanitize_signature` to single clean branch logic |
+| 2026-01-31 | Task 3 | Kept manual `impl Default` for `RiskConfig`/`ApiConfig` with specific non-zero values |
+| 2026-01-31 | Task 4 | Verified Mutex/RwLock usage, fixed comment in `traits.rs:121` |
+| 2026-01-31 | Task 5 | Validated: clippy 0 warnings, 213 tests pass |
+
+### Review Notes
+
+- **Code Review Date:** 2026-01-31
+- **Reviewer:** AI Code Review Agent
+- **Result:** ✅ All ACs verified, all tasks complete
