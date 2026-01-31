@@ -1,6 +1,6 @@
 # Story 1.4: Calcul de Spread Entry/Exit
 
-Status: review
+Status: done
 
 <!-- Note: Epic 1 Story 4 - Wire SpreadCalculator to consume orderbook channel and emit spread opportunities. -->
 
@@ -245,15 +245,25 @@ Antigravity (Google DeepMind)
 | 2026-01-31 | Added structured logging with tracing macros | `core/spread.rs` |
 | 2026-01-31 | Added 5 SpreadMonitor tests including NFR1 performance | `core/spread.rs` |
 | 2026-01-31 | Exported `SpreadMonitor` from core module | `core/mod.rs` |
+| 2026-01-31 | [CR-FIX] Added `exchange` field assertion to channels test | `core/channels.rs` |
+| 2026-01-31 | [CR-FIX] SpreadMonitor now emits both entry AND exit opportunities | `core/spread.rs` |
+| 2026-01-31 | [CR-FIX] Added direction=entry/exit to structured logs | `core/spread.rs` |
+| 2026-01-31 | [CR-FIX] Exit spread uses SpreadDirection::BOverA | `core/spread.rs` |
+
 
 ### Completion Notes List
 
 - Created `SpreadMonitor` struct with `new()`, `run()`, `handle_orderbook_update()`, and `has_both_orderbooks()` methods
 - Uses `Option<Orderbook>` for vest/paradex caching instead of HashMap (simpler for single-pair MVP)
 - Added `exchange` field to `OrderbookUpdate` to distinguish between orderbook sources
-- Emits `SpreadOpportunity` only when entry_spread > 0 (positive arbitrage)
-- All 229 tests pass, including 5 new SpreadMonitor async tests
+- Emits `SpreadOpportunity` when **entry_spread > 0** OR **exit_spread > 0** (dual opportunity emission after CR fix)
+- All 229 tests pass, including 4 new SpreadMonitor async tests + 1 NFR1 performance test
 - NFR1 performance verified: single calculation < 2ms, 1000 iterations < 200ms
+- **Code Review Fixes Applied (2026-01-31):**
+  - H1: Added missing `exchange` field assertion in channels.rs test
+  - M1: SpreadMonitor now emits opportunities for BOTH entry and exit spreads
+  - M2: Exit opportunities use `SpreadDirection::BOverA` (not hard-coded AOverB)
+  - M3: Added `direction=entry/exit` field to structured opportunity logs
 
 ### File List
 

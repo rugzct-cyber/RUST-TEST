@@ -341,11 +341,12 @@ impl SpreadMonitor {
                     "Spread calculated"
                 );
                 
-                // Emit opportunity if spread is positive (arbitrage exists)
+                // Emit opportunity if entry spread is positive (buy on vest, sell on paradex)
                 if entry_spread > 0.0 {
                     info!(
                         pair = %self.pair,
                         spread = %format!("{:.4}%", entry_spread),
+                        direction = "entry",
                         "Spread opportunity detected"
                     );
                     
@@ -355,6 +356,27 @@ impl SpreadMonitor {
                         dex_b: "paradex".to_string(),
                         spread_percent: entry_spread,
                         direction: SpreadDirection::AOverB,
+                        detected_at_ms: current_time_ms(),
+                    };
+                    
+                    tx.send(opportunity).await.map_err(|_| SpreadMonitorError::ChannelClosed)?;
+                }
+                
+                // Emit opportunity if exit spread is positive (sell on vest, buy back on paradex)
+                if exit_spread > 0.0 {
+                    info!(
+                        pair = %self.pair,
+                        spread = %format!("{:.4}%", exit_spread),
+                        direction = "exit",
+                        "Spread opportunity detected"
+                    );
+                    
+                    let opportunity = SpreadOpportunity {
+                        pair: self.pair.clone(),
+                        dex_a: "vest".to_string(),
+                        dex_b: "paradex".to_string(),
+                        spread_percent: exit_spread,
+                        direction: SpreadDirection::BOverA, // Exit = opposite direction
                         detected_at_ms: current_time_ms(),
                     };
                     

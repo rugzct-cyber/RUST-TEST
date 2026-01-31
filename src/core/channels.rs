@@ -110,6 +110,7 @@ mod tests {
         // Receive and verify
         let received = rx.recv().await.unwrap();
         assert_eq!(received.symbol, "BTC-PERP");
+        assert_eq!(received.exchange, "vest"); // Story 1.4: Verify exchange field
         assert_eq!(received.orderbook.bids.len(), 1);
         assert_eq!(received.orderbook.asks.len(), 1);
         assert_eq!(received.orderbook.bids[0].price, 100.0);
