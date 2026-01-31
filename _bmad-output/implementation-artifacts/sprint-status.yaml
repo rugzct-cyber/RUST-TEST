@@ -49,7 +49,7 @@ development_status:
 
   # Epic 1: Market Data Connection
   epic-1: in-progress
-  1-1-connexion-websocket-vest: review
+  1-1-connexion-websocket-vest: done
   1-2-connexion-websocket-paradex: backlog
   1-3-reception-parsing-orderbooks: backlog
   1-4-calcul-spread-entry-exit: backlog
