@@ -1,6 +1,6 @@
 # Story 1.3: Réception et Parsing des Orderbooks
 
-Status: review
+Status: done
 
 <!-- Note: Epic 1 Story 3 - Validates existing orderbook parsing, adds unified channel flow and DEBUG logging. -->
 
@@ -51,7 +51,7 @@ So that les données soient prêtes pour le calcul de spread.
 
 - [x] **Task 6**: Validation finale (AC: #1)
   - [x] Subtask 6.1: `cargo clippy --all-targets -- -D warnings` ✅ Clean
-  - [x] Subtask 6.2: `cargo test` ✅ 223 tests passent
+  - [x] Subtask 6.2: `cargo test` ✅ 224 tests passent
   - [x] Subtask 6.3: Nouveaux tests ajoutés: perf tests + orderbook channel test
 
 ## Dev Notes
@@ -190,6 +190,8 @@ Gemini 2.5 Pro
 | 2026-01-31 | Added debug logging to Paradex to_orderbook | paradex.rs |
 | 2026-01-31 | Added Vest performance test | vest.rs |
 | 2026-01-31 | Added Paradex performance test | paradex.rs |
+| 2026-01-31 | **[CR-H1]** Added explicit sorting to Vest to_orderbook() | vest.rs |
+| 2026-01-31 | **[CR-M3]** Added test_vest_sorting_unsorted_input test | vest.rs |
 
 ### Completion Notes List
 
@@ -197,6 +199,8 @@ Gemini 2.5 Pro
 - Added tracing::debug! logs with exchange, pair, and best bid/ask info
 - OrderbookUpdate channel added to ChannelBundle for future integration
 - Performance tests confirm parsing < 1ms even with 150+ levels
+- **[Code Review]** Fixed H1: Vest to_orderbook() now explicitly sorts bids/asks (was missing)
+- **[Code Review]** Fixed M3: Added sorting verification to perf test + new `test_vest_sorting_unsorted_input`
 
 ### File List
 

@@ -272,11 +272,15 @@ pub struct VestDepthData {
 
 impl VestDepthData {
     /// Convert to Orderbook type, taking only top 10 levels
+    /// 
+    /// Parses all levels, sorts by price, then truncates to top 10.
+    /// Bids: sorted descending (highest first = best bid)
+    /// Asks: sorted ascending (lowest first = best ask)
     pub fn to_orderbook(&self) -> ExchangeResult<Orderbook> {
         use crate::adapters::types::OrderbookLevel;
         
-        let bids = self.bids.iter()
-            .take(10)
+        // Parse ALL bids first, then sort and truncate
+        let mut bids: Vec<OrderbookLevel> = self.bids.iter()
             .map(|[price, qty]| {
                 let p = price.parse::<f64>().map_err(|e| 
                     ExchangeError::InvalidResponse(format!("Invalid bid price: {}", e)))?;
@@ -286,8 +290,8 @@ impl VestDepthData {
             })
             .collect::<ExchangeResult<Vec<_>>>()?;
         
-        let asks = self.asks.iter()
-            .take(10)
+        // Parse ALL asks first, then sort and truncate
+        let mut asks: Vec<OrderbookLevel> = self.asks.iter()
             .map(|[price, qty]| {
                 let p = price.parse::<f64>().map_err(|e| 
                     ExchangeError::InvalidResponse(format!("Invalid ask price: {}", e)))?;
@@ -296,6 +300,15 @@ impl VestDepthData {
                 Ok(OrderbookLevel::new(p, q))
             })
             .collect::<ExchangeResult<Vec<_>>>()?;
+        
+        // Sort bids descending (highest price first = best bid)
+        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort asks ascending (lowest price first = best ask)
+        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+        
+        // Take only top 10 levels after sorting
+        bids.truncate(10);
+        asks.truncate(10);
         
         let orderbook = Orderbook {
             bids,
@@ -2140,7 +2153,42 @@ mod tests {
         // Verify output is correct (top 10 levels)
         assert_eq!(orderbook.bids.len(), 10);
         assert_eq!(orderbook.asks.len(), 10);
+        
+        // M3 Fix: Verify sorting is correct (Code Review Story 1.3)
+        // Highest bid should be first (descending order)
+        assert_eq!(orderbook.bids[0].price, 50000.0, "Best bid should be highest price");
+        // Lowest ask should be first (ascending order)
+        assert_eq!(orderbook.asks[0].price, 50100.0, "Best ask should be lowest price");
     }
+
+    #[test]
+    fn test_vest_sorting_unsorted_input() {
+        // Code Review Fix: Verify sorting works with intentionally unsorted input
+        let bids: Vec<[String; 2]> = vec![
+            ["100.0".to_string(), "1.0".to_string()],  // Middle
+            ["150.0".to_string(), "1.0".to_string()],  // Highest (should be first after sort)
+            ["50.0".to_string(), "1.0".to_string()],   // Lowest
+        ];
+        let asks: Vec<[String; 2]> = vec![
+            ["200.0".to_string(), "1.0".to_string()],  // Middle
+            ["250.0".to_string(), "1.0".to_string()],  // Highest
+            ["160.0".to_string(), "1.0".to_string()],  // Lowest (should be first after sort)
+        ];
+        
+        let data = VestDepthData { bids, asks };
+        let orderbook = data.to_orderbook().expect("Parsing should succeed");
+        
+        // Bids should be sorted descending (highest first)
+        assert_eq!(orderbook.bids[0].price, 150.0, "Highest bid should be first");
+        assert_eq!(orderbook.bids[1].price, 100.0);
+        assert_eq!(orderbook.bids[2].price, 50.0);
+        
+        // Asks should be sorted ascending (lowest first)
+        assert_eq!(orderbook.asks[0].price, 160.0, "Lowest ask should be first");
+        assert_eq!(orderbook.asks[1].price, 200.0);
+        assert_eq!(orderbook.asks[2].price, 250.0);
+    }
+
 
     #[test]
     fn test_subscription_message_format() {
