@@ -13,20 +13,15 @@ use tokio::sync::RwLock;
 // =============================================================================
 
 /// Connection state for WebSocket health monitoring
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ConnectionState {
     /// WebSocket is connected and healthy
     Connected,
     /// WebSocket is disconnected
+    #[default]
     Disconnected,
     /// WebSocket is attempting to reconnect
     Reconnecting,
-}
-
-impl Default for ConnectionState {
-    fn default() -> Self {
-        ConnectionState::Disconnected
-    }
 }
 
 /// Shared connection health state for tracking WebSocket health

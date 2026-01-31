@@ -147,7 +147,7 @@ pub struct ApiConfig {
 }
 
 /// Root application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// List of bot configurations
     pub bots: Vec<BotConfig>,
@@ -197,16 +197,6 @@ impl Default for ApiConfig {
         Self {
             port: 8080,
             ws_heartbeat_sec: 30,
-        }
-    }
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            bots: Vec::new(),
-            risk: RiskConfig::default(),
-            api: ApiConfig::default(),
         }
     }
 }

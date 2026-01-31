@@ -42,8 +42,8 @@ story_location: "c:/Users/jules/Documents/bot4/_bmad-output/implementation-artif
 development_status:
   # Epic 0: Cleanup & Foundation
   epic-0: in-progress
-  0-1-suppression-pattern-scout: review
-  0-2-suppression-code-v3-residuel: backlog
+  0-1-suppression-pattern-scout: done
+  0-2-suppression-code-v3-residuel: in-progress
   0-3-validation-structure-modulaire: backlog
   epic-0-retrospective: optional
 

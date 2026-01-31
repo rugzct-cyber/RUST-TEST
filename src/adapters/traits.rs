@@ -118,7 +118,7 @@ pub trait ExchangeAdapter: Send + Sync {
     
     /// Sync local orderbook cache from shared storage
     /// 
-    /// This method copies orderbooks from the shared arc-mutex storage
+    /// This method copies orderbooks from the shared arc-rwlock storage
     /// (updated by background reader) to the local cache (used by get_orderbook).
     /// Call this before get_orderbook to ensure up-to-date data.
     /// 

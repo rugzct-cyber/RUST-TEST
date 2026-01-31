@@ -566,11 +566,9 @@ pub fn compute_starknet_address(
     let h1 = pedersen_hash(&prefix, &deployer);
     let h2 = pedersen_hash(&h1, &salt);
     let h3 = pedersen_hash(&h2, &class_hash);
-    let h4 = pedersen_hash(&h3, &calldata_hash);
-    
     // Apply 250-bit mask (Starknet addresses are 251 bits, but mod PRIME)
     // The result is already a valid felt, just return it
-    h4
+    pedersen_hash(&h3, &calldata_hash)
 }
 
 /// Derive the Paradex L2 account address from a private key and system config
@@ -653,6 +651,21 @@ pub fn verify_account_address(
     Ok(derived == provided)
 }
 
+/// Parameters for signing an order message
+#[derive(Debug)]
+pub struct OrderSignParams<'a> {
+    pub private_key: &'a str,
+    pub account_address: &'a str,
+    pub market: &'a str,
+    pub side: &'a str,
+    pub order_type: &'a str,
+    pub size: &'a str,
+    pub price: &'a str,
+    pub client_id: &'a str,
+    pub timestamp_ms: u64,
+    pub chain_id: &'a str,
+}
+
 /// Sign an order message for Paradex REST /orders endpoint
 /// 
 /// Implements StarkNet typed data signing for orders:
@@ -661,46 +674,28 @@ pub fn verify_account_address(
 /// - Returns (signature_r, signature_s) as hex strings
 /// 
 /// # Arguments
-/// * `private_key` - Starknet private key as hex string (with 0x prefix)
-/// * `account_address` - Starknet account address as hex string
-/// * `market` - Market symbol (e.g., "BTC-USD-PERP")
-/// * `side` - Order side ("BUY" or "SELL")
-/// * `order_type` - Order type ("LIMIT" or "MARKET")
-/// * `size` - Order size as string
-/// * `price` - Order price as string
-/// * `client_id` - Client order ID
-/// * `timestamp_ms` - Signature timestamp in milliseconds
-/// * `chain_id` - Chain ID from Paradex system config
+/// * `params` - Order signing parameters
 /// 
 /// # Returns
 /// Tuple of (signature_r, signature_s) as hex strings with 0x prefix
-#[tracing::instrument(skip(private_key), fields(market = %market, side = %side, order_type = %order_type, client_id = %client_id))]
+#[tracing::instrument(skip(params), fields(market = %params.market, side = %params.side, order_type = %params.order_type, client_id = %params.client_id))]
 pub fn sign_order_message(
-    private_key: &str,
-    account_address: &str,
-    market: &str,
-    side: &str,
-    order_type: &str,
-    size: &str,
-    price: &str,
-    client_id: &str,
-    timestamp_ms: u64,
-    chain_id: &str,
+    params: OrderSignParams,
 ) -> ExchangeResult<(String, String)> {
     // Parse private key as FieldElement
-    let pk = FieldElement::from_hex_be(private_key)
+    let pk = FieldElement::from_hex_be(params.private_key)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid private key: {}", e)))?;
     
     // Parse account address as FieldElement
-    let account = FieldElement::from_hex_be(account_address)
+    let account = FieldElement::from_hex_be(params.account_address)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid account: {}", e)))?;
     
     // Parse chain ID
-    let chain_felt = if chain_id.starts_with("0x") {
-        FieldElement::from_hex_be(chain_id)
-            .unwrap_or_else(|_| string_to_felt(chain_id))
+    let chain_felt = if params.chain_id.starts_with("0x") {
+        FieldElement::from_hex_be(params.chain_id)
+            .unwrap_or_else(|_| string_to_felt(params.chain_id))
     } else {
-        string_to_felt(chain_id)
+        string_to_felt(params.chain_id)
     };
     
     // Build domain separator hash: hash(name, chainId, version)
@@ -710,13 +705,13 @@ pub fn sign_order_message(
     let domain_separator = pedersen_hash(&domain_hash, &domain_version_felt);
     
     // Build order message hash components
-    let market_felt = string_to_felt(market);
-    let side_felt = string_to_felt(side);
-    let type_felt = string_to_felt(order_type);
-    let size_felt = string_to_felt(size);
-    let price_felt = string_to_felt(price);
-    let client_id_felt = string_to_felt(client_id);
-    let timestamp_felt = FieldElement::from(timestamp_ms);
+    let market_felt = string_to_felt(params.market);
+    let side_felt = string_to_felt(params.side);
+    let type_felt = string_to_felt(params.order_type);
+    let size_felt = string_to_felt(params.size);
+    let price_felt = string_to_felt(params.price);
+    let client_id_felt = string_to_felt(params.client_id);
+    let timestamp_felt = FieldElement::from(params.timestamp_ms);
     
     // Hash order fields: hash(market, side, type, size, price, client_id, timestamp)
     let h1 = pedersen_hash(&market_felt, &side_felt);
@@ -1486,18 +1481,21 @@ impl ExchangeAdapter for ParadexAdapter {
         };
         
         // 6. Sign the order
-        let (sig_r, sig_s) = sign_order_message(
-            &self.config.private_key,
-            &self.config.account_address,
-            &order.symbol,
-            side_str,
-            type_str,
-            &size_str,
-            &price_str,
-            &order.client_order_id,
-            timestamp,
+        // 6. Sign the order
+        let params = OrderSignParams {
+            private_key: &self.config.private_key,
+            account_address: &self.config.account_address,
+            market: &order.symbol,
+            side: side_str,
+            order_type: type_str,
+            size: &size_str,
+            price: &price_str,
+            client_id: &order.client_order_id,
+            timestamp_ms: timestamp,
             chain_id,
-        )?;
+        };
+        
+        let (sig_r, sig_s) = sign_order_message(params)?;
         
         // 7. Build signature string in Paradex format: ["0x...", "0x..."]
         let signature_str = format!("[\"{}\",\"{}\"]", sig_r, sig_s);
@@ -2578,18 +2576,20 @@ mod tests {
 
     #[test]
     fn test_sign_order_message_produces_valid_signature() {
-        let result = sign_order_message(
-            TEST_PRIVATE_KEY,
-            TEST_ACCOUNT_ADDRESS,
-            "BTC-USD-PERP",
-            "BUY",
-            "LIMIT",
-            "0.1",
-            "50000.00",
-            "test-client-id-123",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
+        let params = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "BTC-USD-PERP",
+            side: "BUY",
+            order_type: "LIMIT",
+            size: "0.1",
+            price: "50000.00",
+            client_id: "test-client-id-123",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        
+        let result = sign_order_message(params);
         
         assert!(result.is_ok(), "Order signing should succeed with valid inputs");
         
@@ -2602,30 +2602,33 @@ mod tests {
 
     #[test]
     fn test_sign_order_message_deterministic() {
-        let result1 = sign_order_message(
-            TEST_PRIVATE_KEY,
-            TEST_ACCOUNT_ADDRESS,
-            "ETH-USD-PERP",
-            "SELL",
-            "LIMIT",
-            "1.5",
-            "3000.00",
-            "order-abc",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
-        let result2 = sign_order_message(
-            TEST_PRIVATE_KEY,
-            TEST_ACCOUNT_ADDRESS,
-            "ETH-USD-PERP",
-            "SELL",
-            "LIMIT",
-            "1.5",
-            "3000.00",
-            "order-abc",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
+        let params1 = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "ETH-USD-PERP",
+            side: "SELL",
+            order_type: "LIMIT",
+            size: "1.5",
+            price: "3000.00",
+            client_id: "order-abc",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        let result1 = sign_order_message(params1);
+
+        let params2 = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "ETH-USD-PERP",
+            side: "SELL",
+            order_type: "LIMIT",
+            size: "1.5",
+            price: "3000.00",
+            client_id: "order-abc",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        let result2 = sign_order_message(params2);
         
         assert!(result1.is_ok());
         assert!(result2.is_ok());
@@ -2639,30 +2642,33 @@ mod tests {
 
     #[test]
     fn test_sign_order_message_different_orders_different_signatures() {
-        let result1 = sign_order_message(
-            TEST_PRIVATE_KEY,
-            TEST_ACCOUNT_ADDRESS,
-            "BTC-USD-PERP",
-            "BUY",
-            "LIMIT",
-            "0.1",
-            "50000.00",
-            "order-1",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
-        let result2 = sign_order_message(
-            TEST_PRIVATE_KEY,
-            TEST_ACCOUNT_ADDRESS,
-            "BTC-USD-PERP",
-            "SELL",  // Different side
-            "LIMIT",
-            "0.1",
-            "50000.00",
-            "order-2",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
+        let params1 = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "BTC-USD-PERP",
+            side: "BUY",
+            order_type: "LIMIT",
+            size: "0.1",
+            price: "50000.00",
+            client_id: "order-1",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        let result1 = sign_order_message(params1);
+
+        let params2 = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "BTC-USD-PERP",
+            side: "SELL",  // Different side
+            order_type: "LIMIT",
+            size: "0.1",
+            price: "50000.00",
+            client_id: "order-2",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        let result2 = sign_order_message(params2);
         
         assert!(result1.is_ok());
         assert!(result2.is_ok());
@@ -2675,18 +2681,20 @@ mod tests {
 
     #[test]
     fn test_sign_order_message_invalid_private_key() {
-        let result = sign_order_message(
-            "invalid_key",  // Not a valid hex
-            TEST_ACCOUNT_ADDRESS,
-            "BTC-USD-PERP",
-            "BUY",
-            "LIMIT",
-            "0.1",
-            "50000.00",
-            "test-order",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
+        let params = OrderSignParams {
+            private_key: "invalid_key",  // Not a valid hex
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "BTC-USD-PERP",
+            side: "BUY",
+            order_type: "LIMIT",
+            size: "0.1",
+            price: "50000.00",
+            client_id: "test-order",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        
+        let result = sign_order_message(params);
         
         assert!(result.is_err(), "Should fail with invalid private key");
     }
@@ -2797,18 +2805,20 @@ mod tests {
     #[test]
     fn test_sign_order_message_market_order_with_zero_price() {
         // M1 Fix: Test MARKET order signing with price = "0" (convention for no price)
-        let result = sign_order_message(
-            TEST_PRIVATE_KEY,
-            TEST_ACCOUNT_ADDRESS,
-            "BTC-USD-PERP",
-            "BUY",
-            "MARKET",  // MARKET order type
-            "0.5",
-            "0",       // Price is "0" for MARKET orders
-            "market-order-123",
-            1706300000000,
-            "SN_SEPOLIA",
-        );
+        let params = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "BTC-USD-PERP",
+            side: "BUY",
+            order_type: "MARKET",
+            size: "0.5",
+            price: "0",
+            client_id: "market-order-123",
+            timestamp_ms: 1706300000000,
+            chain_id: "SN_SEPOLIA",
+        };
+        
+        let result = sign_order_message(params);
         
         assert!(result.is_ok(), "MARKET order signing should succeed with price='0'");
         

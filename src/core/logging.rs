@@ -140,8 +140,6 @@ pub fn sanitize(value: &str) -> SanitizedValue<'_> {
 pub fn sanitize_signature(sig: &str) -> String {
     if sig.len() > 12 {
         format!("{}...", &sig[..8])
-    } else if sig.is_empty() {
-        "REDACTED".to_string()
     } else {
         "REDACTED".to_string()
     }
