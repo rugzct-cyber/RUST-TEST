@@ -1270,6 +1270,10 @@ impl ExchangeAdapter for VestAdapter {
         self.spawn_heartbeat_task();
 
         self.connected = true;
+        
+        // AC: Log connection success (Story 1.1)
+        tracing::info!(exchange = "vest", "Vest WebSocket connected");
+        
         Ok(())
     }
 
@@ -1628,6 +1632,7 @@ impl ExchangeAdapter for VestAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_vest_config_default() {
@@ -1637,6 +1642,53 @@ mod tests {
         assert!(config.primary_addr.is_empty());
         assert!(config.primary_key.is_empty());
         assert!(config.signing_key.is_empty());
+    }
+
+    /// Story 1.1 Task 1.3: Validate VestConfig::from_env() loads credentials correctly
+    #[test]
+    #[serial(env)]
+    fn test_vest_config_from_env() {
+        // Set required environment variables
+        std::env::set_var("VEST_PRIMARY_ADDR", "0xTestPrimaryAddr");
+        std::env::set_var("VEST_PRIMARY_KEY", "0xTestPrimaryKey123");
+        std::env::set_var("VEST_SIGNING_KEY", "0xTestSigningKey456");
+        std::env::set_var("VEST_ACCOUNT_GROUP", "7");
+        std::env::set_var("VEST_PRODUCTION", "false");
+
+        let config = VestConfig::from_env().expect("Failed to load config from env");
+
+        assert_eq!(config.primary_addr, "0xTestPrimaryAddr");
+        assert_eq!(config.primary_key, "0xTestPrimaryKey123");
+        assert_eq!(config.signing_key, "0xTestSigningKey456");
+        assert_eq!(config.account_group, 7);
+        assert!(!config.production);
+
+        // Clean up
+        std::env::remove_var("VEST_PRIMARY_ADDR");
+        std::env::remove_var("VEST_PRIMARY_KEY");
+        std::env::remove_var("VEST_SIGNING_KEY");
+        std::env::remove_var("VEST_ACCOUNT_GROUP");
+        std::env::remove_var("VEST_PRODUCTION");
+    }
+
+    /// Story 1.1 Task 1.3: VestConfig::from_env() returns error when required vars missing
+    #[test]
+    #[serial(env)]  
+    fn test_vest_config_from_env_missing_required() {
+        // Ensure required vars are not set
+        std::env::remove_var("VEST_PRIMARY_ADDR");
+        std::env::remove_var("VEST_PRIMARY_KEY");
+        std::env::remove_var("VEST_SIGNING_KEY");
+
+        let result = VestConfig::from_env();
+        assert!(result.is_err());
+
+        // Should mention which variable is missing
+        if let Err(ExchangeError::AuthenticationFailed(msg)) = result {
+            assert!(msg.contains("VEST_PRIMARY_ADDR") || msg.contains("VEST_PRIMARY_KEY") || msg.contains("VEST_SIGNING_KEY"));
+        } else {
+            panic!("Expected AuthenticationFailed error");
+        }
     }
 
     #[test]

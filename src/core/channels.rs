@@ -4,6 +4,9 @@
 
 use tokio::sync::{broadcast, mpsc};
 
+// Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
+pub use super::spread::SpreadDirection;
+
 /// Default channel capacity for bounded channels
 pub const DEFAULT_CHANNEL_CAPACITY: usize = 100;
 
@@ -16,15 +19,6 @@ pub struct SpreadOpportunity {
     pub spread_percent: f64,
     pub direction: SpreadDirection,
     pub detected_at_ms: u64,
-}
-
-/// Direction of the spread
-#[derive(Debug, Clone, PartialEq)]
-pub enum SpreadDirection {
-    /// Price on DEX A is higher than DEX B
-    AOverB,
-    /// Price on DEX B is higher than DEX A
-    BOverA,
 }
 
 /// Bundle of all inter-task communication channels
