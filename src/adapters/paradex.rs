@@ -1324,7 +1324,7 @@ impl ExchangeAdapter for ParadexAdapter {
         
         // Step 2: Connect WebSocket
         self.connect_websocket().await?;
-        tracing::info!("Paradex WebSocket connected");
+        tracing::info!(exchange = "paradex", "Paradex WebSocket connected");
         
         // Step 3: Authenticate WebSocket (only if we have JWT for private channels)
         if self.jwt_token.is_some() {
@@ -1854,6 +1854,7 @@ impl ParadexAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     // =========================================================================
     // Task 8.1: Test ParadexAdapter::new() construction
@@ -1882,6 +1883,46 @@ mod tests {
         assert!(config.private_key.is_empty());
         assert!(config.account_address.is_empty());
         assert!(config.production);
+    }
+
+    /// Story 1.2 Task 1.3: Validate ParadexConfig::from_env() loads credentials correctly
+    #[test]
+    #[serial(env)]
+    fn test_paradex_config_from_env() {
+        // Set required environment variables
+        std::env::set_var("PARADEX_PRIVATE_KEY", "0xTestPrivateKey123");
+        std::env::set_var("PARADEX_ACCOUNT_ADDRESS", "0xTestAccountAddress456");
+        std::env::set_var("PARADEX_PRODUCTION", "false");
+
+        let config = ParadexConfig::from_env().expect("Failed to load config from env");
+
+        assert_eq!(config.private_key, "0xTestPrivateKey123");
+        assert_eq!(config.account_address, "0xTestAccountAddress456");
+        assert!(!config.production);
+
+        // Clean up
+        std::env::remove_var("PARADEX_PRIVATE_KEY");
+        std::env::remove_var("PARADEX_ACCOUNT_ADDRESS");
+        std::env::remove_var("PARADEX_PRODUCTION");
+    }
+
+    /// Story 1.2 Task 1.3: ParadexConfig::from_env() returns error when required vars missing
+    #[test]
+    #[serial(env)]
+    fn test_paradex_config_from_env_missing_required() {
+        // Ensure required vars are not set
+        std::env::remove_var("PARADEX_PRIVATE_KEY");
+        std::env::remove_var("PARADEX_ACCOUNT_ADDRESS");
+
+        let result = ParadexConfig::from_env();
+        assert!(result.is_err());
+
+        // Should mention which variable is missing
+        if let Err(ExchangeError::AuthenticationFailed(msg)) = result {
+            assert!(msg.contains("PARADEX_PRIVATE_KEY"));
+        } else {
+            panic!("Expected AuthenticationFailed error");
+        }
     }
 
     // =========================================================================
