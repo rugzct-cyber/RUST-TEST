@@ -7,6 +7,9 @@ use tokio::sync::{broadcast, mpsc};
 // Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
 pub use super::spread::SpreadDirection;
 
+// Import OrderbookUpdate for orderbook streaming channel (Story 1.3)
+use crate::adapters::types::OrderbookUpdate;
+
 /// Default channel capacity for bounded channels
 pub const DEFAULT_CHANNEL_CAPACITY: usize = 100;
 
@@ -28,6 +31,10 @@ pub struct ChannelBundle {
     pub opportunity_tx: mpsc::Sender<SpreadOpportunity>,
     pub opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
     
+    /// Adapters -> SpreadCalculator: orderbook updates (Story 1.3)
+    pub orderbook_tx: mpsc::Sender<OrderbookUpdate>,
+    pub orderbook_rx: mpsc::Receiver<OrderbookUpdate>,
+    
     /// Shutdown broadcast: main -> all tasks
     pub shutdown_tx: broadcast::Sender<()>,
 }
@@ -35,11 +42,14 @@ pub struct ChannelBundle {
 impl ChannelBundle {
     pub fn new(capacity: usize) -> Self {
         let (opportunity_tx, opportunity_rx) = mpsc::channel(capacity);
+        let (orderbook_tx, orderbook_rx) = mpsc::channel(capacity);
         let (shutdown_tx, _) = broadcast::channel(1);
         
         Self {
             opportunity_tx,
             opportunity_rx,
+            orderbook_tx,
+            orderbook_rx,
             shutdown_tx,
         }
     }
@@ -55,14 +65,17 @@ impl Default for ChannelBundle {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::types::{Orderbook, OrderbookLevel};
 
     #[test]
     fn test_channel_bundle_creation() {
         let bundle = ChannelBundle::new(50);
         assert!(!bundle.opportunity_tx.is_closed());
+        assert!(!bundle.orderbook_tx.is_closed());
     }
 
     #[tokio::test]
@@ -72,5 +85,33 @@ mod tests {
         
         assert!(bundle.shutdown_tx.send(()).is_ok());
         assert!(rx.recv().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_orderbook_channel_send_receive() {
+        let bundle = ChannelBundle::new(10);
+        let mut rx = bundle.orderbook_rx;
+        let tx = bundle.orderbook_tx;
+
+        // Create a test orderbook update
+        let update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            orderbook: Orderbook {
+                bids: vec![OrderbookLevel::new(100.0, 1.0)],
+                asks: vec![OrderbookLevel::new(101.0, 1.0)],
+                timestamp: 1234567890,
+            },
+        };
+
+        // Send through channel
+        tx.send(update.clone()).await.unwrap();
+
+        // Receive and verify
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.symbol, "BTC-PERP");
+        assert_eq!(received.orderbook.bids.len(), 1);
+        assert_eq!(received.orderbook.asks.len(), 1);
+        assert_eq!(received.orderbook.bids[0].price, 100.0);
+        assert_eq!(received.orderbook.asks[0].price, 101.0);
     }
 }

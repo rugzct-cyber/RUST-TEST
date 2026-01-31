@@ -269,11 +269,24 @@ impl ParadexOrderbookData {
         bids.truncate(10);
         asks.truncate(10);
         
-        Ok(Orderbook {
+        let orderbook = Orderbook {
             bids,
             asks,
             timestamp: self.last_updated_at,
-        })
+        };
+
+        // Story 1.3: DEBUG log when orderbook is parsed
+        tracing::debug!(
+            exchange = "paradex",
+            pair = %self.market,
+            bids_count = orderbook.bids.len(),
+            asks_count = orderbook.asks.len(),
+            best_bid = ?orderbook.best_bid(),
+            best_ask = ?orderbook.best_ask(),
+            "Orderbook updated"
+        );
+
+        Ok(orderbook)
     }
 }
 
@@ -2406,6 +2419,52 @@ mod tests {
         // Asks should be sorted ascending (lowest first)
         assert_eq!(orderbook.asks[0].price, 103.00);
         assert_eq!(orderbook.asks[1].price, 105.00);
+    }
+
+    #[test]
+    fn test_paradex_parsing_performance_1ms() {
+        // Story 1.3 NFR3: Orderbook parsing must complete in < 1ms
+        // Create 150+ levels to stress test parsing (includes sorting)
+        let mut inserts = Vec::with_capacity(300);
+        for i in 0..150 {
+            inserts.push(ParadexOrderbookLevel {
+                price: format!("{}.00", 50000 - i),
+                size: format!("{}.0", i + 1),
+                side: "BID".to_string(),
+            });
+            inserts.push(ParadexOrderbookLevel {
+                price: format!("{}.00", 50100 + i),
+                size: format!("{}.0", i + 1),
+                side: "ASK".to_string(),
+            });
+        }
+        
+        let data = ParadexOrderbookData {
+            market: "BTC-USD-PERP".to_string(),
+            inserts,
+            last_updated_at: 1706300000000,
+            seq_no: 1,
+        };
+        
+        // Measure parsing time (includes sorting)
+        let start = std::time::Instant::now();
+        let orderbook = data.to_orderbook().expect("Parsing should succeed");
+        let elapsed = start.elapsed();
+        
+        // Verify parsing is fast (NFR3: < 1ms)
+        assert!(
+            elapsed.as_micros() < 1000,
+            "Parsing took {}μs, must be < 1000μs (1ms)",
+            elapsed.as_micros()
+        );
+        
+        // Verify output is correct (top 10 levels, sorted)
+        assert_eq!(orderbook.bids.len(), 10);
+        assert_eq!(orderbook.asks.len(), 10);
+        // Highest bid should be first
+        assert_eq!(orderbook.bids[0].price, 50000.0);
+        // Lowest ask should be first
+        assert_eq!(orderbook.asks[0].price, 50100.0);
     }
 
     // =========================================================================

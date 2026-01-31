@@ -297,11 +297,23 @@ impl VestDepthData {
             })
             .collect::<ExchangeResult<Vec<_>>>()?;
         
-        Ok(Orderbook {
+        let orderbook = Orderbook {
             bids,
             asks,
             timestamp: current_time_ms(),
-        })
+        };
+
+        // Story 1.3: DEBUG log when orderbook is parsed
+        tracing::debug!(
+            exchange = "vest",
+            bids_count = orderbook.bids.len(),
+            asks_count = orderbook.asks.len(),
+            best_bid = ?orderbook.best_bid(),
+            best_ask = ?orderbook.best_ask(),
+            "Orderbook updated"
+        );
+
+        Ok(orderbook)
     }
 }
 
@@ -2098,6 +2110,36 @@ mod tests {
         };
         let result = data.to_orderbook();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vest_parsing_performance_1ms() {
+        // Story 1.3 NFR3: Orderbook parsing must complete in < 1ms
+        // Create 100+ levels to stress test parsing
+        let bids: Vec<[String; 2]> = (0..150)
+            .map(|i| [format!("{}.0", 50000 - i), format!("{}.0", i + 1)])
+            .collect();
+        let asks: Vec<[String; 2]> = (0..150)
+            .map(|i| [format!("{}.0", 50100 + i), format!("{}.0", i + 1)])
+            .collect();
+        
+        let data = VestDepthData { bids, asks };
+        
+        // Measure parsing time
+        let start = std::time::Instant::now();
+        let orderbook = data.to_orderbook().expect("Parsing should succeed");
+        let elapsed = start.elapsed();
+        
+        // Verify parsing is fast (NFR3: < 1ms)
+        assert!(
+            elapsed.as_micros() < 1000,
+            "Parsing took {}μs, must be < 1000μs (1ms)",
+            elapsed.as_micros()
+        );
+        
+        // Verify output is correct (top 10 levels)
+        assert_eq!(orderbook.bids.len(), 10);
+        assert_eq!(orderbook.asks.len(), 10);
     }
 
     #[test]
