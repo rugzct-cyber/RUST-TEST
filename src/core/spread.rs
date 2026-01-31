@@ -255,6 +255,131 @@ fn current_time_ms() -> u64 {
 }
 
 // =============================================================================
+// SpreadMonitor (Story 1.4 - Task 1)
+// =============================================================================
+
+use crate::adapters::types::OrderbookUpdate;
+use crate::core::channels::SpreadOpportunity;
+use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, info};
+
+/// Monitor task that consumes orderbook updates and calculates spreads
+/// 
+/// # Story 1.4 Implementation
+/// - Consumes `OrderbookUpdate` from `orderbook_rx` channel
+/// - Stores orderbooks by exchange (vest/paradex)
+/// - Calculates entry/exit spreads via `SpreadCalculator.calculate_dual_spreads()`
+/// - Emits `SpreadOpportunity` via `opportunity_tx` when significant spreads detected
+/// 
+/// # Performance
+/// Target: < 2ms per spread calculation (NFR1)
+pub struct SpreadMonitor {
+    calculator: SpreadCalculator,
+    vest_orderbook: Option<Orderbook>,
+    paradex_orderbook: Option<Orderbook>,
+    pair: String,
+}
+
+impl SpreadMonitor {
+    /// Create a new SpreadMonitor for a trading pair
+    pub fn new(pair: impl Into<String>) -> Self {
+        Self {
+            calculator: SpreadCalculator::new("vest", "paradex"),
+            vest_orderbook: None,
+            paradex_orderbook: None,
+            pair: pair.into(),
+        }
+    }
+    
+    /// Run the monitor, processing orderbook updates until shutdown
+    /// 
+    /// # Returns
+    /// `Ok(())` on clean shutdown, `Err` on channel send failure
+    pub async fn run(
+        &mut self,
+        mut orderbook_rx: mpsc::Receiver<OrderbookUpdate>,
+        opportunity_tx: mpsc::Sender<SpreadOpportunity>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+    ) -> Result<(), SpreadMonitorError> {
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    debug!(pair = %self.pair, "SpreadMonitor shutting down");
+                    break;
+                }
+                Some(update) = orderbook_rx.recv() => {
+                    self.handle_orderbook_update(update, &opportunity_tx).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    /// Handle an incoming orderbook update
+    async fn handle_orderbook_update(
+        &mut self,
+        update: OrderbookUpdate,
+        tx: &mpsc::Sender<SpreadOpportunity>,
+    ) -> Result<(), SpreadMonitorError> {
+        // Store orderbook by exchange
+        match update.exchange.as_str() {
+            "vest" => self.vest_orderbook = Some(update.orderbook),
+            "paradex" => self.paradex_orderbook = Some(update.orderbook),
+            other => {
+                debug!(exchange = %other, "Unknown exchange, ignoring update");
+                return Ok(());
+            }
+        }
+        
+        // Calculate spreads if both orderbooks are present
+        if let (Some(vest), Some(paradex)) = (&self.vest_orderbook, &self.paradex_orderbook) {
+            if let Some((entry_spread, exit_spread)) = self.calculator.calculate_dual_spreads(vest, paradex) {
+                debug!(
+                    pair = %self.pair, 
+                    entry_spread = entry_spread,
+                    exit_spread = exit_spread,
+                    "Spread calculated"
+                );
+                
+                // Emit opportunity if spread is positive (arbitrage exists)
+                if entry_spread > 0.0 {
+                    info!(
+                        pair = %self.pair,
+                        spread = %format!("{:.4}%", entry_spread),
+                        "Spread opportunity detected"
+                    );
+                    
+                    let opportunity = SpreadOpportunity {
+                        pair: self.pair.clone(),
+                        dex_a: "vest".to_string(),
+                        dex_b: "paradex".to_string(),
+                        spread_percent: entry_spread,
+                        direction: SpreadDirection::AOverB,
+                        detected_at_ms: current_time_ms(),
+                    };
+                    
+                    tx.send(opportunity).await.map_err(|_| SpreadMonitorError::ChannelClosed)?;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if monitor has received orderbooks from both exchanges
+    pub fn has_both_orderbooks(&self) -> bool {
+        self.vest_orderbook.is_some() && self.paradex_orderbook.is_some()
+    }
+}
+
+/// Error type for SpreadMonitor
+#[derive(Debug, thiserror::Error)]
+pub enum SpreadMonitorError {
+    #[error("Opportunity channel closed")]
+    ChannelClosed,
+}
+
+// =============================================================================
 // Unit Tests (Task 6)
 // =============================================================================
 
@@ -731,6 +856,173 @@ mod tests {
         assert!(entry > 0.0 && entry < 1.0, "Entry should be small positive: {}", entry);
         assert!(exit < 0.0 && exit > -1.0, "Exit should be small negative: {}", exit);
         assert!((entry - exit).abs() > 0.01, "Entry/Exit must differ: {} vs {}", entry, exit);
+    }
+
+    // =========================================================================
+    // Story 1.4: SpreadMonitor Tests
+    // =========================================================================
+
+    #[test]
+    fn test_spread_monitor_creation() {
+        let monitor = SpreadMonitor::new("BTC-PERP");
+        assert!(!monitor.has_both_orderbooks());
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_processes_orderbook_update() {
+        // Create monitor
+        let mut monitor = SpreadMonitor::new("ETH-PERP");
+        
+        // Create channels
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        // Spawn monitor in background
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Send vest orderbook (ask=100.5, bid=100.0)
+        let vest_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(100.5, 100.0),
+        };
+        orderbook_tx.send(vest_update).await.unwrap();
+        
+        // Send paradex orderbook (ask=100.0, bid=99.0) - entry spread should be positive
+        let paradex_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(100.0, 99.0),
+        };
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        // Wait briefly for processing
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should have received an opportunity
+        let opportunity = opportunity_rx.try_recv().expect("Should receive spread opportunity");
+        assert_eq!(opportunity.pair, "ETH-PERP");
+        assert!(opportunity.spread_percent > 0.0, "Spread should be positive");
+        
+        // Shutdown
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_spread_opportunity_emitted_on_spread_change() {
+        let mut monitor = SpreadMonitor::new("BTC-PERP");
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Create orderbooks with positive entry spread
+        // Vest Ask=105, Bid=104 | Paradex Ask=103, Bid=100
+        // Entry = (105 - 100) / 102.5 * 100 = ~4.88%
+        let vest_update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(105.0, 104.0),
+        };
+        let paradex_update = OrderbookUpdate {
+            symbol: "BTC-PERP".to_string(),
+            exchange: "paradex".to_string(),
+            orderbook: make_orderbook(103.0, 100.0),
+        };
+        
+        orderbook_tx.send(vest_update).await.unwrap();
+        orderbook_tx.send(paradex_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        let opp = opportunity_rx.try_recv().expect("Opportunity should be emitted");
+        assert!(opp.spread_percent > 4.0, "Expected large spread: {}", opp.spread_percent);
+        assert_eq!(opp.direction, SpreadDirection::AOverB);
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_spread_monitor_handles_missing_orderbook() {
+        let mut monitor = SpreadMonitor::new("ETH-PERP");
+        
+        let (orderbook_tx, orderbook_rx) = mpsc::channel::<OrderbookUpdate>(10);
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, _) = broadcast::channel::<()>(1);
+        let shutdown_rx = shutdown_tx.subscribe();
+        
+        let handle = tokio::spawn(async move {
+            monitor.run(orderbook_rx, opportunity_tx, shutdown_rx).await
+        });
+        
+        // Send only vest orderbook - no paradex
+        let vest_update = OrderbookUpdate {
+            symbol: "ETH-PERP".to_string(),
+            exchange: "vest".to_string(),
+            orderbook: make_orderbook(100.5, 100.0),
+        };
+        orderbook_tx.send(vest_update).await.unwrap();
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        
+        // Should NOT have received any opportunity (missing paradex)
+        assert!(opportunity_rx.try_recv().is_err(), "No opportunity without both orderbooks");
+        
+        shutdown_tx.send(()).unwrap();
+        let _ = handle.await;
+    }
+
+    #[test]
+    fn test_spread_calculation_performance_2ms() {
+        // NFR1: Spread calculation must complete in < 2ms
+        let calc = SpreadCalculator::new("vest", "paradex");
+        
+        // Create orderbooks with 100+ levels each (realistic depth)
+        let mut ob_a = Orderbook::new();
+        let mut ob_b = Orderbook::new();
+        
+        for i in 0..100 {
+            ob_a.asks.push(OrderbookLevel::new(42150.0 + (i as f64), 1.0 + (i as f64) * 0.1));
+            ob_a.bids.push(OrderbookLevel::new(42140.0 - (i as f64), 1.0 + (i as f64) * 0.1));
+            ob_b.asks.push(OrderbookLevel::new(42155.0 + (i as f64), 1.0 + (i as f64) * 0.1));
+            ob_b.bids.push(OrderbookLevel::new(42135.0 - (i as f64), 1.0 + (i as f64) * 0.1));
+        }
+        
+        // Single calculation should be <2ms
+        let start = std::time::Instant::now();
+        let result = calc.calculate_dual_spreads(&ob_a, &ob_b);
+        let elapsed = start.elapsed();
+        
+        assert!(result.is_some(), "Spread calculation should succeed");
+        assert!(
+            elapsed.as_millis() < 2,
+            "NFR1: Spread calculation took {:?} (must be <2ms)",
+            elapsed
+        );
+        
+        // Also test 1000 iterations stay under budget
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            let _ = calc.calculate_dual_spreads(&ob_a, &ob_b);
+        }
+        let elapsed = start.elapsed();
+        
+        assert!(
+            elapsed.as_millis() < 200,
+            "1000 calculations took {:?} (avg should be <0.2ms)",
+            elapsed
+        );
     }
 }
 

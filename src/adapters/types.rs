@@ -254,6 +254,8 @@ pub struct OrderResponse {
 pub struct OrderbookUpdate {
     /// Trading symbol
     pub symbol: String,
+    /// Exchange identifier (e.g., "vest", "paradex")
+    pub exchange: String,
     /// Updated orderbook snapshot
     pub orderbook: Orderbook,
 }
@@ -425,6 +427,7 @@ mod tests {
     fn test_orderbook_update_serialization() {
         let update = OrderbookUpdate {
             symbol: "BTC-PERP".to_string(),
+            exchange: "vest".to_string(),
             orderbook: Orderbook::new(),
         };
         let json = serde_json::to_string(&update).unwrap();

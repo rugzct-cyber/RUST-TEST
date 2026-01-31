@@ -22,7 +22,7 @@ pub mod state;
 pub mod vwap;
 
 // Explicit re-exports for spread module
-pub use spread::{SpreadCalculator, SpreadDirection, SpreadResult, SpreadTick};
+pub use spread::{SpreadCalculator, SpreadDirection, SpreadMonitor, SpreadMonitorError, SpreadResult, SpreadTick};
 
 // Explicit re-exports for vwap module
 pub use vwap::{calculate_vwap, VwapResult};

@@ -52,7 +52,7 @@ development_status:
   1-1-connexion-websocket-vest: done
   1-2-connexion-websocket-paradex: done
   1-3-reception-parsing-orderbooks: done
-  1-4-calcul-spread-entry-exit: backlog
+  1-4-calcul-spread-entry-exit: review
   1-5-detection-depassement-seuil: backlog
   epic-1-retrospective: optional
 

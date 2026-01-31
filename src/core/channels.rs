@@ -96,6 +96,7 @@ mod tests {
         // Create a test orderbook update
         let update = OrderbookUpdate {
             symbol: "BTC-PERP".to_string(),
+            exchange: "vest".to_string(),
             orderbook: Orderbook {
                 bids: vec![OrderbookLevel::new(100.0, 1.0)],
                 asks: vec![OrderbookLevel::new(101.0, 1.0)],
