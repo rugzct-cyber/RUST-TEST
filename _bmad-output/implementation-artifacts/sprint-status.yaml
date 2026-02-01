@@ -91,7 +91,15 @@ development_status:
   # - Both Vest and Paradex use REST API (parallel execution via tokio::join!)
   
   2-0-refactor-adapters: done  # Technical: Refactor vest.rs/paradex.rs into modular structure
-  2-3-execution-delta-neutral-simultanee: review
+  2-3-execution-delta-neutral-simultanee: done
+  # Delta-Neutral Live Testing (2026-02-01):
+  # - Parallel execution via tokio::join! working
+  # - Vest: IOC LIMIT with aggressive prices (Market not supported)
+  # - Paradex: MARKET orders working
+  # - get_position() for Vest implemented (was stub)
+  # - Size formatting: exactly 4 decimals for Vest API
+  # - Full cycle tested: Open → Verify → Close on mainnet
+  # - Open latency: ~358ms, Close latency: ~500ms
   2-4-retry-logic-echec-ordre: backlog
   2-5-auto-close-echec-leg: backlog  # Already covered: place_order(reduce_only=true)
   epic-2-retrospective: optional
