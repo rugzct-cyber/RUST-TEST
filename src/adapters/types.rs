@@ -341,6 +341,7 @@ mod tests {
             price: Some(42000.0),
             quantity: 0.1,
             time_in_force: TimeInForce::Ioc,
+            reduce_only: false,
         };
         assert_eq!(order.symbol, "BTC-PERP");
         assert_eq!(order.side, OrderSide::Buy);
@@ -380,6 +381,7 @@ mod tests {
             price: None, // Invalid for Limit!
             quantity: 0.1,
             time_in_force: TimeInForce::Ioc,
+            reduce_only: false,
         };
         assert_eq!(order.validate(), Some("Limit orders require a price"));
     }
@@ -394,6 +396,7 @@ mod tests {
             price: None,
             quantity: -0.1,
             time_in_force: TimeInForce::Ioc,
+            reduce_only: false,
         };
         assert_eq!(order.validate(), Some("Quantity must be positive"));
     }

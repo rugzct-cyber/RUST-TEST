@@ -90,6 +90,7 @@ development_status:
   # - Position closes successfully verified via final get_position() check
   # - Both Vest and Paradex use REST API (parallel execution via tokio::join!)
   
+  2-0-refactor-adapters: in-progress  # Technical: Refactor vest.rs/paradex.rs into modular structure
   2-3-execution-delta-neutral-simultanee: backlog
   2-4-retry-logic-echec-ordre: backlog
   2-5-auto-close-echec-leg: backlog  # Already covered: place_order(reduce_only=true)
