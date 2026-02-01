@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log(&format!("\n5. EXECUTION RESULT ({}ms total):", total_elapsed.as_millis()));
     
     // Vest result
-    log(&format!("   Vest (LONG):"));
+    log("   Vest (LONG):");
     match vest_result {
         Ok(resp) => {
             log(&format!("      ✅ Order ID: {}", resp.order_id));
@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Paradex result
-    log(&format!("   Paradex (SHORT):"));
+    log("   Paradex (SHORT):");
     match paradex_result {
         Ok(resp) => {
             log(&format!("      ✅ Order ID: {}", resp.order_id));

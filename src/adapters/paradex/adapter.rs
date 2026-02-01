@@ -610,6 +610,119 @@ impl ParadexAdapter {
 }
 
 // =============================================================================
+// Public API: Leverage/Margin Methods
+// =============================================================================
+
+impl ParadexAdapter {
+    /// Get current leverage for a market
+    /// 
+    /// Uses GET /v1/account/margin?market={symbol} to fetch margin configuration.
+    /// Returns None if no margin config exists for this market.
+    pub async fn get_leverage(&self, symbol: &str) -> ExchangeResult<Option<u32>> {
+        if !self.connected {
+            return Err(ExchangeError::ConnectionFailed("Not connected".into()));
+        }
+
+        let jwt = self.jwt_token.as_ref()
+            .ok_or_else(|| ExchangeError::AuthenticationFailed("No JWT token".into()))?;
+
+        let url = format!("{}/account/margin?market={}", self.config.rest_base_url(), symbol);
+        tracing::debug!("Paradex get_leverage: GET {}", url);
+
+        let response = self.http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", jwt))
+            .send()
+            .await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("Margin request failed: {}", e)))?;
+
+        let status = response.status();
+        let body = response.text().await
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+
+        tracing::debug!("Paradex margin response: status={}, body={}", status, body);
+
+        if !status.is_success() {
+            // 404 means no margin config for this market - return None
+            if status.as_u16() == 404 {
+                return Ok(None);
+            }
+            return Err(ExchangeError::OrderRejected(format!(
+                "Get margin failed ({} {}): {}",
+                status.as_u16(), status, body
+            )));
+        }
+
+        let margin_response: super::types::ParadexMarginResponse = serde_json::from_str(&body)
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to parse margin: {} - body: {}", e, body)))?;
+
+        // Find leverage in configs for this market
+        if let Some(configs) = margin_response.configs {
+            for config in configs {
+                if config.market.as_deref() == Some(symbol) {
+                    return Ok(config.leverage);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Set leverage for a market
+    ///
+    /// Uses POST /v1/account/margin/{market} with body {"leverage": X, "margin_type": "CROSS"}.
+    /// Returns the confirmed leverage value on success.
+    pub async fn set_leverage(&self, symbol: &str, leverage: u32) -> ExchangeResult<u32> {
+        if !self.connected {
+            return Err(ExchangeError::ConnectionFailed("Not connected".into()));
+        }
+
+        let jwt = self.jwt_token.as_ref()
+            .ok_or_else(|| ExchangeError::AuthenticationFailed("No JWT token".into()))?;
+
+        let url = format!("{}/account/margin/{}", self.config.rest_base_url(), symbol);
+
+        let body = serde_json::json!({
+            "leverage": leverage,
+            "margin_type": "CROSS"
+        });
+
+        tracing::debug!("Paradex set_leverage: POST {} body={}", url, body);
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", jwt))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ExchangeError::OrderRejected(format!("Leverage request failed: {}", e)))?;
+
+        let status = response.status();
+        let response_body = response.text().await
+            .map_err(|e| ExchangeError::OrderRejected(format!("Failed to read response: {}", e)))?;
+
+        tracing::debug!("Paradex set_leverage response: status={}, body={}", status, response_body);
+
+        if !status.is_success() {
+            return Err(ExchangeError::OrderRejected(format!(
+                "Set leverage failed ({} {}): {}",
+                status.as_u16(), status, response_body
+            )));
+        }
+
+        let leverage_response: super::types::ParadexSetMarginResponse = serde_json::from_str(&response_body)
+            .map_err(|e| ExchangeError::OrderRejected(format!(
+                "Failed to parse leverage response: {} - body: {}",
+                e, response_body
+            )))?;
+
+        leverage_response.leverage
+            .ok_or_else(|| ExchangeError::OrderRejected("No leverage value in response".into()))
+    }
+}
+
+// =============================================================================
 // ExchangeAdapter Trait Implementation
 // =============================================================================
 

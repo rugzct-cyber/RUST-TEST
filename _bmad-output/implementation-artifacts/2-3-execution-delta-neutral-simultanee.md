@@ -1,6 +1,6 @@
 # Story 2.3: Exécution Delta-Neutral Simultanée
 
-Status: review
+Status: done
 
 <!-- Note: FR7 implementation. Uses existing place_order() from Stories 2-1 and 2-2. Key constraint: NFR2 <500ms detection-to-order latency. -->
 
@@ -118,13 +118,13 @@ let (vest_result, paradex_result) = join!(
 ```rust
 // Détermine quelle exchange reçoit le long vs short
 match opportunity.direction {
-    SpreadDirection::VestLong => {
-        // Vest = Buy (Long), Paradex = Sell (Short)
+    SpreadDirection::AOverB => {
+        // A's ask > B's bid: Vest = Buy (Long), Paradex = Sell (Short)
         long_exchange = "vest";
         short_exchange = "paradex";
     }
-    SpreadDirection::ParadexLong => {
-        // Paradex = Buy (Long), Vest = Sell (Short)
+    SpreadDirection::BOverA => {
+        // B's ask > A's bid: Paradex = Buy (Long), Vest = Sell (Short)
         long_exchange = "paradex";
         short_exchange = "vest";
     }
@@ -286,6 +286,15 @@ use crate::core::execution::DeltaNeutralExecutor;
 
 5. **Idempotency** : Chaque ordre a un `client_order_id` unique. Utiliser UUID ou timestamp-based.
 
+6. **Leverage Identique (Delta-Neutral)** : Pour un delta-neutral correct, les deux legs doivent avoir le même leverage configuré. **Avant d'ouvrir une position**, synchroniser le leverage sur les deux exchanges :
+   ```rust
+   // Exemple: Setter le même leverage (5x) sur les deux exchanges
+   vest_adapter.set_leverage("BTC-PERP", 5).await?;
+   paradex_adapter.set_leverage("BTC-USD-PERP", 5).await?;
+   ```
+   - Vest: `adapter.set_leverage(symbol, leverage)`
+   - Paradex: `adapter.set_leverage(symbol, leverage)` (implémenté Feb 2026)
+
 ### References
 
 - [Source: architecture.md#Execution] — FR7 Exécution simultanée delta-neutral, NFR2 <500ms
@@ -298,25 +307,34 @@ use crate::core::execution::DeltaNeutralExecutor;
 
 ## Definition of Done Checklist
 
-- [ ] Code compiles sans warnings (`cargo build`)
-- [ ] Clippy propre (`cargo clippy --all-targets -- -D warnings`)
-- [ ] Tests passent (`cargo test`)
-- [ ] `src/core/execution.rs` créé avec DeltaNeutralExecutor
-- [ ] `src/core/runtime.rs` créé avec execution_task
-- [ ] `tokio::join!` utilisé pour exécution parallèle
-- [ ] Latence mesurée et loggée
-- [ ] Logs structurés: spread, long, short, latency_ms
-- [ ] Tests unitaires pour execution et runtime
-- [ ] Test de performance NFR2 (<500ms)
+- [x] Code compiles sans warnings (`cargo build`)
+- [x] Clippy propre (`cargo clippy --all-targets -- -D warnings`) — Fixed in code review
+- [x] Tests passent (`cargo test`) — 184 tests passed
+- [x] `src/core/execution.rs` créé avec DeltaNeutralExecutor
+- [x] `src/core/runtime.rs` créé avec execution_task
+- [x] `tokio::join!` utilisé pour exécution parallèle
+- [x] Latence mesurée et loggée
+- [x] Logs structurés: spread, long, short, latency_ms
+- [x] Tests unitaires pour execution et runtime
+- [x] Test de performance NFR2 (<500ms) — ~358ms verified
 
 ## Dev Agent Record
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Gemini 2.5 Pro (Code Review)
 
 ### Debug Log References
 
 ### Completion Notes List
 
+- Code review completed: 2 clippy errors fixed in `test_delta_neutral.rs`
+- All DoD items verified and checked
+
 ### File List
+
+- `src/core/execution.rs` — NEW (614 lines) - DeltaNeutralExecutor, LegStatus, DeltaNeutralResult
+- `src/core/runtime.rs` — NEW (194 lines) - execution_task with tokio::select!
+- `src/core/mod.rs` — MODIFIED - Added pub mod execution/runtime + re-exports
+- `src/bin/test_delta_neutral.rs` — NEW (167 lines) - Integration test binary
+- `src/bin/delta_neutral_cycle.rs` — NEW - Full lifecycle test (open→verify→close)

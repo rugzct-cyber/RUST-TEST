@@ -64,6 +64,16 @@ pub fn order_timeout_ms() -> u64 {
         .unwrap_or(2000)
 }
 
+/// Retry delay between failed order attempts in milliseconds (default: 500ms)
+///
+/// Environment variable: `RETRY_DELAY_MS`
+pub fn retry_delay_ms() -> u64 {
+    std::env::var("RETRY_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500)
+}
+
 // =============================================================================
 // Detection & Monitoring Intervals
 // =============================================================================
@@ -168,6 +178,7 @@ pub fn log_configuration() {
     tracing::info!("Execution:");
     tracing::info!("  - Max retry attempts: {}", max_retry_attempts());
     tracing::info!("  - Order timeout: {}ms", order_timeout_ms());
+    tracing::info!("  - Retry delay: {}ms", retry_delay_ms());
 
     tracing::info!("Detection:");
     tracing::info!("  - Directional detection interval: {:?}", directional_detection_interval());
@@ -197,6 +208,7 @@ mod tests {
         assert_eq!(max_logs_in_memory(), 50);
         assert_eq!(max_retry_attempts(), 3);
         assert_eq!(order_timeout_ms(), 2000);
+        assert_eq!(retry_delay_ms(), 500);
     }
 
     #[test]
@@ -210,5 +222,18 @@ mod tests {
 
         // Cleanup
         std::env::remove_var("MAX_RETRY_ATTEMPTS");
+    }
+
+    #[test]
+    #[serial(env)]
+    fn test_retry_delay_env_override() {
+        // Set environment variable
+        std::env::set_var("RETRY_DELAY_MS", "1000");
+
+        // Should use env value
+        assert_eq!(retry_delay_ms(), 1000);
+
+        // Cleanup
+        std::env::remove_var("RETRY_DELAY_MS");
     }
 }

@@ -252,6 +252,48 @@ pub struct ParadexPositionData {
     pub realized_pnl: String,
 }
 
+// =============================================================================
+// Margin/Leverage Types
+// =============================================================================
+
+/// Margin configuration for a market from GET /account/margin
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fields used by serde for API deserialization
+pub struct ParadexMarginConfig {
+    /// Leverage value (1 up to market's maximum)
+    pub leverage: Option<u32>,
+    /// Margin type: "CROSS" or "ISOLATED"
+    pub margin_type: Option<String>,
+    /// Market symbol
+    pub market: Option<String>,
+}
+
+/// Response from GET /account/margin
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fields used by serde for API deserialization
+pub struct ParadexMarginResponse {
+    /// Account ID
+    pub account: Option<String>,
+    /// List of margin configurations per market
+    pub configs: Option<Vec<ParadexMarginConfig>>,
+    /// Margin methodology (cross_margin/portfolio_margin)
+    pub margin_methodology: Option<String>,
+}
+
+/// Response from POST /account/margin/{market}
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fields used by serde for API deserialization
+pub struct ParadexSetMarginResponse {
+    /// Account ID
+    pub account: Option<String>,
+    /// Leverage value that was set
+    pub leverage: Option<u32>,
+    /// Margin type: "CROSS" or "ISOLATED"
+    pub margin_type: Option<String>,
+    /// Market symbol
+    pub market: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

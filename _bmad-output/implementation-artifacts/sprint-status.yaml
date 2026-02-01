@@ -100,8 +100,8 @@ development_status:
   # - Size formatting: exactly 4 decimals for Vest API
   # - Full cycle tested: Open → Verify → Close on mainnet
   # - Open latency: ~358ms, Close latency: ~500ms
-  2-4-retry-logic-echec-ordre: backlog
-  2-5-auto-close-echec-leg: backlog  # Already covered: place_order(reduce_only=true)
+  2-4-retry-logic-echec-ordre: done
+  2-5-auto-close-echec-leg: review  # NFR7: Auto-close exposed leg on partial failure
   epic-2-retrospective: optional
 
   # Epic 3: State Persistence

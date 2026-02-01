@@ -11,7 +11,8 @@ use uuid::Uuid;
 
 const VEST_PAIR: &str = "BTC-PERP";
 const PARADEX_PAIR: &str = "BTC-USD-PERP";
-const BTC_QTY: f64 = 0.0002;  // ~$15 at $77k
+const BTC_QTY: f64 = 0.005;     // User requested 0.005 BTC
+const LEVERAGE: u32 = 50;       // 50x leverage
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -45,6 +46,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vest_conn?;
     paradex_conn?;
     log("   ✅ Both adapters connected");
+
+    // =========================================================================
+    // PHASE 0.5: SET LEVERAGE (50x on both exchanges)
+    // =========================================================================
+    log(&format!("\n⚙️  PHASE 0.5: Setting leverage to {}x on both exchanges...", LEVERAGE));
+    
+    let vest_lev_result = vest_adapter.set_leverage(VEST_PAIR, LEVERAGE).await;
+    let paradex_lev_result = paradex_adapter.set_leverage(PARADEX_PAIR, LEVERAGE).await;
+    
+    match &vest_lev_result {
+        Ok(lev) => log(&format!("   Vest: ✅ Leverage set to {}x", lev)),
+        Err(e) => log(&format!("   Vest: ⚠️  Set leverage failed: {} (continuing...)", e)),
+    }
+    match &paradex_lev_result {
+        Ok(lev) => log(&format!("   Paradex: ✅ Leverage set to {}x", lev)),
+        Err(e) => log(&format!("   Paradex: ⚠️  Set leverage failed: {} (continuing...)", e)),
+    }
 
     // Subscribe to orderbooks for pricing
     let (vest_sub, paradex_sub) = tokio::join!(
