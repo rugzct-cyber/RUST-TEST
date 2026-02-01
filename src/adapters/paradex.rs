@@ -1643,6 +1643,7 @@ impl ExchangeAdapter for ParadexAdapter {
         }
         
         // Parse successful response
+        tracing::info!("Paradex order response: {}", text);
         let resp: ParadexOrderResponse = serde_json::from_str(&text)
             .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid order response: {} - {}", e, text)))?;
         
@@ -1898,15 +1899,79 @@ impl ExchangeAdapter for ParadexAdapter {
             ));
         }
 
-        // TODO: Implement actual REST call to GET /positions endpoint
-        // For now, return None (no position) as a placeholder
-        let url = format!("{}/positions?market={}", self.config.rest_base_url(), symbol);
+        // GET /positions endpoint
+        let url = format!("{}/positions", self.config.rest_base_url());
         
-        tracing::debug!("Paradex get_position: GET {} (stub)", url);
+        let response = self.http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", jwt))
+            .send()
+            .await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("Request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::InvalidResponse(
+                format!("GET /positions failed ({}): {}", status, text)
+            ));
+        }
+
+        let text = response.text().await
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
         
-        // Stub: Return None to indicate no position
-        // Real implementation will fetch from Paradex API
-        let _ = (jwt, url); // Suppress unused warnings for now
+        // Parse response - Paradex returns { "results": [...] }
+        #[derive(Debug, Deserialize)]
+        struct PositionsResponse {
+            results: Option<Vec<ParadexPosition>>,
+        }
+        
+        #[derive(Debug, Deserialize)]
+        struct ParadexPosition {
+            market: String,
+            side: String,  // "LONG" or "SHORT"
+            size: String,  // Size as string
+            #[serde(default)]
+            average_entry_price: Option<String>,
+            #[serde(default)]
+            unrealized_pnl: Option<String>,
+        }
+        
+        let positions_resp: PositionsResponse = serde_json::from_str(&text)
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text)))?;
+        
+        // Find position for the requested symbol
+        if let Some(positions) = positions_resp.results {
+            for pos in positions {
+                if pos.market == symbol {
+                    let size: f64 = pos.size.parse().unwrap_or(0.0);
+                    if size.abs() < 1e-10 {
+                        // Zero position = no position
+                        continue;
+                    }
+                    
+                    let side = if pos.side == "LONG" { "long" } else { "short" };
+                    let entry_price: f64 = pos.average_entry_price
+                        .as_deref()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    let unrealized_pnl: f64 = pos.unrealized_pnl
+                        .as_deref()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    
+                    return Ok(Some(PositionInfo {
+                        symbol: symbol.to_string(),
+                        quantity: size.abs(),
+                        side: side.to_string(),
+                        entry_price,
+                        unrealized_pnl,
+                    }));
+                }
+            }
+        }
+        
+        // No position found for this symbol
         Ok(None)
     }
 
