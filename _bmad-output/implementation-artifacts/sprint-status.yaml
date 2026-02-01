@@ -65,11 +65,18 @@ development_status:
 
   # Epic 2: Delta-Neutral Execution
   epic-2: in-progress
-  2-1-placement-ordre-long: review
+  2-1-placement-ordre-long: done
+  # Vest Adapter Enhancements (2026-02-01):
+  # - place_order() with EIP-712 signing (personal_sign)
+  # - set_leverage() / get_leverage() - leverage management
+  # - get_positions() / get_account_info() - position tracking
+  # - pre_sign_order() + send_presigned_order() - latency optimization (~0.16ms signing in release)
+  # - Round-trip tested: BUY + SELL with reduce_only=true, leverage 5x confirmed
+  # - Market orders (taker) only - no need for cancel_order (Story 4.6 simplified)
   2-2-placement-ordre-short: backlog
   2-3-execution-delta-neutral-simultanee: backlog
   2-4-retry-logic-echec-ordre: backlog
-  2-5-auto-close-echec-leg: backlog
+  2-5-auto-close-echec-leg: backlog  # Already covered: place_order(reduce_only=true)
   epic-2-retrospective: optional
 
   # Epic 3: State Persistence

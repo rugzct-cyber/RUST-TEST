@@ -169,6 +169,8 @@ pub struct OrderRequest {
     pub quantity: f64,
     /// Time in force
     pub time_in_force: TimeInForce,
+    /// Reduce only - if true, only reduces existing position (for closing)
+    pub reduce_only: bool,
 }
 
 impl OrderRequest {
@@ -209,6 +211,7 @@ impl OrderRequest {
             price: Some(price),
             quantity,
             time_in_force,
+            reduce_only: false, // New orders open positions by default
         }
     }
 

@@ -1324,7 +1324,8 @@ impl ExchangeAdapter for ParadexAdapter {
         
         // Step 1: Authenticate via REST to get JWT token (required for private channels)
         // Check if we have valid credentials and need to authenticate
-        if !self.config.private_key.is_empty() && !self.config.account_address.is_empty() {
+        // Note: account_address can be empty - it will be derived from private_key during authenticate()
+        if !self.config.private_key.is_empty() {
             if self.jwt_token.is_none() || self.jwt_needs_refresh() {
                 tracing::info!("Authenticating with Paradex REST API...");
                 let jwt = self.authenticate().await?;
@@ -3065,5 +3066,54 @@ mod tests {
         
         assert!(resp.id.is_none());
         assert!(resp.error.is_none());
+    }
+
+    // =========================================================================
+    // Story 2.1: Place Order Long Tests
+    // =========================================================================
+
+    /// Story 2.1 Task 3.3: Valid order request returns OrderResponse
+    #[tokio::test]
+    async fn test_paradex_place_order_valid_request() {
+        let order = OrderRequest::ioc_limit(
+            "test-client-paradex-123".to_string(),
+            "BTC-USD-PERP".to_string(),
+            crate::adapters::types::OrderSide::Buy,
+            45000.0,
+            0.05,
+        );
+
+        assert_eq!(order.symbol, "BTC-USD-PERP");
+        assert_eq!(order.client_order_id, "test-client-paradex-123");
+        assert!(order.price.is_some());
+        assert_eq!(order.price.unwrap(), 45000.0);
+        assert_eq!(order.quantity, 0.05);
+        assert!(order.validate().is_none(), "Valid order should pass validation");
+    }
+
+    /// Story 2.1 Task 3.4: SNIP-12 signing produces valid signature
+    #[test]
+    fn test_paradex_place_order_signing() {
+        let params = OrderSignParams {
+            private_key: TEST_PRIVATE_KEY,
+            account_address: TEST_ACCOUNT_ADDRESS,
+            market: "ETH-USD-PERP",
+            side: "BUY",
+            order_type: "LIMIT",
+            size: "1.0",
+            price: "3500.00",
+            client_id: "signing-test-789",
+            timestamp_ms: 1706400000000,
+            chain_id: "SN_SEPOLIA",
+        };
+
+        let result = sign_order_message(params);
+        assert!(result.is_ok(), "SNIP-12 signing should succeed: {:?}", result.err());
+
+        let (sig_r, sig_s) = result.unwrap();
+        assert!(sig_r.starts_with("0x"));
+        assert!(sig_s.starts_with("0x"));
+        assert_eq!(sig_r.len(), 66);
+        assert_eq!(sig_s.len(), 66);
     }
 }

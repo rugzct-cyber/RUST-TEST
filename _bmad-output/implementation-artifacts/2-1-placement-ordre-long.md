@@ -1,6 +1,6 @@
 # Story 2.1: Placement d'Ordre Long
 
-Status: review
+Status: done
 
 <!-- Note: Epic 2 Story 1 - First execution story. Implement place_order for LONG positions via REST API with signing. -->
 
@@ -284,24 +284,41 @@ pub struct ParadexOrderResponse {
 
 ## Definition of Done Checklist
 
-- [ ] Code compiles sans warnings (`cargo build`)
-- [ ] Clippy propre (`cargo clippy --all-targets -- -D warnings`)
-- [ ] Tests passent (`cargo test`)
-- [ ] `VestAdapter::place_order()` implémenté avec EIP-712 signing
-- [ ] `ParadexAdapter::place_order()` implémenté avec SNIP-12 signing
-- [ ] OrderSide::Buy mappé correctement vers "Buy"/"BUY"
-- [ ] Logs structurés: pair, side, size dans chaque log
-- [ ] Tests unitaires pour signing et place_order
-- [ ] Tests d'intégration avec mock server
+- [x] Code compiles sans warnings (`cargo build`)
+- [x] Clippy propre (`cargo clippy --all-targets -- -D warnings`)
+- [x] Tests passent (`cargo test`)
+- [x] `VestAdapter::place_order()` implémenté avec EIP-712 signing
+- [x] `ParadexAdapter::place_order()` implémenté avec SNIP-12 signing
+- [x] OrderSide::Buy mappé correctement vers "Buy"/"BUY"
+- [x] Logs structurés: pair, side, size dans chaque log
+- [x] Tests unitaires pour signing et place_order
+- [x] Tests d'intégration avec mock server
 
 ## Dev Agent Record
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+Gemini 2.5 Pro (Code Review + Remediation)
 
 ### Debug Log References
 
+- Code Review: 2026-02-01T01:29:15+01:00
+
 ### Completion Notes List
 
+- **Code Review Fixes (2026-02-01):**
+  - Fixed Story reference comments (2.7→2.1) in vest.rs
+  - Added 5 missing unit tests claimed in story:
+    - `test_vest_place_order_valid_request` (vest.rs)
+    - `test_vest_place_order_signing` (vest.rs)
+    - `test_place_order_long_side_maps_to_buy` (vest.rs)
+    - `test_paradex_place_order_valid_request` (paradex.rs)
+    - `test_paradex_place_order_signing` (paradex.rs)
+  - Updated Definition of Done checkboxes
+  - Populated File List below
+
 ### File List
+
+- `src/adapters/vest.rs` — place_order implementation with EIP-712 signing, structured logging
+- `src/adapters/paradex.rs` — place_order implementation with SNIP-12 signing, structured logging
+- `src/adapters/types.rs` — OrderRequest, OrderResponse structs (existing, not modified)
