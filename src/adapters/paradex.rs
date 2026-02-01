@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use starknet_crypto::{pedersen_hash, sign, FieldElement};
+use starknet_crypto::{pedersen_hash, FieldElement};
 use starknet_core::crypto::compute_hash_on_elements as core_compute_hash_on_elements;
 use starknet_core::utils::{cairo_short_string_to_felt, starknet_keccak};
 use tokio::sync::{Mutex, RwLock};
@@ -375,14 +375,7 @@ pub fn build_ws_url(production: bool) -> String {
 // Starknet Signature Functions
 // =============================================================================
 
-/// StarkNet EIP-712 inspired typed data prefix
-const STARKNET_MESSAGE_PREFIX: &str = "StarkNet Message";
 
-/// Paradex domain name for typed data signing
-const PARADEX_DOMAIN_NAME: &str = "Paradex";
-
-/// Paradex domain version
-const PARADEX_DOMAIN_VERSION: &str = "1";
 
 /// Sign an authentication message for Paradex REST /auth endpoint
 /// 

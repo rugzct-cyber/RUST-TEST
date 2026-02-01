@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
     // Sync and check orderbook
-    adapter.sync_orderbooks();
+    adapter.sync_orderbooks().await;
     if let Some(ob) = adapter.get_orderbook(symbol) {
         info!("\n📈 Orderbook received:");
         info!("   Symbol: {}", symbol);
