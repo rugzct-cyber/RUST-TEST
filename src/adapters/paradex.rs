@@ -1633,13 +1633,28 @@ impl ExchangeAdapter for ParadexAdapter {
             String::new()
         });
         
-        Ok(OrderResponse {
+        let order_response = OrderResponse {
             order_id,
             client_order_id: resp.client_id.unwrap_or_else(|| order.client_order_id.clone()),
             status: order_status,
             filled_quantity,
             avg_price,
-        })
+        };
+        
+        // Story 2.1 AC#1: Structured log for order placement
+        let side_log = match order.side {
+            OrderSide::Buy => "long",
+            OrderSide::Sell => "short",
+        };
+        tracing::info!(
+            pair = %order.symbol,
+            side = side_log,
+            size = %order.quantity,
+            order_id = %order_response.order_id,
+            "Order placed"
+        );
+        
+        Ok(order_response)
     }
 
     /// Cancel an order on Paradex

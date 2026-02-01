@@ -63,3 +63,7 @@ chrono = { version = "0.4", features = ["serde"] }
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"  # CR-1 fix: Forces sequential execution of env-dependent tests
+
+[[bin]]
+name = "monitor"
+path = "src/bin/monitor.rs"

@@ -80,10 +80,22 @@ impl VestConfig {
     pub fn from_env() -> ExchangeResult<Self> {
         let primary_addr = std::env::var("VEST_PRIMARY_ADDR")
             .map_err(|_| ExchangeError::AuthenticationFailed("VEST_PRIMARY_ADDR not set".into()))?;
+        if primary_addr.is_empty() {
+            return Err(ExchangeError::AuthenticationFailed("VEST_PRIMARY_ADDR is empty".into()));
+        }
+        
         let primary_key = std::env::var("VEST_PRIMARY_KEY")
             .map_err(|_| ExchangeError::AuthenticationFailed("VEST_PRIMARY_KEY not set".into()))?;
+        if primary_key.is_empty() {
+            return Err(ExchangeError::AuthenticationFailed("VEST_PRIMARY_KEY is empty".into()));
+        }
+        
         let signing_key = std::env::var("VEST_SIGNING_KEY")
             .map_err(|_| ExchangeError::AuthenticationFailed("VEST_SIGNING_KEY not set".into()))?;
+        if signing_key.is_empty() {
+            return Err(ExchangeError::AuthenticationFailed("VEST_SIGNING_KEY is empty".into()));
+        }
+        
         let account_group: u8 = std::env::var("VEST_ACCOUNT_GROUP")
             .unwrap_or_else(|_| "0".to_string())
             .parse()
@@ -1449,7 +1461,22 @@ impl ExchangeAdapter for VestAdapter {
             .map_err(|e| ExchangeError::ConnectionFailed(format!("Order request failed: {}", e)))?;
 
         // 7. Parse response
-        self.parse_order_response(response, &order.client_order_id).await
+        let order_response = self.parse_order_response(response, &order.client_order_id).await?;
+        
+        // Story 2.1 AC#1: Structured log for order placement
+        let side_log = match order.side {
+            crate::adapters::types::OrderSide::Buy => "long",
+            crate::adapters::types::OrderSide::Sell => "short",
+        };
+        tracing::info!(
+            pair = %order.symbol,
+            side = side_log,
+            size = %order.quantity,
+            order_id = %order_response.order_id,
+            "Order placed"
+        );
+        
+        Ok(order_response)
     }
 
     async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {

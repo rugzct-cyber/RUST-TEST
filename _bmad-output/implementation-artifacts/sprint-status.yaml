@@ -54,11 +54,18 @@ development_status:
   1-3-reception-parsing-orderbooks: done
   1-4-calcul-spread-entry-exit: done
   1-5-detection-depassement-seuil: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
+
+  # Prep Sprint: Epic 1 Retrospective Action Items (C1, C2, C3)
+  # Completed before Epic 2 per retrospective recommendations
+  prep-live-monitor: done  # C1+C2: Live monitor created (src/bin/monitor.rs), validated with real data
+  # - Vest: BTC-PERP, Paradex: BTC-USD-PERP
+  # - 10fps polling, spread calculations working
+  # - Validated 2026-02-01
 
   # Epic 2: Delta-Neutral Execution
-  epic-2: backlog
-  2-1-placement-ordre-long: backlog
+  epic-2: in-progress
+  2-1-placement-ordre-long: review
   2-2-placement-ordre-short: backlog
   2-3-execution-delta-neutral-simultanee: backlog
   2-4-retry-logic-echec-ordre: backlog
