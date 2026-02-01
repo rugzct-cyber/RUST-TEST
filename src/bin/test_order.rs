@@ -168,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
     info!("   Est. Value: ~${:.2}", btc_quantity * market_price);
 
     // Generate unique client order ID
-    let client_order_id = format!("test-{}", Uuid::new_v4().to_string()[..8].to_string());
+    let client_order_id = format!("test-{}", &Uuid::new_v4().to_string()[..8]);
 
     // Create MARKET order request (taker order - executes immediately)
     // For market BUY, use limit price ABOVE ask to allow slippage
@@ -256,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
             let sell_limit_price = best_bid * 0.995; // 0.5% slippage tolerance
             
             let close_order = OrderRequest {
-                client_order_id: format!("close-{}", Uuid::new_v4().to_string()[..8].to_string()),
+                client_order_id: format!("close-{}", &Uuid::new_v4().to_string()[..8]),
                 symbol: VEST_PAIR.to_string(),
                 side: OrderSide::Sell, // SELL to close long position
                 order_type: OrderType::Market,

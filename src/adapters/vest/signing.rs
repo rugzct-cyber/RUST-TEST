@@ -200,7 +200,7 @@ pub async fn sign_order(config: &VestConfig, order: &OrderRequest) -> ExchangeRe
     let is_buy = matches!(order.side, OrderSide::Buy);
 
     // Size and price as strings (price must have exactly 2 decimal places per Vest API)
-    let size_str = format!("{}", order.quantity);
+    let size_str = format!("{:.4}", order.quantity);
     let limit_price_str = order.price.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "0.00".to_string());
 
     // reduceOnly - from order request (true for closing positions)

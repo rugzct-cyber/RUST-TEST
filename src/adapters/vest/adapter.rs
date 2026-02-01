@@ -213,7 +213,7 @@ impl VestAdapter {
         };
 
         let is_buy = matches!(order.side, crate::adapters::types::OrderSide::Buy);
-        let size_str = format!("{}", order.quantity);
+        let size_str = format!("{:.4}", order.quantity);
         let price_str = order
             .price
             .map(|p| format!("{:.2}", p))
@@ -1093,7 +1093,7 @@ impl ExchangeAdapter for VestAdapter {
             },
             "symbol": order.symbol,
             "isBuy": is_buy,
-            "size": format!("{}", order.quantity),
+            "size": format!("{:.4}", order.quantity),
             "limitPrice": order.price.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "0.00".to_string()),
             "reduceOnly": order.reduce_only,
         });
@@ -1308,16 +1308,52 @@ impl ExchangeAdapter for VestAdapter {
             return Err(ExchangeError::ConnectionFailed("Not connected".into()));
         }
 
-        let api_key = self
-            .api_key
-            .as_ref()
-            .ok_or_else(|| ExchangeError::AuthenticationFailed("Not registered".into()))?;
+        // Use get_positions() to find the position for this symbol
+        let positions = self.get_positions().await?;
+        
+        for pos in positions {
+            let pos_symbol = pos.symbol.as_deref().unwrap_or("");
+            if pos_symbol == symbol {
+                // Parse size - negative = short, positive = long
+                let size = pos.size.as_ref()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                
+                // Skip if no position (size is 0)
+                if size.abs() < 0.0000001 {
+                    continue;
+                }
+                
+                let side = if size >= 0.0 { "long" } else { "short" };
+                let quantity = size.abs();
+                
+                let entry_price = pos.entry_price.as_ref()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+                    
+                let unrealized_pnl = pos.unrealized_pnl.as_ref()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
 
-        let url = format!("{}/positions?symbol={}", self.config.rest_base_url(), symbol);
+                tracing::debug!(
+                    symbol = symbol,
+                    side = side,
+                    quantity = quantity,
+                    entry_price = entry_price,
+                    "Vest position found"
+                );
 
-        tracing::debug!("Vest get_position: GET {} (stub)", url);
-
-        let _ = (api_key, url);
+                return Ok(Some(PositionInfo {
+                    symbol: symbol.to_string(),
+                    side: side.to_string(),
+                    quantity,
+                    entry_price,
+                    unrealized_pnl,
+                }));
+            }
+        }
+        
+        tracing::debug!(symbol = symbol, "Vest: No position found for symbol");
         Ok(None)
     }
 

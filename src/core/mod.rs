@@ -16,7 +16,9 @@
 //! re-exports below to make them part of the public API.
 
 pub mod channels;
+pub mod execution;
 pub mod logging;
+pub mod runtime;
 pub mod spread;
 pub mod state;
 pub mod vwap;
@@ -39,3 +41,8 @@ pub use logging::{
     SanitizedValue, DEFAULT_LOG_LEVEL, SENSITIVE_FIELD_PATTERNS,
 };
 
+// Explicit re-exports for execution module (Story 2.3)
+pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
+
+// Explicit re-exports for runtime module (Story 2.3)
+pub use runtime::execution_task;

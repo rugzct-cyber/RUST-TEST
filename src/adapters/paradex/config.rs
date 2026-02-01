@@ -127,14 +127,12 @@ mod tests {
 
     #[test]
     fn test_paradex_config_urls() {
-        let mut config = ParadexConfig::default();
+        let prod_config = ParadexConfig { production: true, ..Default::default() };
+        assert!(prod_config.rest_base_url().contains("prod"));
+        assert!(prod_config.ws_base_url().contains("prod"));
         
-        config.production = true;
-        assert!(config.rest_base_url().contains("prod"));
-        assert!(config.ws_base_url().contains("prod"));
-        
-        config.production = false;
-        assert!(config.rest_base_url().contains("testnet"));
-        assert!(config.ws_base_url().contains("testnet"));
+        let test_config = ParadexConfig { production: false, ..Default::default() };
+        assert!(test_config.rest_base_url().contains("testnet"));
+        assert!(test_config.ws_base_url().contains("testnet"));
     }
 }

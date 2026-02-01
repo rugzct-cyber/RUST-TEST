@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..5 {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         adapter.sync_orderbooks().await;
-        if adapter.get_orderbook(PARADEX_PAIR).map_or(false, |ob| !ob.bids.is_empty()) {
+        if adapter.get_orderbook(PARADEX_PAIR).is_some_and(|ob| !ob.bids.is_empty()) {
             log(&format!("   Got orderbook at {}s", i + 1));
             break;
         }
