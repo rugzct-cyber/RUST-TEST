@@ -190,6 +190,7 @@ pub(crate) enum ParadexWsMessage {
 
 /// Response from POST /orders (Paradex API)
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields used for API deserialization
 pub(crate) struct ParadexOrderResponse {
     /// Order ID assigned by Paradex
     pub id: Option<String>,
@@ -227,6 +228,7 @@ pub(crate) struct ParadexErrorResponse {
 
 /// Order error response (alternate format)
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // May be used for error parsing
 pub(crate) struct ParadexOrderError {
     pub code: i32,
     pub message: String,
@@ -234,6 +236,7 @@ pub(crate) struct ParadexOrderError {
 
 /// Position data from Paradex API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Used for position handling
 pub struct ParadexPositionData {
     /// Market symbol
     pub market: String,
