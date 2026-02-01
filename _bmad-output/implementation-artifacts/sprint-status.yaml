@@ -73,7 +73,23 @@ development_status:
   # - pre_sign_order() + send_presigned_order() - latency optimization (~0.16ms signing in release)
   # - Round-trip tested: BUY + SELL with reduce_only=true, leverage 5x confirmed
   # - Market orders (taker) only - no need for cancel_order (Story 4.6 simplified)
-  2-2-placement-ordre-short: backlog
+  #
+  # Paradex Adapter Enhancements (2026-02-01):
+  # - place_order() with SNIP-12 signing (StarkNet typed data)
+  # - Dynamic chain_id from /system/config (PRIVATE_SN_PARACLEAR_MAINNET)
+  # - JWT auth with proper expiry calculation (ms not s)
+  # - Market orders working (taker), LIMIT+IOC supported
+  # - Round-trip tested: MARKET BUY + MARKET SELL with reduce_only=true
+  # - Latency profiling: ~250ms (99.9% HTTP, crypto negligible)
+  
+  2-2-placement-ordre-short: done
+  # Paradex Short Orders (2026-02-01):
+  # - get_position() implemented - fetches /positions endpoint
+  # - reduce_only=true tested for closing positions
+  # - Full lifecycle: open LONG -> get_position -> close with SELL reduce_only
+  # - Position closes successfully verified via final get_position() check
+  # - Both Vest and Paradex use REST API (parallel execution via tokio::join!)
+  
   2-3-execution-delta-neutral-simultanee: backlog
   2-4-retry-logic-echec-ordre: backlog
   2-5-auto-close-echec-leg: backlog  # Already covered: place_order(reduce_only=true)
