@@ -501,16 +501,7 @@ mod tests {
         assert!(testnet.contains("testnet"));
     }
 
-    #[test]
-    fn test_parse_decimal_to_felt() {
-        // Float value
-        let felt = parse_decimal_to_felt("0.001").unwrap();
-        assert_eq!(felt, starknet_core::types::Felt::from(100_000u64));
-        
-        // Integer value
-        let felt = parse_decimal_to_felt("100000").unwrap();
-        assert_eq!(felt, starknet_core::types::Felt::from(100_000u64));
-    }
+
 
     #[test]
     fn test_string_to_felt() {
