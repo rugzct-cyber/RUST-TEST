@@ -13,6 +13,8 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use starknet_crypto::{pedersen_hash, sign, FieldElement};
+use starknet_core::crypto::compute_hash_on_elements as core_compute_hash_on_elements;
+use starknet_core::utils::{cairo_short_string_to_felt, starknet_keccak};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tokio_tungstenite::{
@@ -398,7 +400,7 @@ const PARADEX_DOMAIN_VERSION: &str = "1";
 /// * `chain_id` - Chain ID from Paradex /system/config (e.g., "PRIVATE_SN_POTC_SEPOLIA")
 /// 
 /// # Returns
-/// Tuple of (signature_r, signature_s) as hex strings with 0x prefix
+/// Tuple of (signature_r, signature_s) as decimal strings (not hex!)
 #[tracing::instrument(skip(private_key), fields(account = %account_address, chain = %chain_id))]
 pub fn sign_auth_message(
     private_key: &str,
@@ -407,93 +409,89 @@ pub fn sign_auth_message(
     expiration: u64,
     chain_id: &str,
 ) -> ExchangeResult<(String, String)> {
-    // Parse private key as FieldElement
-    let pk = FieldElement::from_hex_be(private_key)
+    use starknet_signers::SigningKey;
+    use starknet_core::types::Felt;
+    
+    // === Parse inputs using starknet_core::Felt (matching bot3) ===
+    let pk_felt = Felt::from_hex(private_key)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid private key: {}", e)))?;
-    
-    // Parse account address as FieldElement
-    let account = FieldElement::from_hex_be(account_address)
+    let account_felt = Felt::from_hex(account_address)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid account: {}", e)))?;
+    let chain_felt = cairo_short_string_to_felt(chain_id)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid chain_id: {}", e)))?;
     
-    // Convert chain_id string to felt (bytes -> int like Python int_from_bytes)
-    let chain_felt = string_to_felt(chain_id);
+    // === Build Domain hash (matching bot3/SDK) ===
+    // IMPORTANT: bot3 uses NO QUOTES in type hash!
+    let domain_type_hash = starknet_keccak("StarkNetDomain(name:felt,chainId:felt,version:felt)".as_bytes());
+    let domain_name = cairo_short_string_to_felt("Paradex")
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid domain name: {}", e)))?;
     
-    // === Build StarkNetDomain struct hash ===
-    // type_hash = get_selector_from_name("StarkNetDomain(name:felt,chainId:felt,version:felt)")
-    let domain_type_hash = compute_starknet_selector("StarkNetDomain(name:felt,chainId:felt,version:felt)");
-    let domain_name_felt = string_to_felt(PARADEX_DOMAIN_NAME);
-    let domain_version_felt = string_to_felt(PARADEX_DOMAIN_VERSION);
-    
-    // struct_hash = compute_hash_on_elements([type_hash, name, chainId, version])
-    let domain_struct_hash = compute_hash_on_elements(&[
+    let domain_hash = core_compute_hash_on_elements(&[
         domain_type_hash,
-        domain_name_felt,
+        domain_name,
         chain_felt,
-        domain_version_felt,
+        Felt::ONE,  // version = 1
     ]);
     
-    // === Build Request message struct hash ===
-    // type_hash = get_selector_from_name("Request(method:felt,path:felt,body:felt,timestamp:felt,expiration:felt)")  
-    let request_type_hash = compute_starknet_selector("Request(method:felt,path:felt,body:felt,timestamp:felt,expiration:felt)");
+    // === Build Request struct hash ===
+    let request_type_hash = starknet_keccak(
+        "Request(method:felt,path:felt,body:felt,timestamp:felt,expiration:felt)".as_bytes()
+    );
+    let method = cairo_short_string_to_felt("POST")
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid method: {}", e)))?;
+    let path = cairo_short_string_to_felt("/v1/auth")
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid path: {}", e)))?;
+    let body = cairo_short_string_to_felt("")
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid body: {}", e)))?;
     
-    // Message fields as felts
-    let method_felt = string_to_felt("POST");
-    let path_felt = string_to_felt("/v1/auth");
-    let body_felt = string_to_felt(""); // Empty body = 0
-    let timestamp_felt = FieldElement::from(timestamp);
-    let expiration_felt = FieldElement::from(expiration);
-    
-    // struct_hash = compute_hash_on_elements([type_hash, method, path, body, timestamp, expiration])
-    let message_struct_hash = compute_hash_on_elements(&[
+    let request_hash = core_compute_hash_on_elements(&[
         request_type_hash,
-        method_felt,
-        path_felt,
-        body_felt,
-        timestamp_felt,
-        expiration_felt,
+        method,
+        path,
+        body,
+        Felt::from(timestamp),
+        Felt::from(expiration),
     ]);
     
-    // === Final TypedData message hash ===
-    // CRITICAL: Official paradex-rs uses PedersenHasher::finalize() (raw chain, NO count)
-    // NOT compute_hash_on_elements (which adds count at end)
-    // Hash chain: H(H(H(H(0, prefix), domain), account), message)
-    let prefix_felt = string_to_felt(STARKNET_MESSAGE_PREFIX);
-    let h1 = pedersen_hash(&FieldElement::ZERO, &prefix_felt);
-    let h2 = pedersen_hash(&h1, &domain_struct_hash);
-    let h3 = pedersen_hash(&h2, &account);
-    let final_hash = pedersen_hash(&h3, &message_struct_hash);
+    // === Final message hash using compute_hash_on_elements (WITH length prefix!) ===
+    // CRITICAL: bot3 uses compute_hash_on_elements which adds length prefix at the end
+    // This is different from raw pedersen_hash chaining!
+    let starknet_message_prefix = Felt::from_raw([
+        257012186512350467,
+        18446744073709551605,
+        10480951322775611302,
+        16156019428408348868,
+    ]);
     
-    // Sign the hash with private key  
-    // Use standard RFC 6979 k-generation (no seed, matching Python's starknet-py)
-    let k = starknet_crypto::rfc6979_generate_k(&final_hash, &pk, None);
+    let final_hash = core_compute_hash_on_elements(&[
+        starknet_message_prefix,
+        domain_hash,
+        account_felt,
+        request_hash,
+    ]);
     
-    // Debug logging for hash comparison
-    tracing::debug!("Paradex Auth Debug:");
-    tracing::debug!("  domain_type_hash: 0x{:064x}", domain_type_hash);
-    tracing::debug!("  domain_name_felt: 0x{:064x}", domain_name_felt);
-    tracing::debug!("  chain_felt: 0x{:064x}", chain_felt);
-    tracing::debug!("  domain_version_felt: 0x{:064x}", domain_version_felt);
-    tracing::debug!("  domain_struct_hash: 0x{:064x}", domain_struct_hash);
-    tracing::debug!("  request_type_hash: 0x{:064x}", request_type_hash);
-    tracing::debug!("  method_felt (POST): 0x{:064x}", method_felt);
-    tracing::debug!("  path_felt (/v1/auth): 0x{:064x}", path_felt);
-    tracing::debug!("  timestamp_felt: 0x{:064x}", timestamp_felt);
-    tracing::debug!("  expiration_felt: 0x{:064x}", expiration_felt);
-    tracing::debug!("  message_struct_hash: 0x{:064x}", message_struct_hash);
-    tracing::debug!("  prefix_felt: 0x{:064x}", prefix_felt);
-    tracing::debug!("  account: 0x{:064x}", account);
-    tracing::debug!("  final_hash: 0x{:064x}", final_hash);
+    // Debug logging
+    tracing::debug!("Paradex Auth (SDK-compatible):");
+    tracing::debug!("  domain_hash: {:?}", domain_hash);
+    tracing::debug!("  request_hash: {:?}", request_hash);
+    tracing::debug!("  final_hash: {:?}", final_hash);
     
-    let signature = sign(&pk, &final_hash, &k)
+    // === Sign using SigningKey (matching bot3 exactly) ===
+    let signing_key = SigningKey::from_secret_scalar(pk_felt);
+    
+    let signature = signing_key.sign(&final_hash)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Signing failed: {}", e)))?;
     
-    // Format as hex strings (matching official paradex-rs SDK)
-    // SDK uses: format!(r#"["{}","{}"]"#, signature.r, signature.s)
-    // where Felt::Display outputs "0x..." hex format
-    let r_hex = format!("0x{:064x}", signature.r);
-    let s_hex = format!("0x{:064x}", signature.s);
+    // Format as DECIMAL strings (not hex!)
+    let r_bytes = signature.r.to_bytes_be();
+    let s_bytes = signature.s.to_bytes_be();
+    let r_decimal = num_bigint::BigUint::from_bytes_be(&r_bytes).to_string();
+    let s_decimal = num_bigint::BigUint::from_bytes_be(&s_bytes).to_string();
     
-    Ok((r_hex, s_hex))
+    tracing::debug!("  signature.r (decimal): {}", r_decimal);
+    tracing::debug!("  signature.s (decimal): {}", s_decimal);
+    
+    Ok((r_decimal, s_decimal))
 }
 
 /// Compute hash on elements using Starknet's algorithm:
@@ -508,6 +506,151 @@ fn compute_hash_on_elements(data: &[FieldElement]) -> FieldElement {
     // Append the length at the end
     let len = FieldElement::from(data.len() as u64);
     pedersen_hash(&result, &len)
+}
+
+// =============================================================================
+// Order Signing (SDK-compatible - matches sign_auth_message approach)
+// =============================================================================
+
+/// Parameters for signing an order message
+pub struct OrderSignParams<'a> {
+    pub private_key: &'a str,
+    pub account_address: &'a str,
+    pub market: &'a str,
+    pub side: &'a str,        // "BUY" or "SELL"
+    pub order_type: &'a str,  // "LIMIT" or "MARKET"
+    pub size: &'a str,        // Size as string (quantum with 8 decimals)
+    pub price: &'a str,       // Price as string (quantum with 8 decimals or "0" for market)
+    pub client_id: &'a str,
+    pub timestamp_ms: u64,  // Timestamp in MILLISECONDS
+    pub chain_id: &'a str,
+}
+
+/// Sign an order message for Paradex using TypedData (SNIP-12)
+/// 
+/// This function matches the Python SDK's order_sign_message + account.sign_message flow.
+/// The Order type has fields: timestamp, market, side, orderType, size, price
+pub fn sign_order_message(params: OrderSignParams) -> ExchangeResult<(String, String)> {
+    use starknet_signers::SigningKey;
+    use starknet_core::types::Felt;
+    
+    // === Parse inputs using starknet_core::Felt (matching sign_auth_message) ===
+    let pk_felt = Felt::from_hex(params.private_key)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid private key: {}", e)))?;
+    let account_felt = Felt::from_hex(params.account_address)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid account: {}", e)))?;
+    let chain_felt = cairo_short_string_to_felt(params.chain_id)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid chain_id: {}", e)))?;
+    
+    // === Build Domain hash (same as auth) ===
+    let domain_type_hash = starknet_keccak("StarkNetDomain(name:felt,chainId:felt,version:felt)".as_bytes());
+    let domain_name = cairo_short_string_to_felt("Paradex")
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid domain name: {}", e)))?;
+    
+    let domain_hash = core_compute_hash_on_elements(&[
+        domain_type_hash,
+        domain_name,
+        chain_felt,
+        Felt::ONE,  // version = 1
+    ]);
+    
+    // === Build Order struct hash ===
+    // Order type: timestamp, market, side, orderType, size, price
+    let order_type_hash = starknet_keccak(
+        "Order(timestamp:felt,market:felt,side:felt,orderType:felt,size:felt,price:felt)".as_bytes()
+    );
+    
+    // Convert order fields to felts
+    // Note: timestamp is in MILLISECONDS
+    let timestamp_felt = Felt::from(params.timestamp_ms);
+    let market_felt = cairo_short_string_to_felt(params.market)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid market: {}", e)))?;
+    
+    // Side: 1 for BUY, 2 for SELL (matches Python SDK)
+    let side_value: u64 = match params.side.to_uppercase().as_str() {
+        "BUY" => 1,
+        "SELL" => 2,
+        _ => return Err(ExchangeError::InvalidOrder(format!("Invalid side: {}", params.side))),
+    };
+    let side_felt = Felt::from(side_value);
+    
+    // Order type as short string 
+    let order_type_felt = cairo_short_string_to_felt(params.order_type)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid order_type: {}", e)))?;
+    
+    // Size as quantum value - parse string to felt
+    // Python uses chain_size() which converts Decimal to quantum (multiply by 10^8)
+    let size_felt = parse_decimal_to_felt(params.size)?;
+    
+    // Price as quantum value (0 for market orders)
+    let price_felt = parse_decimal_to_felt(params.price)?;
+    
+    let order_hash = core_compute_hash_on_elements(&[
+        order_type_hash,
+        timestamp_felt,
+        market_felt,
+        side_felt,
+        order_type_felt,
+        size_felt,
+        price_felt,
+    ]);
+    
+    // === Final message hash using compute_hash_on_elements (WITH length prefix!) ===
+    let starknet_message_prefix = Felt::from_raw([
+        257012186512350467,
+        18446744073709551605,
+        10480951322775611302,
+        16156019428408348868,
+    ]);
+    
+    let final_hash = core_compute_hash_on_elements(&[
+        starknet_message_prefix,
+        domain_hash,
+        account_felt,
+        order_hash,
+    ]);
+    
+    // Debug logging
+    tracing::debug!("Paradex Order Sign (SDK-compatible):");
+    tracing::debug!("  domain_hash: {:?}", domain_hash);
+    tracing::debug!("  order_hash: {:?}", order_hash);
+    tracing::debug!("  final_hash: {:?}", final_hash);
+    
+    // === Sign using SigningKey (matching sign_auth_message) ===
+    let signing_key = SigningKey::from_secret_scalar(pk_felt);
+    
+    let signature = signing_key.sign(&final_hash)
+        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Signing failed: {}", e)))?;
+    
+    // Format as DECIMAL strings (not hex!)
+    let r_bytes = signature.r.to_bytes_be();
+    let s_bytes = signature.s.to_bytes_be();
+    let r_decimal = num_bigint::BigUint::from_bytes_be(&r_bytes).to_string();
+    let s_decimal = num_bigint::BigUint::from_bytes_be(&s_bytes).to_string();
+    
+    tracing::debug!("  signature.r (decimal): {}", r_decimal);
+    tracing::debug!("  signature.s (decimal): {}", s_decimal);
+    
+    Ok((r_decimal, s_decimal))
+}
+
+/// Parse a decimal string (like "0.001" or "105000") to Felt as quantum value (x 10^8)
+fn parse_decimal_to_felt(s: &str) -> ExchangeResult<starknet_core::types::Felt> {
+    use starknet_core::types::Felt;
+    
+    // Try parsing as float first
+    if let Ok(val) = s.parse::<f64>() {
+        // Convert to quantum (multiply by 10^8)
+        let quantum = (val * 100_000_000.0).round() as u64;
+        return Ok(Felt::from(quantum));
+    }
+    
+    // Try parsing as integer (already quantum)
+    if let Ok(val) = s.parse::<u64>() {
+        return Ok(Felt::from(val));
+    }
+    
+    Err(ExchangeError::InvalidOrder(format!("Invalid decimal value: {}", s)))
 }
 
 /// Compute Starknet selector (type hash) from a type string
@@ -664,96 +807,8 @@ pub fn verify_account_address(
     Ok(derived == provided)
 }
 
-/// Parameters for signing an order message
-#[derive(Debug)]
-pub struct OrderSignParams<'a> {
-    pub private_key: &'a str,
-    pub account_address: &'a str,
-    pub market: &'a str,
-    pub side: &'a str,
-    pub order_type: &'a str,
-    pub size: &'a str,
-    pub price: &'a str,
-    pub client_id: &'a str,
-    pub timestamp_ms: u64,
-    pub chain_id: &'a str,
-}
-
-/// Sign an order message for Paradex REST /orders endpoint
-/// 
-/// Implements StarkNet typed data signing for orders:
-/// - Builds order hash from: market, side, type, size, price, client_id, timestamp
-/// - Signs with Starknet ECDSA
-/// - Returns (signature_r, signature_s) as hex strings
-/// 
-/// # Arguments
-/// * `params` - Order signing parameters
-/// 
-/// # Returns
-/// Tuple of (signature_r, signature_s) as hex strings with 0x prefix
-#[tracing::instrument(skip(params), fields(market = %params.market, side = %params.side, order_type = %params.order_type, client_id = %params.client_id))]
-pub fn sign_order_message(
-    params: OrderSignParams,
-) -> ExchangeResult<(String, String)> {
-    // Parse private key as FieldElement
-    let pk = FieldElement::from_hex_be(params.private_key)
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid private key: {}", e)))?;
-    
-    // Parse account address as FieldElement
-    let account = FieldElement::from_hex_be(params.account_address)
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid account: {}", e)))?;
-    
-    // Parse chain ID
-    let chain_felt = if params.chain_id.starts_with("0x") {
-        FieldElement::from_hex_be(params.chain_id)
-            .unwrap_or_else(|_| string_to_felt(params.chain_id))
-    } else {
-        string_to_felt(params.chain_id)
-    };
-    
-    // Build domain separator hash: hash(name, chainId, version)
-    let domain_name_felt = string_to_felt(PARADEX_DOMAIN_NAME);
-    let domain_version_felt = string_to_felt(PARADEX_DOMAIN_VERSION);
-    let domain_hash = pedersen_hash(&domain_name_felt, &chain_felt);
-    let domain_separator = pedersen_hash(&domain_hash, &domain_version_felt);
-    
-    // Build order message hash components
-    let market_felt = string_to_felt(params.market);
-    let side_felt = string_to_felt(params.side);
-    let type_felt = string_to_felt(params.order_type);
-    let size_felt = string_to_felt(params.size);
-    let price_felt = string_to_felt(params.price);
-    let client_id_felt = string_to_felt(params.client_id);
-    let timestamp_felt = FieldElement::from(params.timestamp_ms);
-    
-    // Hash order fields: hash(market, side, type, size, price, client_id, timestamp)
-    let h1 = pedersen_hash(&market_felt, &side_felt);
-    let h2 = pedersen_hash(&h1, &type_felt);
-    let h3 = pedersen_hash(&h2, &size_felt);
-    let h4 = pedersen_hash(&h3, &price_felt);
-    let h5 = pedersen_hash(&h4, &client_id_felt);
-    let order_hash = pedersen_hash(&h5, &timestamp_felt);
-    
-    // Compute prefix felt
-    let prefix_felt = string_to_felt(STARKNET_MESSAGE_PREFIX);
-    
-    // Final hash: pedersen(prefix, domain_separator, account, order_hash)
-    let f1 = pedersen_hash(&prefix_felt, &domain_separator);
-    let f2 = pedersen_hash(&f1, &account);
-    let final_hash = pedersen_hash(&f2, &order_hash);
-    
-    // Derive k deterministically for signing
-    let k = pedersen_hash(&pk, &final_hash);
-    
-    let signature = sign(&pk, &final_hash, &k)
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Order signing failed: {}", e)))?;
-    
-    // Format as hex strings with 0x prefix (64 hex chars)
-    let r_hex = format!("0x{:064x}", signature.r);
-    let s_hex = format!("0x{:064x}", signature.s);
-    
-    Ok((r_hex, s_hex))
-}
+// NOTE: OrderSignParams and sign_order_message are now defined earlier in the file
+// using SDK-compatible implementation (with core_compute_hash_on_elements and SigningKey::sign)
 
 // =============================================================================
 // Paradex Order Response Types
@@ -832,6 +887,8 @@ pub struct ParadexAdapter {
     connection_health: crate::adapters::types::ConnectionHealth,
     /// Handle to heartbeat task (for cleanup)
     heartbeat_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Starknet chain ID from system config (cached for order signing)
+    starknet_chain_id: Option<String>,
 }
 
 impl ParadexAdapter {
@@ -856,6 +913,7 @@ impl ParadexAdapter {
             reader_handle: None,
             connection_health: crate::adapters::types::ConnectionHealth::new(),
             heartbeat_handle: None,
+            starknet_chain_id: None,
         }
     }
 
@@ -870,22 +928,32 @@ impl ParadexAdapter {
         let system_config = self.fetch_system_config().await?;
         tracing::info!("Fetched system config: chain_id={}", system_config.starknet_chain_id);
         
-        // Derive the correct account address from private key + class hashes
-        // The address MUST match the private key for valid signatures
-        let derived_address = derive_account_address(
-            &self.config.private_key,
-            &system_config.paraclear_account_hash,
-            &system_config.paraclear_account_proxy_hash,
-        )?;
-        let account_address_to_use = format!("0x{:x}", derived_address);
+        // Cache chain_id for order signing
+        self.starknet_chain_id = Some(system_config.starknet_chain_id.clone());
         
-        // Log comparison between provided and derived address
-        if self.config.account_address.to_lowercase() != account_address_to_use.to_lowercase() {
-            tracing::warn!("Address mismatch detected!");
-            tracing::warn!("  .env address: {}", self.config.account_address);
-            tracing::warn!("  Derived:      {}", account_address_to_use);
-            tracing::warn!("  Using DERIVED address for auth (must match private key)");
-        }
+        // CRITICAL: For UI-exported credentials, the derived address differs from actual!
+        // Technical report: "credentials L2 ont été exportées directement depuis l'UI Paradex,
+        // PAS dérivées via grind_key() - l'UI génère une adresse DIFFÉRENTE"
+        // Solution: Use PARADEX_ACCOUNT_ADDRESS from .env if provided, only derive if empty
+        let account_address_to_use = if !self.config.account_address.is_empty() 
+            && self.config.account_address != "0x0" 
+            && self.config.account_address.len() > 4 
+        {
+            tracing::info!("Using account address from .env (UI-exported credentials)");
+            tracing::info!("  .env address: {}", self.config.account_address);
+            self.config.account_address.clone()
+        } else {
+            // Only derive if no address provided
+            tracing::info!("No account address in .env, deriving from private key...");
+            let derived_address = derive_account_address(
+                &self.config.private_key,
+                &system_config.paraclear_account_hash,
+                &system_config.paraclear_account_proxy_hash,
+            )?;
+            let derived = format!("0x{:x}", derived_address);
+            tracing::info!("  Derived address: {}", derived);
+            derived
+        };
         
         // Paradex expects timestamp in SECONDS (not milliseconds)
         let timestamp_ms = current_time_ms();
@@ -896,15 +964,15 @@ impl ParadexAdapter {
         // Use chain_id from system config
         let chain_id = &system_config.starknet_chain_id;
         
-        // Derive public key from private key (required for auth URL)
-        // Python SDK: POST /auth/{hex(l2_public_key)}
+        // Derive public key from private key (for logging/debugging)
         let pk = FieldElement::from_hex_be(&self.config.private_key)
             .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid private key: {}", e)))?;
         let public_key = starknet_crypto::get_public_key(&pk);
         let public_key_hex = format!("0x{:x}", public_key);
         
-        // Build URL with public key (matching Python SDK)
-        let url = format!("{}/auth/{}", self.config.rest_base_url(), public_key_hex);
+        // CRITICAL: Working Python test_auth.py uses /auth NOT /auth/{public_key}
+        // See: url = f"{PARADEX_HTTP_URL}/auth" (line 129 of test_auth.py)
+        let url = format!("{}/auth", self.config.rest_base_url());
         
         // Generate Starknet signature with TypedData format
         // Use the DERIVED address in the signature
@@ -964,7 +1032,7 @@ impl ParadexAdapter {
             ExchangeError::InvalidResponse("No jwt_token in response".into())
         )?;
         
-        self.jwt_expiry = Some(timestamp + JWT_LIFETIME_MS);
+        self.jwt_expiry = Some(timestamp_ms + JWT_LIFETIME_MS);
         tracing::info!("✅ JWT obtained successfully, expires at: {}", self.jwt_expiry.unwrap());
         
         Ok(jwt)
@@ -1469,6 +1537,7 @@ impl ExchangeAdapter for ParadexAdapter {
         }
         
         // 4. Prepare order fields
+        // Note: timestamp for order signature in MILLISECONDS
         let timestamp = current_time_ms();
         let side_str = match order.side {
             OrderSide::Buy => "BUY",
@@ -1487,14 +1556,12 @@ impl ExchangeAdapter for ParadexAdapter {
         let price_str = order.price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
         let size_str = order.quantity.to_string();
         
-        // 5. Get chain ID for signing
-        let chain_id = if self.config.production {
-            "PRIVATE_SN_POTC_SEPOLIA"
-        } else {
-            "SN_SEPOLIA"
-        };
+        // 5. Get chain ID for signing (from system config, cached during auth)
+        let chain_id = self.starknet_chain_id.as_ref()
+            .ok_or_else(|| ExchangeError::AuthenticationFailed(
+                "Chain ID not available - authenticate first".into()
+            ))?;
         
-        // 6. Sign the order
         // 6. Sign the order
         let params = OrderSignParams {
             private_key: &self.config.private_key,

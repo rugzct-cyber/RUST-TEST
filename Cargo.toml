@@ -67,3 +67,7 @@ serial_test = "3"  # CR-1 fix: Forces sequential execution of env-dependent test
 [[bin]]
 name = "monitor"
 path = "src/bin/monitor.rs"
+
+[[bin]]
+name = "test_paradex_order"
+path = "src/bin/test_paradex_order.rs"

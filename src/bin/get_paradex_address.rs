@@ -10,9 +10,9 @@ use tracing_subscriber::FmtSubscriber;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     
-    // Initialize logging to see the address derivation
+    // Initialize logging with DEBUG level to see hash values
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;
@@ -27,13 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config.private_key[config.private_key.len()-4..]
     );
     
-    // Create adapter and connect (this will derive the address and log it)
+    // Create adapter and connect (this will derive the address and log signing details)
     let mut adapter = ParadexAdapter::new(config);
     
     println!("\n📡 Connecting to derive address from system config...\n");
     match adapter.connect().await {
         Ok(()) => {
-            println!("\n✅ Connected! Look for 'Derived:' address above ☝️");
+            println!("\n✅ Connected!");
         }
         Err(e) => {
             println!("\n❌ Error: {}", e);
