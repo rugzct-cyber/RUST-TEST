@@ -63,23 +63,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => log(&format!("   Error checking position: {}", e)),
     }
 
-    // Open position with aggressive limit order at best ask
+    // Open position with MARKET order (taker)
     log("\n4. Opening LONG position...");
-    let limit_price = (best_ask * 10.0).ceil() / 10.0;  // Round up to 0.1
     let open_order = OrderRequest {
         client_order_id: format!("open_{}", &Uuid::new_v4().to_string()[..6]),
         symbol: PARADEX_PAIR.to_string(),
         side: OrderSide::Buy,
-        order_type: OrderType::Limit,
-        price: Some(limit_price),  // Aggressive limit at ask
+        order_type: OrderType::Market,  // MARKET order = taker
+        price: None,  // No price for market orders
         quantity: BTC_QTY,
-        time_in_force: TimeInForce::Ioc,
-        reduce_only: false,  // Opening new position
+        time_in_force: TimeInForce::Ioc,  // IOC is standard for market
+        reduce_only: false,
     };
     
-    log(&format!("   LIMIT BUY {} BTC @ ${:.1}", BTC_QTY, limit_price));
+    log(&format!("   MARKET BUY {} BTC", BTC_QTY));
+    let start = std::time::Instant::now();
     match adapter.place_order(open_order).await {
         Ok(resp) => {
+            let elapsed = start.elapsed();
+            log(&format!("   ⏱️  Order latency: {} ms", elapsed.as_millis()));
             log(&format!("   Order ID: {}", resp.order_id));
             log(&format!("   Status: {:?}", resp.status));
             log(&format!("   Filled: {} BTC @ ${:.2}", 
@@ -115,24 +117,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Close position with reduce_only
+    // Close position with reduce_only MARKET order
     if let Some(pos) = position {
-        log("\n6. Closing position with REDUCE_ONLY...");
-        let close_price = (best_bid * 10.0).floor() / 10.0;  // Round down to 0.1
+        log("\n6. Closing position with REDUCE_ONLY MARKET...");
         let close_order = OrderRequest {
             client_order_id: format!("close_{}", &Uuid::new_v4().to_string()[..6]),
             symbol: PARADEX_PAIR.to_string(),
             side: OrderSide::Sell,  // Opposite side to close
-            order_type: OrderType::Limit,
-            price: Some(close_price),  // Aggressive limit at bid
+            order_type: OrderType::Market,  // MARKET = taker, immediate fill
+            price: None,
             quantity: pos.quantity,  // Close full position
             time_in_force: TimeInForce::Ioc,
             reduce_only: true,  // REDUCE ONLY - just closes position
         };
         
-        log(&format!("   LIMIT SELL {} BTC @ ${:.1} (reduce_only=true)", pos.quantity, close_price));
+        log(&format!("   MARKET SELL {} BTC (reduce_only=true)", pos.quantity));
+        let start = std::time::Instant::now();
         match adapter.place_order(close_order).await {
             Ok(resp) => {
+                let elapsed = start.elapsed();
+                log(&format!("   ⏱️  Order latency: {} ms", elapsed.as_millis()));
                 log(&format!("   Order ID: {}", resp.order_id));
                 log(&format!("   Status: {:?}", resp.status));
                 log(&format!("   Filled: {} BTC @ ${:.2}", 

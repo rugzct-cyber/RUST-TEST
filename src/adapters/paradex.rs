@@ -1555,6 +1555,9 @@ impl ExchangeAdapter for ParadexAdapter {
                 "Chain ID not available - authenticate first".into()
             ))?;
         
+        // === PROFILING: Start signature timing ===
+        let sig_start = std::time::Instant::now();
+        
         // 6. Sign the order
         let params = OrderSignParams {
             private_key: &self.config.private_key,
@@ -1571,8 +1574,13 @@ impl ExchangeAdapter for ParadexAdapter {
         
         let (sig_r, sig_s) = sign_order_message(params)?;
         
+        let sig_elapsed = sig_start.elapsed();
+        
         // 7. Build signature string in Paradex format: ["0x...", "0x..."]
         let signature_str = format!("[\"{}\",\"{}\"]", sig_r, sig_s);
+        
+        // === PROFILING: Start JSON build timing ===
+        let json_start = std::time::Instant::now();
         
         // 8. Build request body
         let mut body = serde_json::json!({
@@ -1597,9 +1605,14 @@ impl ExchangeAdapter for ParadexAdapter {
             body["client_id"] = serde_json::json!(order.client_order_id);
         }
         
+        let json_elapsed = json_start.elapsed();
+        
         // 9. Send request
         let url = format!("{}/orders", self.config.rest_base_url());
         tracing::debug!("Paradex place_order: POST {} body={}", url, body);
+        
+        // === PROFILING: Start HTTP timing ===
+        let http_start = std::time::Instant::now();
         
         let response = self.http_client
             .post(&url)
@@ -1610,10 +1623,29 @@ impl ExchangeAdapter for ParadexAdapter {
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(format!("Order request failed: {}", e)))?;
         
+        let http_elapsed = http_start.elapsed();
+        
+        // === PROFILING: Start parse timing ===
+        let parse_start = std::time::Instant::now();
+        
         // 10. Parse response
         let status_code = response.status();
         let text = response.text().await
             .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        
+        let parse_elapsed = parse_start.elapsed();
+        
+        // === PROFILING: Log all timings ===
+        tracing::info!(
+            "📊 Order latency breakdown: signature={}ms, json={}μs, http={}ms, parse={}μs, total={}ms",
+            sig_elapsed.as_millis(),
+            json_elapsed.as_micros(),
+            http_elapsed.as_millis(),
+            parse_elapsed.as_micros(),
+            (sig_elapsed + json_elapsed + http_elapsed + parse_elapsed).as_millis()
+        );
+        
+        tracing::debug!("Paradex order response ({}): {}", status_code, text);
         
         tracing::debug!("Paradex order response ({}): {}", status_code, text);
         
