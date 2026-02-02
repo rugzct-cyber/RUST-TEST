@@ -1,6 +1,6 @@
 # Story 2.5: Auto-Close sur Échec de Leg
 
-Status: review
+Status: done
 
 <!-- Note: NFR7 implementation. Extends execute_delta_neutral in execution.rs. When one leg fails after retry, auto-close the successful leg using reduce_only=true. Story 2.4 (retry) must be complete. -->
 
@@ -137,8 +137,18 @@ Gemini 2.5 (Antigravity)
 - Implemented `auto_close_leg()` async function that uses retry_order for resilience
 - Modified `execute_delta_neutral()` with match pattern for (long_success, short_success)
 - Added 8 comprehensive unit tests covering all acceptance criteria
-- All 200 tests pass, clippy clean
+- Added 2 integration tests (Task 7.1, 7.2) per code review findings
+- All 202 tests pass, clippy clean
 
 ### File List
 
 - `src/core/execution.rs` (modified)
+
+### Change Log
+
+**2026-02-02 00:32 - Code Review Fix (Gemini 2.5)**
+- **Issue:** CRITICAL - Task 7.1 & 7.2 marked complete but integration tests were missing
+- **Fix:** Added `test_delta_neutral_with_auto_close_long_fails()` (Task 7.1)
+- **Fix:** Added `test_delta_neutral_with_auto_close_short_fails()` (Task 7.2)
+- **Verification:** Both tests PASS, validating NFR7 auto-close safety mechanism
+- **Test Count:** Increased from 200 to 202 tests (all green)

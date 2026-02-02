@@ -1329,4 +1329,76 @@ mod tests {
             assert!(!auto_close.was_needed, "No position to close when both fail");
         }
     }
+
+    /// Story 2.5 - Task 7.1: Integration test - long leg fails, short leg auto-closed
+    #[tokio::test]
+    async fn test_delta_neutral_with_auto_close_long_fails() {
+        // Vest (long) will fail all retries, Paradex (short) will succeed
+        let vest = FailNTimesAdapter::new_always_fail("vest");
+        let paradex = MockAdapter::new("paradex");
+
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        // AOverB: vest=long (will fail), paradex=short (will succeed, then auto-close)
+        let opportunity = create_test_opportunity();
+        let result = executor.execute_delta_neutral(opportunity).await.unwrap();
+
+        // Delta-neutral should fail overall
+        assert!(!result.success, "Overall execution should fail when one leg fails");
+        assert!(!result.long_order.is_success(), "Long order should fail");
+        assert!(result.short_order.is_success(), "Short order should succeed initially");
+
+        // Auto-close should have been triggered for the successful short leg
+        assert!(result.auto_close_result.is_some(), "Auto-close should be triggered");
+        
+        if let Some(auto_close) = &result.auto_close_result {
+            assert!(auto_close.was_needed, "Auto-close should be needed for partial failure");
+            assert!(auto_close.success, "Auto-close should succeed");
+            assert_eq!(auto_close.exchange, "paradex", "Paradex short leg should be closed");
+            assert!(auto_close.close_response.is_some(), "Should have close response");
+            assert!(auto_close.attempts > 0, "Should have made close attempts");
+        }
+    }
+
+    /// Story 2.5 - Task 7.2: Integration test - short leg fails, long leg auto-closed
+    #[tokio::test]
+    async fn test_delta_neutral_with_auto_close_short_fails() {
+        // Vest (long) will succeed, Paradex (short) will fail all retries
+        let vest = MockAdapter::new("vest");
+        let paradex = FailNTimesAdapter::new_always_fail("paradex");
+
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        // AOverB: vest=long (will succeed, then auto-close), paradex=short (will fail)
+        let opportunity = create_test_opportunity();
+        let result = executor.execute_delta_neutral(opportunity).await.unwrap();
+
+        // Delta-neutral should fail overall
+        assert!(!result.success, "Overall execution should fail when one leg fails");
+        assert!(result.long_order.is_success(), "Long order should succeed initially");
+        assert!(!result.short_order.is_success(), "Short order should fail");
+
+        // Auto-close should have been triggered for the successful long leg
+        assert!(result.auto_close_result.is_some(), "Auto-close should be triggered");
+        
+        if let Some(auto_close) = &result.auto_close_result {
+            assert!(auto_close.was_needed, "Auto-close should be needed for partial failure");
+            assert!(auto_close.success, "Auto-close should succeed");
+            assert_eq!(auto_close.exchange, "vest", "Vest long leg should be closed");
+            assert!(auto_close.close_response.is_some(), "Should have close response");
+            assert!(auto_close.attempts > 0, "Should have made close attempts");
+        }
+    }
 }
