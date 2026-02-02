@@ -18,6 +18,9 @@ use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::core::channels::SpreadOpportunity;
+use hft_bot::core::monitoring::{monitoring_task, MonitoringConfig};
+use hft_bot::core::runtime::execution_task;
+use hft_bot::core::execution::DeltaNeutralExecutor;
 
 
 // Story 4.6: Orphan order protection (Epic 6 integration pending)
@@ -103,9 +106,8 @@ async fn main() -> anyhow::Result<()> {
     
     // Task 2: Create channels for data pipeline
     
-    // Subtask 2.1: Create spread_opportunity channel
-    // TODO Story 6.2: Connect opportunity_tx to spread monitoring, opportunity_rx to execution_task
-    let (_opportunity_tx, _opportunity_rx) = mpsc::channel::<SpreadOpportunity>(100);
+    // Subtask 2.1: Create spread_opportunity channel (Story 6.2)
+    let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(100);
     
     // Task 3: Connect to exchanges and restore state
     info!("🌐 Connecting to exchanges...");
@@ -148,24 +150,67 @@ async fn main() -> anyhow::Result<()> {
     
     info!("[INFO] Subscribed to orderbooks: {}, {}", vest_symbol, paradex_symbol);
 
-    // Task 4: Monitoring and execution tasks (Story 6.2 - automatic execution)
-    // TODO Story 6.2 Subtask 4.1: Spawn orderbook monitoring task
-    //   - Poll orderbooks from both exchanges every 100ms
-    //   - Calculate spread using VWAP (src/core/spread.rs)
-    //   - Send SpreadOpportunity to opportunity_tx if spread > entry_threshold
-    //   - Use shutdown_tx.subscribe() for graceful shutdown
-    //
-    // TODO Story 6.2 Subtask 4.2: Spawn execution_task
-    //   - Consume SpreadOpportunity from opportunity_rx
-    //   - Create DeltaNeutralExecutor with adapters (src/core/execution.rs)
-    //   - Execute delta-neutral trade
-    //   - Save position to Supabase via state_manager
-    //   - Use shutdown_tx.subscribe() for graceful shutdown
-    
-    info!("✅ Bot runtime started (monitoring tasks deferred to Story 6.2)");
-    
-    // Create shutdown broadcast channel
+    // Create shutdown broadcast channel (moved up from Task 5 for Story 6.2)
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<>(1);
+    
+    // Task 4: Monitoring and execution tasks (Story 6.2 - automatic execution)
+    // Subtask 4.1: Spawn orderbook monitoring task
+    let monitoring_vest = Arc::clone(&vest);
+    let monitoring_paradex = Arc::clone(&paradex);
+    let monitoring_tx = opportunity_tx.clone();
+    let monitoring_vest_symbol = vest_symbol.clone();
+    let monitoring_paradex_symbol = paradex_symbol.clone();
+    let monitoring_config = MonitoringConfig {
+        pair: bot.pair.to_string(),
+        spread_entry: bot.spread_entry,
+    };
+    let monitoring_shutdown = shutdown_tx.subscribe();
+    
+    tokio::spawn(async move {
+        monitoring_task(
+            monitoring_vest,
+            monitoring_paradex,
+            monitoring_tx,
+            monitoring_vest_symbol,
+            monitoring_paradex_symbol,
+            monitoring_config,
+            monitoring_shutdown,
+        ).await;
+    });
+    info!("[INFO] Monitoring task spawned");
+    
+    // Task 3 (Story 6.2): Spawn execution_task to consume SpreadOpportunity and execute trades
+    // Subtask 3.1: Create DeltaNeutralExecutor with separate adapter instances
+    // Note: Execution adapters are separate from monitoring adapters
+    // MVP: Use from_env() to create new instances with same credentials
+    let execution_vest_config = VestConfig::from_env()
+        .expect("VEST credentials must be configured for execution adapter");
+    let execution_vest = VestAdapter::new(execution_vest_config);
+    
+    let execution_paradex_config = ParadexConfig::from_env()
+        .expect("PARADEX credentials must be configured for execution adapter");
+    let execution_paradex = ParadexAdapter::new(execution_paradex_config);
+    
+    let executor = DeltaNeutralExecutor::new(
+        execution_vest,
+        execution_paradex,
+        0.001,  // MVP: Fixed position size (TODO: calculate from config.capital)
+        vest_symbol.clone(),
+        paradex_symbol.clone(),
+    );
+    
+    // Subtask 3.2: Spawn execution_task with shutdown subscription
+    let execution_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        execution_task(
+            opportunity_rx,
+            executor,
+            execution_shutdown,
+        ).await;
+    });
+    info!("[INFO] Execution task spawned");
+    
+    info!("✅ Bot runtime started with automatic spread monitoring and execution");
 
     // Spawn SIGINT handler task
     let shutdown_signal = shutdown_tx.clone();
