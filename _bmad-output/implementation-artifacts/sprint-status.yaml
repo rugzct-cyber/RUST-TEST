@@ -114,11 +114,11 @@ development_status:
   3-2-sauvegarde-positions-supabase: done
   3-3-restauration-etat-apres-redemarrage: done
   3-4-coherence-etat-in-memory: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
 
   # Epic 4: Configuration & Operations
-  epic-4: backlog
-  4-1-configuration-paires-yaml: backlog
+  epic-4: in-progress
+  4-1-configuration-paires-yaml: review
   4-2-configuration-seuils-spread: backlog
   4-3-configuration-credentials-env: backlog
   4-4-reconnexion-automatique-websocket: backlog

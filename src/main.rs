@@ -7,8 +7,10 @@
 //! 4. Calculates spreads using VWAP
 //! 5. Logs opportunities to console
 
+use std::path::Path;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, error};
+use hft_bot::config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,15 +21,34 @@ async fn main() -> anyhow::Result<()> {
 
     info!("🚀 HFT Arbitrage Bot MVP starting...");
     
-    // TODO: Load config from YAML
-    let pair = "BTC-USD";
-    let spread_entry_threshold = 0.30; // 0.30%
-    let spread_exit_threshold = 0.10;  // 0.10%
-    
-    info!("📊 Configuration:");
-    info!("   Pair: {}", pair);
-    info!("   Entry threshold: {}%", spread_entry_threshold);
-    info!("   Exit threshold: {}%", spread_exit_threshold);
+    // Load configuration from YAML
+    info!("📁 Loading configuration from config.yaml...");
+    let config = match config::load_config(Path::new("config.yaml")) {
+        Ok(cfg) => {
+            let pairs: Vec<String> = cfg.bots.iter()
+                .map(|b| b.pair.to_string())
+                .collect();
+            info!("[CONFIG] Loaded pairs: {:?}", pairs);
+            info!("[INFO] Loaded {} bots from configuration", cfg.bots.len());
+            cfg
+        }
+        Err(e) => {
+            error!("[ERROR] Configuration failed: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Access first bot for MVP single-pair mode
+    let bot = &config.bots[0];
+    info!("📊 Active Bot Configuration:");
+    info!("   ID: {}", bot.id);
+    info!("   Pair: {}", bot.pair);
+    info!("   DEX A: {}", bot.dex_a);
+    info!("   DEX B: {}", bot.dex_b);
+    info!("   Entry threshold: {}%", bot.spread_entry);
+    info!("   Exit threshold: {}%", bot.spread_exit);
+    info!("   Leverage: {}x", bot.leverage);
+    info!("   Capital: ${}", bot.capital);
     
     // TODO: Create adapters with real credentials
     // let vest = VestAdapter::new(&config.vest)?;

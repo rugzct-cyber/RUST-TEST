@@ -1,0 +1,16 @@
+bots:
+  - id: btc_vest_paradex
+    pair: BTC-PERP
+    dex_a: vest
+    dex_b: paradex
+    spread_entry: 0.30
+    spread_exit: 0.05
+    leverage: 10
+    capital: 100.0
+risk:
+  adl_warning: 10.0
+  adl_critical: 5.0
+  max_duration_hours: 24
+api:
+  port: 8080
+  ws_heartbeat_sec: 30
