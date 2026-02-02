@@ -275,6 +275,7 @@ impl StateManager {
             Some(
                 reqwest::Client::builder()
                     .default_headers(headers)
+                    .timeout(std::time::Duration::from_secs(10))  // NFR14: HTTP timeout for stability
                     .build()
                     .expect("Failed to build reqwest client"),
             )
@@ -375,7 +376,7 @@ impl StateManager {
     pub async fn load_positions(&self) -> Result<Vec<PositionState>, StateError> {
         // Handle disabled case
         if self.supabase_client.is_none() {
-            tracing::warn!("Supabase désactivé, aucune position restaurée");
+            tracing::debug!("Supabase disabled, no positions to restore");
             return Ok(Vec::new());
         }
         
@@ -405,9 +406,9 @@ impl StateManager {
                 Ok(positions)
             }
             reqwest::StatusCode::UNAUTHORIZED => {
-                let err_msg = "Identifiants Supabase invalides".to_string();
+                let err_msg = "Invalid Supabase credentials".to_string();
                 tracing::error!(
-                    "Échec chargement positions Supabase: {}", err_msg
+                    "Failed to load positions from Supabase: {}", err_msg
                 );
                 Err(StateError::DatabaseError(err_msg))
             }
@@ -924,7 +925,7 @@ mod tests {
         
         match result {
             Err(StateError::DatabaseError(msg)) => {
-                assert!(msg.contains("Identifiants Supabase invalides"));
+                assert!(msg.contains("Invalid Supabase credentials"));
             }
             _ => panic!("Expected DatabaseError for 401 Unauthorized"),
         }
@@ -1005,6 +1006,93 @@ mod tests {
             assert!(!pos.long_symbol.is_empty(), "Position should have long_symbol");
             assert!(!pos.short_symbol.is_empty(), "Position should have short_symbol");
         }
+    }
+
+    #[tokio::test]
+    async fn test_load_positions_malformed_json() {
+        // Code Review Finding #2: Test JSON parsing error handling
+        // Mock 200 OK with malformed JSON that cannot be parsed
+        let mut server = mockito::Server::new_async().await;
+        
+        let mock = server.mock("GET", "/rest/v1/positions?status=eq.Open")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{broken json syntax [}")  // Invalid JSON
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Should return NetworkError (reqwest JSON parsing error auto-converted)
+        let result = manager.load_positions().await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(StateError::NetworkError(_)) => {
+                // Success - JSON parsing error properly handled
+            }
+            _ => panic!("Expected NetworkError for malformed JSON"),
+        }
+        
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_load_positions_schema_mismatch() {
+        // Code Review Finding #2: Test schema incompatibility
+        // Mock 200 OK with valid JSON but incompatible schema
+        let mut server = mockito::Server::new_async().await;
+        
+        let invalid_json = r#"[
+            {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "pair": "BTC-USD",
+                "long_symbol": "BTC-PERP",
+                "short_symbol": "BTC-USD-PERP",
+                "long_exchange": "vest",
+                "short_exchange": "paradex",
+                "long_size": 0.5,
+                "short_size": 0.5,
+                "remaining_size": 0.5,
+                "entry_spread": 0.35,
+                "entry_timestamp": "2026-02-02T01:30:00Z",
+                "status": "InvalidStatus"
+            }
+        ]"#;
+        
+        let mock = server.mock("GET", "/rest/v1/positions?status=eq.Open")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(invalid_json)
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Should return NetworkError (serde deserialization failure)
+        let result = manager.load_positions().await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(StateError::NetworkError(_)) => {
+                // Success - schema mismatch error properly handled
+            }
+            _ => panic!("Expected NetworkError for schema mismatch"),
+        }
+        
+        mock.assert_async().await;
     }
 
 }

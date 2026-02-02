@@ -1,6 +1,6 @@
 # Story 3.3: Restauration de l'État après Redémarrage
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -73,7 +73,7 @@ So that le bot reprenne son état précédent (NFR10).
 - [x] **Task 7**: Validation finale (AC: all)
   - [x] Subtask 7.1: `cargo build` compile sans warnings
   - [x] Subtask 7.2: `cargo clippy --all-targets -- -D warnings` propre
-  - [x] Subtask 7.3: `cargo test` tous les tests passent (216 au total: 210 + 6 nouveaux)
+  - [x] Subtask 7.3: `cargo test` tous les tests passent (218 au total: 210 + 6 Story 3.3 + 2 Code Review)
   - [x] Subtask 7.4: Vérifier logs avec `RUST_LOG=debug` — log "Restored N positions" présent
 
 ## Definition of Done Checklist
@@ -87,7 +87,7 @@ So that le bot reprenne son état précédent (NFR10).
 - [x] Gestion erreurs réseau et timeouts
 - [x] Cas Supabase désactivé géré correctement (retourne vec vide)
 - [x] Cas liste vide géré correctement
-- [x] 6 nouveaux tests unitaires ajoutés
+- [x] 8 tests unitaires ajoutés (6 Story 3.3 + 2 Code Review)
 - [x] Logs structurés `info!` et `error!` présents
 - [x] Documentation inline mise à jour
 
@@ -511,19 +511,41 @@ N/A - Implementation straightforward, no blocking issues encountered
 - Error handling: 401 Unauthorized → `DatabaseError`, network failures → `NetworkError`
 - Structured logging: `info!` for success with position count, `warn!` for disabled, `error!` for failures
 
-✅ **Tests Added (+6 tests, total 216)**
+✅ **Tests Added (+8 tests, total 218)**
 1. **`test_load_positions_disabled`**: Supabase disabled case - returns empty vec without HTTP call
 2. **`test_load_positions_success`**: Mock GET 200 OK with 2 positions, verifies deserialization
 3. **`test_load_positions_empty`**: Mock GET 200 OK with empty array `[]`
 4. **`test_load_positions_unauthorized`**: Mock 401 Unauthorized - verifies `DatabaseError` mapping
 5. **`test_load_positions_network_error`**: Network failure (connection refused) - verifies `NetworkError`
 6. **`test_load_positions_real_supabase_integration`**: Integration test with real Supabase (ignored by default)
+7. **`test_load_positions_malformed_json`**: [Code Review] Test JSON parsing error handling
+8. **`test_load_positions_schema_mismatch`**: [Code Review] Test schema incompatibility handling
 
 ✅ **Validation Results**
 - `cargo build`: ✅ Compiles without warnings
 - `cargo clippy --all-targets -- -D warnings`: ✅ Clean
-- `cargo test`: ✅ 216/216 tests passing
+- `cargo test`: ✅ 218/218 tests passing
 - All acceptance criteria satisfied
+
+✅ **Code Review Fixes Applied (2026-02-02)**
+
+**Finding #1 (HIGH):** French → English error messages for consistency
+- Changed `"Identifiants Supabase invalides"` → `"Invalid Supabase credentials"`
+- Updated test assertion to match corrected message
+- **Reason:** Story 3.2 established English pattern; maintaining consistency across codebase
+
+**Finding #2 (HIGH):** Added comprehensive JSON parsing error tests
+- Added `test_load_positions_malformed_json` - handles broken JSON syntax
+- Added `test_load_positions_schema_mismatch` - handles invalid enum values
+- **Impact:** Ensures graceful error handling if Supabase schema changes
+
+**Finding #3 (MEDIUM):** Logging level consistency
+- Changed `tracing::warn!` → `tracing::debug!` for disabled state (line 378)
+- **Reason:** Matches Story 3.2 pattern; "disabled" is configuration, not a warning
+
+**Finding #4 (MEDIUM):** HTTP timeout configuration
+- Added `.timeout(Duration::from_secs(10))` to reqwest client builder
+- **Reason:** NFR14 compliance - prevents infinite hangs on Supabase failures
 
 **Pattern Consistency**: Implementation follows exact pattern from Story 3.2 `save_position()` for consistency:
 - Same error handling approach (match on `response.status()`)

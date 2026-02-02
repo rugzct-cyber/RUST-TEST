@@ -112,7 +112,7 @@ development_status:
   epic-3: in-progress
   3-1-creation-module-state-persistence: done
   3-2-sauvegarde-positions-supabase: done
-  3-3-restauration-etat-apres-redemarrage: review
+  3-3-restauration-etat-apres-redemarrage: done
   3-4-coherence-etat-in-memory: backlog
   epic-3-retrospective: optional
 
