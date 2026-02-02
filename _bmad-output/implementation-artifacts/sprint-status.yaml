@@ -84,6 +84,7 @@ development_status:
   
   2-2-placement-ordre-short: done
   # Paradex Short Orders (2026-02-01):
+  # NOTE: Story 2.2 tested inline with Story 2.1 - both LONG and SHORT orders validated together
   # - get_position() implemented - fetches /positions endpoint
   # - reduce_only=true tested for closing positions
   # - Full lifecycle: open LONG -> get_position -> close with SELL reduce_only
@@ -101,10 +102,13 @@ development_status:
   # - Full cycle tested: Open → Verify → Close on mainnet
   # - Open latency: ~358ms, Close latency: ~500ms
   2-4-retry-logic-echec-ordre: done
-  2-5-auto-close-echec-leg: review  # NFR7: Auto-close exposed leg on partial failure
-  epic-2-retrospective: optional
+  2-5-auto-close-echec-leg: done  # NFR7: Auto-close exposed leg on partial failure
+  epic-2-retrospective: done
 
   # Epic 3: State Persistence
+  # Design Decision (2026-02-02): Natural key approach - exchanges enforce 1 position per (asset, direction)
+  # Reconciliation: Simple .find() by (exchange, symbol, direction) - no complex ID tracking needed
+  # Schema: UUID PK + UNIQUE(long_symbol, short_symbol) + remaining_size for partial close support
   epic-3: backlog
   3-1-creation-module-state-persistence: backlog
   3-2-sauvegarde-positions-supabase: backlog
