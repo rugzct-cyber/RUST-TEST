@@ -367,10 +367,61 @@ impl StateManager {
     /// Always returns Ok(empty vector)
     ///
     /// # Story 3.3 - Full Implementation
-    /// Will GET from /rest/v1/positions?status=eq.Open
+    /// GET from /rest/v1/positions?status=eq.Open
+    ///
+    /// # Errors
+    /// - `StateError::DatabaseError` for 401 Unauthorized or other DB errors
+    /// - `StateError::NetworkError` for network/timeout failures
     pub async fn load_positions(&self) -> Result<Vec<PositionState>, StateError> {
-        // Stub for Story 3.1
-        Ok(Vec::new())
+        // Handle disabled case
+        if self.supabase_client.is_none() {
+            tracing::warn!("Supabase désactivé, aucune position restaurée");
+            return Ok(Vec::new());
+        }
+        
+        let client = self.supabase_client.as_ref().unwrap();
+        let url = format!("{}/rest/v1/positions?status=eq.Open", self.supabase_url);
+        
+        // Send GET request
+        let response = client
+            .get(&url)
+            .send()
+            .await?;  // NetworkError auto-converted via #[from]
+        
+        // Handle HTTP status codes
+        match response.status() {
+            reqwest::StatusCode::OK => {
+                let positions: Vec<PositionState> = response.json().await?;
+                
+                if positions.is_empty() {
+                    tracing::info!("No positions to restore");
+                } else {
+                    tracing::info!(
+                        count = positions.len(),
+                        "Restored positions from Supabase"
+                    );
+                }
+                
+                Ok(positions)
+            }
+            reqwest::StatusCode::UNAUTHORIZED => {
+                let err_msg = "Identifiants Supabase invalides".to_string();
+                tracing::error!(
+                    "Échec chargement positions Supabase: {}", err_msg
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+            status => {
+                let body = response.text().await.unwrap_or_else(|_| "<no body>".to_string());
+                let err_msg = format!("Supabase error {}: {}", status, body);
+                tracing::error!(
+                    status = %status,
+                    response_body = %body,
+                    "Failed to load positions from Supabase"
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+        }
     }
     
     /// Update an existing position in Supabase
@@ -721,6 +772,239 @@ mod tests {
         }
         
         mock.assert_async().await;
+    }
+
+    // ========================================================================
+    // STORY 3.3: LOAD POSITIONS FROM SUPABASE TESTS
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_load_positions_disabled() {
+        // Story 3.3 Task 6.3: Supabase disabled - should skip HTTP request
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+        
+        let manager = StateManager::new(config);
+
+        // Should return Ok with empty vec without network request
+        let result = manager.load_positions().await;
+        assert!(result.is_ok());
+        let positions = result.unwrap();
+        assert_eq!(positions.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_load_positions_success() {
+        // Story 3.3 Task 6.1: Mock GET 200 OK with 2 positions
+        let mut server = mockito::Server::new_async().await;
+        
+        let json_response = r#"[
+            {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "pair": "BTC-USD",
+                "long_symbol": "BTC-PERP",
+                "short_symbol": "BTC-USD-PERP",
+                "long_exchange": "vest",
+                "short_exchange": "paradex",
+                "long_size": 0.5,
+                "short_size": 0.5,
+                "remaining_size": 0.5,
+                "entry_spread": 0.35,
+                "entry_timestamp": "2026-02-02T01:30:00Z",
+                "status": "Open"
+            },
+            {
+                "id": "661e9511-f40c-52e5-b827-557766551111",
+                "pair": "ETH-USD",
+                "long_symbol": "ETH-PERP",
+                "short_symbol": "ETH-USD-PERP",
+                "long_exchange": "vest",
+                "short_exchange": "paradex",
+                "long_size": 1.0,
+                "short_size": 1.0,
+                "remaining_size": 1.0,
+                "entry_spread": 0.25,
+                "entry_timestamp": "2026-02-02T01:35:00Z",
+                "status": "Open"
+            }
+        ]"#;
+        
+        let mock = server.mock("GET", "/rest/v1/positions?status=eq.Open")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json_response)
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-anon-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Should return Ok with 2 positions
+        let result = manager.load_positions().await;
+        assert!(result.is_ok());
+        
+        let positions = result.unwrap();
+        assert_eq!(positions.len(), 2);
+        
+        // Verify first position fields
+        assert_eq!(positions[0].pair, "BTC-USD");
+        assert_eq!(positions[0].long_symbol, "BTC-PERP");
+        assert_eq!(positions[0].short_symbol, "BTC-USD-PERP");
+        assert_eq!(positions[0].remaining_size, 0.5);
+        
+        // Verify second position
+        assert_eq!(positions[1].pair, "ETH-USD");
+        assert_eq!(positions[1].remaining_size, 1.0);
+        
+        // Verify mock was called
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_load_positions_empty() {
+        // Story 3.3 Task 6.2: Mock GET 200 OK with empty array
+        let mut server = mockito::Server::new_async().await;
+        
+        let mock = server.mock("GET", "/rest/v1/positions?status=eq.Open")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[]")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-anon-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Should return Ok with empty vec
+        let result = manager.load_positions().await;
+        assert!(result.is_ok());
+        
+        let positions = result.unwrap();
+        assert_eq!(positions.len(), 0);
+        
+        // Verify mock was called
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_load_positions_unauthorized() {
+        // Story 3.3 Task 6.4: Mock 401 Unauthorized - invalid credentials
+        let mut server = mockito::Server::new_async().await;
+        
+        let mock = server.mock("GET", "/rest/v1/positions?status=eq.Open")
+            .with_status(401)
+            .with_body("Unauthorized")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "invalid-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Should return DatabaseError
+        let result = manager.load_positions().await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(StateError::DatabaseError(msg)) => {
+                assert!(msg.contains("Identifiants Supabase invalides"));
+            }
+            _ => panic!("Expected DatabaseError for 401 Unauthorized"),
+        }
+        
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_load_positions_network_error() {
+        // Story 3.3 Task 6.5: Network error - connection refused
+        let config = crate::config::SupabaseConfig {
+            url: "http://localhost:1".to_string(),  // Port fermé - connection refused
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+        
+        let manager = StateManager::new(config);
+
+        // Should return NetworkError (auto-converted from reqwest::Error)
+        let result = manager.load_positions().await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(StateError::NetworkError(_)) => {
+                // Success - network error properly converted
+            }
+            _ => panic!("Expected NetworkError for connection refused"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]  // Run with: cargo test -- --ignored
+    async fn test_load_positions_real_supabase_integration() {
+        // Story 3.3 Task 6.6: Integration test with real Supabase
+        // Requires: SUPABASE_URL and SUPABASE_ANON_KEY env vars
+        
+        use std::env;
+        
+        let url = match env::var("SUPABASE_URL") {
+            Ok(u) if !u.is_empty() && !u.contains("your-project") => u,
+            _ => {
+                eprintln!("Skipping integration test - SUPABASE_URL not set");
+                return;
+            }
+        };
+        
+        let anon_key = match env::var("SUPABASE_ANON_KEY") {
+            Ok(k) if !k.is_empty() && !k.contains("your-anon-key") => k,
+            _ => {
+                eprintln!("Skipping integration test - SUPABASE_ANON_KEY not set");
+                return;
+            }
+        };
+        
+        let config = crate::config::SupabaseConfig {
+            url,
+            anon_key,
+            enabled: true,
+        };
+        
+        let manager = StateManager::new(config);
+
+        // Should successfully load positions from real Supabase
+        let result = manager.load_positions().await;
+        
+        if let Err(e) = &result {
+            eprintln!("Integration test failed: {:?}", e);
+        }
+        
+        assert!(result.is_ok(), "Real Supabase load should succeed");
+        
+        let positions = result.unwrap();
+        eprintln!("Loaded {} positions from Supabase", positions.len());
+        
+        // Verify deserialization worked if positions exist
+        for pos in &positions {
+            assert!(!pos.pair.is_empty(), "Position should have pair");
+            assert!(!pos.long_symbol.is_empty(), "Position should have long_symbol");
+            assert!(!pos.short_symbol.is_empty(), "Position should have short_symbol");
+        }
     }
 
 }

@@ -1,6 +1,6 @@
 # Story 3.2: Sauvegarde des Positions dans Supabase
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -451,6 +451,5 @@ Story 3.4 will implement UPDATE logic for position reconciliation.
 ### File List
 
 - `src/core/state.rs` - Modified StateManager struct, new() method, and save_position() implementation
-- `Cargo.toml` - Added mockito v1.7.1 dev-dependency for HTTP mocking
-- `fix_state.py` - Temporary Python script for safe file modifications (can be deleted)
-- `add_tests.py` - Temporary Python script for adding tests (can be deleted)
+- `Cargo.toml` - Added mockito v1.7 dev-dependency for HTTP mocking
+
