@@ -236,10 +236,12 @@ pub struct PositionUpdate {
 /// Manager for persisting position state to Supabase
 ///
 /// Story 3.1: Stub implementation - all methods return Ok(())
-/// Story 3.2: Will implement actual Supabase save/load logic
+/// Story 3.2: Implementing actual Supabase save logic
 pub struct StateManager {
+    /// Supabase project URL (e.g., https://xxx.supabase.co)
+    supabase_url: String,
+    
     /// Optional Supabase client (None if disabled)
-    #[allow(dead_code)]
     supabase_client: Option<reqwest::Client>,
 }
 
@@ -247,31 +249,116 @@ impl StateManager {
     /// Create a new state manager with Supabase configuration
     ///
     /// # Arguments
-    /// * `supabase_url` - Supabase project URL
-    /// * `anon_key` - Supabase anonymous API key
+    /// * `config` - SupabaseConfig with URL, anon key, and enabled flag
     ///
     /// # Note
-    /// Story 3.1: Client initialization is stubbed
-    /// Story 3.2: Will add actual client setup with headers
-    pub fn new(_supabase_url: String, _anon_key: String) -> Self {
-        // Story 3.1: Stub - always create a client placeholder
-        // Story 3.2: Will initialize with proper auth headers
-        let client = Some(reqwest::Client::new());
+    /// Story 3.2: Initializes reqwest client with proper auth headers
+    pub fn new(config: crate::config::SupabaseConfig) -> Self {
+        let client = if config.enabled {
+            // Build headers with apikey and Authorization
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(
+                "apikey",
+                reqwest::header::HeaderValue::from_str(&config.anon_key)
+                    .expect("Invalid apikey header value"),
+            );
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", config.anon_key))
+                    .expect("Invalid authorization header value"),
+            );
+            headers.insert(
+                reqwest::header::CONTENT_TYPE,
+                reqwest::header::HeaderValue::from_static("application/json"),
+            );
+            
+            Some(
+                reqwest::Client::builder()
+                    .default_headers(headers)
+                    .build()
+                    .expect("Failed to build reqwest client"),
+            )
+        } else {
+            None
+        };
+        
         Self {
+            supabase_url: config.url,
             supabase_client: client,
         }
     }
     
     /// Save a position to Supabase
     ///
-    /// # Story 3.1 - Stub Implementation
-    /// Always returns Ok(()) without actual persistence
-    ///
     /// # Story 3.2 - Full Implementation
-    /// Will POST to /rest/v1/positions with position data
-    pub async fn save_position(&self, _pos: &PositionState) -> Result<(), StateError> {
-        // Stub for Story 3.1
-        Ok(())
+    /// POST to /rest/v1/positions with position data
+    ///
+    /// # Errors
+    /// - `StateError::DatabaseError` for 409 Conflict (duplicate natural key) or other DB errors
+    /// - `StateError::NetworkError` for network/timeout failures
+    pub async fn save_position(&self, pos: &PositionState) -> Result<(), StateError> {
+        // Handle disabled case
+        if self.supabase_client.is_none() {
+            tracing::debug!("Supabase disabled, position not saved");
+            return Ok(());
+        }
+        
+        let client = self.supabase_client.as_ref().unwrap();
+        let url = format!("{}/rest/v1/positions", self.supabase_url);
+        
+        // Send POST request
+        let response = client
+            .post(&url)
+            .header("Prefer", "return=minimal")  // Optimize: don't return data
+            .json(pos)
+            .send()
+            .await?;  // NetworkError auto-converted via #[from]
+        
+        // Handle HTTP status codes
+        match response.status() {
+            reqwest::StatusCode::CREATED => {
+                tracing::info!(
+                    pair = %pos.pair,
+                    long_exchange = %pos.long_exchange,
+                    short_exchange = %pos.short_exchange,
+                    entry_spread = %pos.entry_spread,
+                    "Position saved to Supabase"
+                );
+                Ok(())
+            }
+            reqwest::StatusCode::CONFLICT => {
+                let err_msg = format!(
+                    "Position already exists (natural key conflict): ({}, {})",
+                    pos.long_symbol, pos.short_symbol
+                );
+                tracing::error!(
+                    pair = %pos.pair,
+                    long_symbol = %pos.long_symbol,
+                    short_symbol = %pos.short_symbol,
+                    "Failed to save position to Supabase: {}", err_msg
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+            reqwest::StatusCode::UNAUTHORIZED => {
+                let err_msg = "Invalid Supabase credentials".to_string();
+                tracing::error!(
+                    pair = %pos.pair,
+                    "Failed to save position to Supabase: {}", err_msg
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+            status => {
+                let body = response.text().await.unwrap_or_else(|_| "<no body>".to_string());
+                let err_msg = format!("Supabase error {}: {}", status, body);
+                tracing::error!(
+                    pair = %pos.pair,
+                    status = %status,
+                    response_body = %body,
+                    "Failed to save position to Supabase"
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+        }
     }
     
     /// Load all open positions from Supabase
@@ -429,10 +516,13 @@ mod tests {
     #[tokio::test]
     async fn test_state_manager_stubs() {
         // Story 3.1 Task 7.3: Verify all stub methods return Ok(())
-        let manager = StateManager::new(
-            "https://test.supabase.co".to_string(),
-            "test-anon-key".to_string(),
-        );
+        // Updated Story 3.2: Use SupabaseConfig
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-anon-key".to_string(),
+            enabled: false,  // Disabled to avoid HTTP requests
+        };
+        let manager = StateManager::new(config);
 
         let pos = PositionState::new(
             "BTC-USD".to_string(),
@@ -479,4 +569,158 @@ mod tests {
         assert!(format!("{:?}", db_error).contains("DatabaseError"));
         assert!(format!("{:?}", not_found).contains("NotFound"));
     }
+    // ========================================================================
+    // STORY 3.2: SAVE POSITION TO SUPABASE TESTS
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_save_position_disabled() {
+        // Story 3.2 Task 6.3: Supabase disabled - should skip HTTP request
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+        
+        let manager = StateManager::new(config);
+        let pos = PositionState::new(
+            "BTC-USD".to_string(),
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
+            0.5,
+            0.5,
+            0.35,
+        );
+
+        // Should return Ok without network request
+        assert!(manager.save_position(&pos).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_save_position_success() {
+        // Story 3.2 Task 6.1: Mock Supabase 201 Created
+        let mut server = mockito::Server::new_async().await;
+        
+        let mock = server.mock("POST", "/rest/v1/positions")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-anon-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+        let pos = PositionState::new(
+            "BTC-USD".to_string(),
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
+            0.5,
+            0.5,
+            0.35,
+        );
+
+        // Should return Ok
+        let result = manager.save_position(&pos).await;
+        assert!(result.is_ok());
+        
+        // Verify mock was called
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_save_position_conflict() {
+        // Story 3.2 Task 6.2: Mock 409 Conflict - natural key violation
+        let mut server = mockito::Server::new_async().await;
+        
+        let mock = server.mock("POST", "/rest/v1/positions")
+            .with_status(409)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"message":"duplicate key value violates unique constraint"}"#)
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-anon-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+        let pos = PositionState::new(
+            "ETH-USD".to_string(),
+            "ETH-PERP".to_string(),
+            "ETH-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
+            1.0,
+            1.0,
+            0.25,
+        );
+
+        // Should return DatabaseError
+        let result = manager.save_position(&pos).await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(StateError::DatabaseError(msg)) => {
+                assert!(msg.contains("already exists"));
+                assert!(msg.contains("natural key conflict"));
+            }
+            _ => panic!("Expected DatabaseError for 409 Conflict"),
+        }
+        
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_save_position_unauthorized() {
+        // Story 3.2 Task 4.2: Mock 401 Unauthorized
+        let mut server = mockito::Server::new_async().await;
+        
+        let mock = server.mock("POST", "/rest/v1/positions")
+            .with_status(401)
+            .with_body("Unauthorized")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "invalid-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+        let pos = PositionState::new(
+            "SOL-USD".to_string(),
+            "SOL-PERP".to_string(),
+            "SOL-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
+            2.0,
+            2.0,
+            0.30,
+        );
+
+        // Should return DatabaseError
+        let result = manager.save_position(&pos).await;
+        assert!(result.is_err());
+        
+        match result {
+            Err(StateError::DatabaseError(msg)) => {
+                assert!(msg.contains("Invalid Supabase credentials"));
+            }
+            _ => panic!("Expected DatabaseError for 401 Unauthorized"),
+        }
+        
+        mock.assert_async().await;
+    }
+
 }
