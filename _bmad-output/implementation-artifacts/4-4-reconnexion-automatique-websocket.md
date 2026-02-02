@@ -1,6 +1,6 @@
 # Story 4.4: Reconnexion Automatique WebSocket
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -295,7 +295,7 @@ mod tests {
 }
 ```
 
-**Nombre de lignes:** ~150 production + ~70 tests = **~220 lignes total**
+**Nombre de lignes:** ~140 production + ~30 tests = **~170 lignes total** (après code review: suppression champ inutilisé)
 
 #### Step 2: Export Module
 
@@ -463,7 +463,7 @@ impl ExchangeAdapter for MockAdapter {
 }
 ```
 
-**LOC impact:** +15 lines dans MockAdapter
+**LOC impact:** +24 lines dans MockAdapter (is_stale_flag, reconnect_count, set_stale(), reconnect_call_count())
 
 ### Expected Behavior After Story 4.4
 
@@ -537,12 +537,14 @@ Gemini 2.0 Flash Experimental (via Antigravity)
 
 ### Completion Notes List
 
-**Story 4.4 Implementation - MVP Scope Completed**
+**Story 4.4 Implementation - MVP Scope Completed (Post-Review)**
 
 ✅ **Task 1: Module Creation**
-- Created `src/core/reconnect.rs` (178 lignes totales)
-- `ReconnectConfig` struct with configurable intervals (default 30s check, 90s stale timeout)
+- Created `src/core/reconnect.rs` (170 lignes totales après code review)
+- `ReconnectConfig` struct with configurable heartbeat interval (default 30s check)
+- **Code Review Fix**: Removed unused `stale_timeout_secs` field (staleness handled by adapter.is_stale())
 - `reconnect_monitor_task()` with tokio::select! for shutdown handling
+- **Code Review Fix**: Updated log message to match AC#1: `[RECONNECT] Attempting reconnection to {exchange}...`
 - Proper logging with tracing (info, warn, error) + exchange_name context
 - 3 comprehensive unit tests covering all scenarios
 
@@ -570,13 +572,23 @@ Gemini 2.0 Flash Experimental (via Antigravity)
 **Next Epic 6:**
 Lorsque les tasks de reconnexion seront spawned dans `runtime.rs`, le monitoring automatique sera actif et la reconnexion se fera automatiquement selon NFR9 (<5s avec backoff exponentiel).
 
+**Code Review Fixes (2026-02-02):**
+- ✅ Fixed AC#1 log message: Changed to `[RECONNECT] Attempting reconnection to {exchange}...`
+- ✅ Removed unused `stale_timeout_secs` field from `ReconnectConfig` (dead code)
+- ✅ Improved documentation: Clarified that staleness is determined by `adapter.is_stale()`, not config
+- ✅ Updated line counts: 170 lines total (was incorrectly reported as 178)
+
 ### File List
 
 **Created:**
-- `src/core/reconnect.rs` (178 lines) - Module reconnexion automatique avec monitoring task + tests
+- `src/core/reconnect.rs` (170 lines after code review) - Module reconnexion automatique avec monitoring task + tests
 
 **Modified:**
 - `src/core/mod.rs` (+4 lines) - Ajout module reconnect + exports publics
 - `src/adapters/traits.rs` (+24 lines) - Extension MockAdapter avec is_stale_flag, reconnect_count, set_stale(), reconnect_call_count()
 
-**Total Impact:** ~206 lines added (178 production/test + 28 infrastructure)
+**Total Impact:** ~198 lines added (170 production/test + 28 infrastructure)
+
+⚠️ **Git Hygiene Warning (Code Review Finding):**
+Uncommitted files from previous stories detected (Stories 4.1, 4.2, 4.3 + Epic 3 tests).
+Clean working directory before committing Story 4.4 changes for independent git history.

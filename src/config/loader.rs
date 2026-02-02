@@ -210,4 +210,21 @@ api:
         assert_eq!(config.bots[0].id, "btc_bot");
         assert_eq!(config.bots[1].id, "eth_bot");
     }
+
+    #[test]
+    fn test_empty_bots_array_fails_validation() {
+        let yaml = r#"
+bots: []
+risk:
+  adl_warning: 10.0
+  adl_critical: 5.0
+  max_duration_hours: 24
+api:
+  port: 8080
+  ws_heartbeat_sec: 30
+"#;
+        let result = load_config_from_str(yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one bot"));
+    }
 }

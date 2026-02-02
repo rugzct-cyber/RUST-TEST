@@ -97,14 +97,6 @@ impl BotConfig {
             ));
         }
 
-        // Rule: spread values must be non-negative
-        if self.spread_entry < 0.0 || self.spread_exit < 0.0 {
-            return Err(AppError::Config(format!(
-                "Bot '{}': spread values must be >= 0 (entry: {}, exit: {})",
-                self.id, self.spread_entry, self.spread_exit
-            )));
-        }
-
         // Rule: spread values must be in valid range (0% to 100%)
         if self.spread_entry <= 0.0 || self.spread_entry >= 100.0 {
             return Err(AppError::Config(format!(
@@ -404,7 +396,7 @@ api:
         
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread values must be >= 0"));
+        assert!(result.unwrap_err().to_string().contains("spread_entry must be > 0 and < 100%"));
     }
 
     #[test]
@@ -415,7 +407,7 @@ api:
         
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread values must be >= 0"));
+        assert!(result.unwrap_err().to_string().contains("spread_exit must be > 0 and < 100%"));
     }
 
     #[test]

@@ -5,20 +5,19 @@ use tracing::{info, warn, error};
 use crate::adapters::traits::ExchangeAdapter;
 
 /// Configuration pour la reconnexion automatique
+/// 
+/// Note: La détection de connexion "stale" est gérée par la méthode
+/// `ExchangeAdapter::is_stale()` de chaque adapter, pas par cette config.
 #[derive(Debug, Clone)]
 pub struct ReconnectConfig {
     /// Intervalle de vérification heartbeat (secondes)
     pub heartbeat_check_interval_secs: u64,
-    
-    /// Timeout pour considérer une connection stale (secondes)  
-    pub stale_timeout_secs: u64,
 }
 
 impl Default for ReconnectConfig {
     fn default() -> Self {
         Self {
             heartbeat_check_interval_secs: 30,  // Check toutes les 30s
-            stale_timeout_secs: 90,              // 90s = 3 heartbeats ratés
         }
     }
 }
@@ -57,7 +56,7 @@ where
                 if is_stale {
                     warn!(
                         exchange = exchange_name,
-                        "Connection stale detected, initiating reconnection..."
+                        "[RECONNECT] Attempting reconnection to {}...", exchange_name
                     );
                     
                     let reconnect_result = {
@@ -107,7 +106,6 @@ mod tests {
         
         let config = ReconnectConfig {
             heartbeat_check_interval_secs: 1, // 1s for fast test
-            stale_timeout_secs: 90,
         };
         
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -135,7 +133,6 @@ mod tests {
         
         let config = ReconnectConfig {
             heartbeat_check_interval_secs: 1,
-            stale_timeout_secs: 90,
         };
         
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);

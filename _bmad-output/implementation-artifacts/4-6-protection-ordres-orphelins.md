@@ -1,6 +1,6 @@
 # Story 4.6: Protection contre les Ordres Orphelins
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -12,47 +12,66 @@ So that je n'aie pas de positions imprévues.
 
 ## Acceptance Criteria
 
+> [!WARNING]
+> **AC Implementation Status:** This AC describes the **target behavior for Epic 6**. Story 4.6 MVP implements the **foundation only** (tracking + pattern definition). Actual cancel execution deferred to Epic 6.
+
 1. **Given** des ordres en attente lors du shutdown  
    **When** le shutdown est déclenché  
-   **Then** les ordres pending sont annulés via l'API  
-   **And** un log `[SHUTDOWN] Cancelled N pending orders` est émis  
-   **And** le bot ne quitte qu'après confirmation d'annulation  
-   **And** un log final `[SHUTDOWN] Clean exit, no pending orders` est émis
+   **Then** les ordres pending sont annulés via l'API ⚠️ **Epic 6** (MVP: stub function defined)  
+   **And** un log `[SHUTDOWN] Cancelled N pending orders` est émis ⚠️ **Epic 6** (MVP: pattern documented)  
+   **And** le bot ne quitte qu'après confirmation d'annulation ⚠️ **Epic 6** (MVP: TODO comment at call site)  
+   **And** un log final `[SHUTDOWN] Clean exit, no pending orders` est émis ✅ **MVP Implemented** (placeholder only)
+
+**MVP Story 4.6 Deliverables:**
+- ✅ PendingOrder tracking in StateManager (add/remove/get)
+- ✅ cancel_pending_orders() pattern function with complete docstring
+- ✅ Unit tests for tracking (3 tests, all pass)
+- ✅ Epic 6 integration documented
+
+**Epic 6 Required to Complete AC:**
+- Pass state_manager & adapters to main shutdown flow
+- Uncomment cancel_pending_orders() call
+- Implement actual cancel iteration logic
+- Add integration test for full shutdown + cancel flow
 
 > [!IMPORTANT]
-> **MVP Scope (Story 4.6):** This story implements orphan order protection for shutdown scenarios. The implementation assumes **Market orders (taker)** are used per Story 2.1 notes - no cancel logic needed for normal execution. This story specifically addresses shutdown scenarios where pending orders might exist, even though current arch patterns use market-only execution.
+> **MVP Scope (Story 4.6):** This story implements orphan order protection **foundation** for shutdown scenarios. The implementation assumes **Market orders (taker)** are used per Story 2.1 notes - no cancel logic needed for normal execution. This story specifically addresses shutdown scenarios where pending orders might exist, even though current arch patterns use market-only execution.
 
 ## Tasks / Subtasks
 
-- [x] **Task 1**: Implémenter tracking des ordres pending dans StateManager (AC: #1)
-  - [x] Subtask 1.1: Ajouter `Vec<PendingOrder>` dans `StateManager` struct
-  - [x] Subtask 1.2: Méthode `add_pending_order(order_id, exchange, symbol)` pour tracker ordre créé
-  - [x] Subtask 1.3: Méthode `remove_pending_order(order_id)` pour cleanup après fill
-  - [x] Subtask 1.4: Méthode `get_pending_orders() -> Vec<PendingOrder>` pour récupération
+> [!IMPORTANT]
+> **MVP Scope vs Epic 6:** This story implements the **foundation and pattern** for orphan order protection. Task 1 (tracking) is FULLY implemented. Tasks 2-3 (cancel execution) define the pattern but actual implementation is deferred to Epic 6 when adapters are integrated into the runtime.
 
-- [x] **Task 2**: Implémenter cleanup des ordres orphelins dans shutdown (AC: #1)
-  - [x] Subtask 2.1: Ajouter async function `cancel_pending_orders()` dans main.rs (MVP stub)
-  - [x] Subtask 2.2: Définir pattern de récupération pending orders (Epic 6 integration ready)
-  - [x] Subtask 2.3: Définir pattern d'itération et cancel via adapters (documented)
-  - [x] Subtask 2.4: Pattern timeout 10s défini dans docstring
-  - [x] Subtask 2.5: Pattern logging défini dans docstring
-  - [x] Subtask 2.6: MVP placeholder: log "Clean exit, no pending orders"
+- [x] **Task 1**: Implémenter tracking des ordres pending dans StateManager ✅ **FULLY IMPLEMENTED**
+  - [x] Subtask 1.1: Ajouter `Vec<PendingOrder>` dans `StateManager` struct ✅
+  - [x] Subtask 1.2: Méthode `add_pending_order(order_id, exchange, symbol)` pour tracker ordre créé ✅
+  - [x] Subtask 1.3: Méthode `remove_pending_order(order_id)` pour cleanup après fill ✅
+  - [x] Subtask 1.4: Méthode `get_pending_orders() -> Vec<PendingOrder>` pour récupération ✅
 
-- [x] **Task 3**: Intégrer orphan cleanup dans SIGINT handler (AC: #1)
-  - [x] Subtask 3.1: Ajouter TODO comment pour `cancel_pending_orders()` call site (Epic 6)
-  - [x] Subtask 3.2: Documenter shutdown flow: signal → cancel orders → disconnect → exit
-  - [x] Subtask 3.3: MVP logs correct ("Clean exit" placeholder confirms pattern)
+- [/] **Task 2**: Implémenter cleanup des ordres orphelins dans shutdown ⚠️ **PATTERN ONLY - Epic 6 execution**
+  - [x] Subtask 2.1: Ajouter async function `cancel_pending_orders()` dans main.rs (MVP stub avec docstring complet)
+  - [x] Subtask 2.2: Définir pattern de récupération pending orders (documenté dans docstring)
+  - [/] Subtask 2.3: Définir pattern d'itération et cancel via adapters (documenté, **NOT implémenté** - Epic 6)
+  - [x] Subtask 2.4: Pattern timeout 10s défini dans docstring (lignes 147)
+  - [x] Subtask 2.5: Pattern logging défini dans docstring (lignes 144-148)
+  - [x] Subtask 2.6: MVP placeholder: log "Clean exit, no pending orders" ✅
 
-- [x] **Task 4**: Écrire unit tests pour tracking (AC: #1)order tracking (AC: #1)
-  - [x] Subtask 4.1: Test `test_add_pending_order` - vérifie ajout correct (PASS)
-  - [x] Subtask 4.2: Test `test_remove_pending_order` - vérifie suppression (PASS)
-  - [x] Subtask 4.3: Test `test_get_pending_orders` - vérifie liste retournée (PASS)
+- [/] **Task 3**: Intégrer orphan cleanup dans SIGINT handler ⚠️ **PATTERN ONLY - Epic 6 integration**
+  - [x] Subtask 3.1: Ajouter TODO comment pour `cancel_pending_orders()` call site (Epic 6) - ligne 116-117
+  - [x] Subtask 3.2: Documenter shutdown flow dans docstring: signal → cancel orders → disconnect → exit
+  - [/] Subtask 3.3: MVP logs correct ("Clean exit" placeholder OK, **AC-compliant logs Epic 6** - see Issue #3)
 
-- [x] **Task 5**: Validation finale (AC: #1)all)
+- [x] **Task 4**: Écrire unit tests pour order tracking ✅ **FULLY IMPLEMENTED**
+  - [x] Subtask 4.1: Test `test_add_pending_order` - vérifie ajout correct (PASS) ✅
+  - [x] Subtask 4.2: Test `test_remove_pending_order` - vérifie suppression (PASS) ✅
+  - [x] Subtask 4.3: Test `test_get_pending_orders` - vérifie liste retournée (PASS) ✅
+  - [ ] Subtask 4.4: **Epic 6**: Integration test for full cancel flow (deferred)
+
+- [x] **Task 5**: Validation finale (MVP scope) ✅
   - [x] Subtask 5.1: `cargo build` - code compile sans warnings ✅
   - [x] Subtask 5.2: `cargo clippy` - 0 warnings ✅
   - [x] Subtask 5.3: `cargo test --lib` - 241 tests passent (238 baseline + 3 nouveaux) ✅
-  - [x] Subtask 5.4: Logs vérifiés ("Clean exit" placeholder pour MVP)
+  - [x] Subtask 5.4: Logs vérifiés ("Clean exit" placeholder pour MVP) ✅
   - [x] Subtask 5.5: Epic 6 integration checklist documenté dans Dev Notes ✅
 
 ## Dev Notes
@@ -488,12 +507,14 @@ feat(resilience): Story 4.6 - Protection contre les ordres orphelins
 
 ### Completion Notes List
 
-- **MVP Scope Achieved**: Story 4.6 implements the **foundation and pattern** for orphan order protection, deferring full runtime integration to Epic 6.
-- **StateManager Extended**: Added `PendingOrder` struct and three methods (`add_pending_order`, `remove_pending_order`, `get_pending_orders`) with Arc<RwLock> for thread-safe access.
-- **Shutdown Pattern Defined**: `cancel_pending_orders()` function stub in `main.rs` documents the integration pattern with detailed docstring.
-- **Testing**: 3 new unit tests cover all pending order tracking scenarios (add, remove, get).
-- **Code Quality**: Zero clippy warnings, all 241 tests pass.
-- **Epic 6 Ready**: Clear integration checklist and TODO comments mark exact call sites.
+- **MVP Scope Achieved**: Story 4.6 implements the **foundation and pattern** for orphan order protection. Actual cancel execution deferred to Epic 6 (adapters not yet in runtime).
+- **StateManager Extended**: Added `PendingOrder` struct and three methods (`add_pending_order`, `remove_pending_order`, `get_pending_orders`) with Arc<RwLock> for thread-safe access. ✅ FULLY IMPLEMENTED
+- **Shutdown Pattern Defined**: `cancel_pending_orders()` function stub in `main.rs` documents the integration pattern with comprehensive docstring (39 lines). ✅ Pattern documented, ⚠️ execution Epic 6
+- **Testing**: 3 new unit tests cover all pending order tracking scenarios (add, remove, get). Integration test for cancel flow deferred to Epic 6.
+- **Code Quality**: Zero clippy warnings, all 241 tests pass. Performance optimized (removed redundant clones).
+- **Epic 6 Ready**: Clear integration checklist and TODO comments mark exact call sites (main.rs:116-117).
+- **Adversarial Review Applied**: Fixed misleading documentation, clarified MVP vs Epic 6 scope, improved error handling docs.
+- **AC Status**: Tracking ✅ implemented, Cancel execution ⚠️ Epic 6, Logs ⚠️ Epic 6 (pattern defined)
 
 ### File List
 

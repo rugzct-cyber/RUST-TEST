@@ -1,6 +1,6 @@
 # Story 4.1: Configuration des Paires via YAML
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -62,16 +62,16 @@ So that je puisse changer les paires sans modifier le code.
 
 ## Definition of Done Checklist
 
-- [ ] `config.yaml` existe à la racine du projet avec au moins 1 bot BTC-PERP
-- [ ] `main.rs` charge la configuration au démarrage via `load_config()`
-- [ ] Logs structurés émis: `[CONFIG] Loaded pairs: [...]` et `[INFO] Loaded N bots`
-- [ ] Erreur fichier absent → log clair + exit non-zéro
-- [ ] Erreur YAML invalide → log clair + exit non-zéro
-- [ ] Erreur validation → log clair + exit non-zéro
-- [ ] Code compile sans warnings (`cargo build`)
-- [ ] Clippy propre (`cargo clippy --all-targets -- -D warnings`)
-- [ ] Tests passent (`cargo test`)
-- [ ] Test manuel réussi: `cargo run` affiche paires chargées
+- [x] `config.yaml` existe à la racine du projet avec au moins 1 bot BTC-PERP
+- [x] `main.rs` charge la configuration au démarrage via `load_config()`
+- [x] Logs structurés émis: `[CONFIG] Loaded pairs: [...]` et `[INFO] Loaded N bots`
+- [x] Erreur fichier absent → log clair + exit non-zéro
+- [x] Erreur YAML invalide → log clair + exit non-zéro
+- [x] Erreur validation → log clair + exit non-zéro
+- [x] Code compile sans warnings (`cargo build`)
+- [x] Clippy propre (`cargo clippy --all-targets -- -D warnings`)
+- [x] Tests passent (`cargo test`)
+- [x] Test manuel réussi: `cargo run` affiche paires chargées
 
 ## Dev Notes
 
@@ -101,6 +101,22 @@ src/config/
 - ✅ `dex_a ≠ dex_b`
 - ✅ `leverage` entre 1-100
 - ✅ `capital > 0`
+
+### Running the Application
+
+**Required Environment Variable for Logging:**
+```bash
+# Linux/macOS
+RUST_LOG=info cargo run
+
+# Windows PowerShell
+$env:RUST_LOG="info"; cargo run
+
+# Windows CMD
+set RUST_LOG=info && cargo run
+```
+
+Without `RUST_LOG=info`, structured logs will be filtered and not displayed.
 
 ### Architecture Pattern — Configuration Flow
 
@@ -177,10 +193,10 @@ api:
 
 **Modifications:**
 
-1. **Add import** (ajouterafter line 11):
+1. **Add import** (ajouter after line 11):
 ```rust
 use std::path::Path;
-use bot4::config;  // Assuming crate name is 'bot4'
+use hft_bot::config;  // Crate name from Cargo.toml: name = "hft-bot"
 ```
 
 2. **Replace TODO line 22-30** with actual config loading:
@@ -421,15 +437,47 @@ No errors encountered during implementation.
   - AC#2: Logs emit correct structured output
   - AC#3: Invalid YAML produces clear error + exit 1
   - AC#4: Missing file produces clear error + exit 1
-- ✅ Manual testing completed:
-  - Valid config: logs show `[CONFIG] Loaded pairs: ["BTC-PERP"]` and `[INFO] Loaded 1 bots`
-  - Missing config: error `Configuration file not found: config.yaml` + exit 1
-  - Invalid YAML: error `mapping values are not allowed in this context` + exit 1
-- ✅ All 226 existing tests pass (no regressions)
+- ✅ Manual testing completed (Subtasks 3.1-3.4):
+  - **Test 3.1 - Valid config:**
+    ```powershell
+    $env:RUST_LOG="info"; cargo run
+    # Output: [CONFIG] Loaded pairs: ["BTC-PERP"]
+    # Output: [INFO] Loaded 1 bots from configuration
+    ```
+  - **Test 3.2 - Missing config:**
+    ```powershell
+    mv config.yaml config.yaml.bak
+    cargo run
+    # Output: [ERROR] Configuration failed: Configuration file not found: config.yaml
+    # Exit code: 1
+    ```
+  - **Test 3.3 - Invalid YAML:**
+    ```powershell
+    echo "invalid: [yaml" > config.yaml
+    cargo run
+    # Output: [ERROR] Configuration failed: YAML parse error in 'config.yaml': ...
+    # Exit code: 1
+    ```
+  - **Test 3.4 - Structured logs with RUST_LOG:**
+    Verified JSON-structured logs with `RUST_LOG=info` showing proper field formatting
+- ✅ Code review fixes applied (2026-02-02):
+  - Added validation: empty bots array prevention (AppConfig::validate)
+  - Added validation: empty bot ID rejection (BotConfig::validate)
+  - Added validation: negative spread values rejection (BotConfig::validate)
+  - Added 6 new tests for validation coverage
+- ✅ All 232 tests pass (added 6 new validation tests)
 - ✅ Clippy clean (no warnings)
 - ✅ Build successful without warnings
 
+**Git Hygiene Note:**
+Untracked files not related to Story 4.1:
+- `_bmad-output/implementation-artifacts/epic-3-retro-2026-02-02.md` (Epic 3 retrospective)
+- `src/bin/integration_test_supabase.rs` (Epic 3 integration test)
+- `src/bin/lifecycle_test.rs` (Epic 3 integration test)
+
 ### File List
 
-- `config.yaml` (NEW): Application configuration with bot, risk, and API settings
-- `src/main.rs` (MODIFIED, lines 1-95): Integrated load_config() with error handling and structured logs
+- `config.yaml` (NEW, lines 1-17): Application configuration with bot, risk, and API settings
+- `src/main.rs` (MODIFIED, lines 22-51): Integrated load_config() with error handling and structured logs
+- `src/config/types.rs` (MODIFIED, lines 90-141, 160-183): Added validations for empty bots, empty ID, negative spreads
+- `src/config/loader.rs` (MODIFIED, lines 211-229): Added test for empty bots array validation

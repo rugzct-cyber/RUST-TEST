@@ -6,8 +6,8 @@ inputDocuments:
 workflowType: 'epics-and-stories'
 project_name: 'bot4'
 workflowStatus: 'complete'
-totalEpics: 6
-totalStories: 26
+totalEpics: 7
+totalStories: 30
 frsCovered: 21
 ---
 
@@ -579,3 +579,89 @@ So that je puisse tracer et debugger facilement.
 - `timestamp`: horodatage précis
 - `event_type`: type d'événement (SPREAD_DETECTED, ORDER_PLACED, etc.)
 **And** les logs permettent de reconstruire la timeline des opérations
+
+---
+
+## Epic 6: Bot Automation & Integration
+
+L'opérateur peut lancer le bot et celui-ci trade automatiquement.
+
+**Outcome utilisateur :** `cargo run` → bot monitore spreads, exécute delta-neutral automatiquement, ferme positions automatiquement.
+
+**FRs couverts :** Integration de FR1-FR21 (automatic execution loop)
+
+### Story 6.1: Main Runtime Integration
+
+As a opérateur,
+I want que `main.rs` charge les credentials et démarre le runtime,
+So that je puisse lancer le bot avec `cargo run`.
+
+**Acceptance Criteria:**
+
+**Given** `config.yaml` et `.env` sont configurés
+**When** je lance `cargo run`
+**Then** le bot:
+- Charge credentials depuis `.env` (Story 4.3)
+- Charge config depuis `config.yaml` (Stories 4.1, 4.2)
+- Se connecte aux WebSockets Vest + Paradex (Stories 1.1, 1.2)
+- S'abonne aux orderbooks (Story 1.3)
+- Démarre la boucle de monitoring de spreads (Stories 1.4, 1.5)
+**And** un log `[INFO] Bot runtime started` est émis
+**And** le bot s'arrête proprement sur Ctrl+C (Story 4.5)
+
+### Story 6.2: Automatic Delta-Neutral Execution
+
+As a opérateur,
+I want que les positions s'ouvrent automatiquement quand spread ≥ threshold,
+So that je ne rate pas d'opportunités de trading.
+
+**Acceptance Criteria:**
+
+**Given** le monitoring de spreads est actif
+**When** spread ≥ `spread_entry` threshold configuré
+**Then** exécution delta-neutral est **automatiquement déclenchée**
+**And** aucune intervention manuelle requise
+**And** la logique de Story 2.3 (simultaneous long/short) est utilisée
+**And** en cas de succès, position persistée dans Supabase (Story 3.2)
+**And** en cas d'échec d'un leg, auto-close logic déclenchée (Story 2.5)
+**And** un log `[TRADE] Auto-executed: spread=X%` est émis
+
+### Story 6.3: Automatic Position Monitoring & Exit
+
+As a opérateur,
+I want que les positions se ferment automatiquement quand spread ≤ exit threshold,
+So que je capture les profits sans monitoring manuel.
+
+**Acceptance Criteria:**
+
+**Given** une position delta-neutral ouverte
+**When** spread ≤ `spread_exit` threshold configuré
+**Then** position est **automatiquement fermée**
+**And** les deux legs sont fermés simultanément
+**And** Supabase est mis à jour (Story 3.4)
+**And** un log `[TRADE] Auto-closed: spread=X%` est émis
+
+**Given** des positions restaurées de Supabase au démarrage (Story 3.3)
+**When** le bot reprend le monitoring
+**Then** il tracke les conditions de sortie pour ces positions
+
+### Story 6.5: End-to-End Integration Test
+
+As a QA engineer,
+I want un test automatisé du cycle complet,
+So que je puisse vérifier que tout fonctionne end-to-end.
+
+**Acceptance Criteria:**
+
+**Given** un test d'intégration `tests/integration/full_cycle.rs`
+**When** le test est exécuté avec `cargo test --test full_cycle`
+**Then** le test couvre:
+- Chargement config + credentials
+- Connexion aux exchanges (testnet ou mock)
+- Détection spread (mock spread opportunity)
+- Exécution delta-neutral
+- Persistence Supabase
+- Fermeture automatique position
+- Vérification état final
+**And** le test passe sur CI/CD pipeline
+**And** le test utilise testnet ou mocked exchanges

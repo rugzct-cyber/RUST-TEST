@@ -587,13 +587,14 @@ impl StateManager {
     /// to track orders that might become orphaned during shutdown
     pub async fn add_pending_order(&self, order_id: String, exchange: String, symbol: String) {
         let mut orders = self.pending_orders.write().await;
+        let order_id_for_log = order_id.clone(); // Clone only for logging
         orders.push(PendingOrder {
-            order_id: order_id.clone(),
-            exchange: exchange.clone(),
+            order_id,
+            exchange,
             symbol,
             created_at: current_time_ms(),
         });
-        tracing::debug!("Added pending order {} to tracking", order_id);
+        tracing::debug!("Added pending order {} to tracking", order_id_for_log);
     }
     
     /// Remove a pending order from tracking (Story 4.6)

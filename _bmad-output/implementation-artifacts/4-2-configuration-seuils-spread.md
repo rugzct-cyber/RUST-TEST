@@ -1,6 +1,6 @@
 # Story 4.2: Configuration des Seuils de Spread
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -39,10 +39,10 @@ So that je puisse ajuster la sensibilité du bot.
   - [x] Subtask 1.3: Retourner `AppError::Config` avec message clair si validation échoue
   - [x] Subtask 1.4: Utiliser format: `"Bot '{id}': spread thresholds must be > 0 and < 100% (entry: {}, exit: {})"`
   
-- [x] **Task 2**: Ajouter logging des seuils dans `main.rs` (AC: #2)
-  - [x] Subtask 2.1: Ajouter log `[CONFIG] Thresholds: entry=X%, exit=Y%` après chargement config
-  - [x] Subtask 2.2: Inclure dans section « Active Bot Configuration » existante (lines 224-232 de main.rs)
-  - [x] Subtask 2.3: Utiliser structured logging: `info!("   Entry threshold: {}%", bot.spread_entry);`
+- [x] **Task 2**: Vérifier logging des seuils dans `main.rs` (AC: #2) — **NOTE:** Logging already existed
+  - [x] Subtask 2.1: Vérifier que log threshold existe dans « Active Bot Configuration » section
+  - [x] Subtask 2.2: Confirmer format: `info!("   Entry threshold: {}%", bot.spread_entry);`
+  - [x] Subtask 2.3: **RÉSULTAT:** Logging déjà implémenté (lines 48-49), aucune modification requise
 
 - [x] **Task 3**: Tests unitaires pour validation ranges (AC: #3)
   - [x] Subtask 3.1: Test `test_spread_entry_zero_fails` - spread_entry = 0.0
@@ -527,14 +527,17 @@ N/A
 
 ### Completion Notes List
 
-- ✅ Added threshold range validation (0% < x < 100%) to `BotConfig::validate()` in `src/config/types.rs`
-- ✅ Confirmed threshold logging already implemented in `src/main.rs` (lines 48-49)
+- ✅ Added threshold range validation (0% < x < 100%) to `BotConfig::validate()` in `src/config/types.rs` (lines 100-114)
+- ✅ **VERIFIED** threshold logging already existed in `src/main.rs` (lines 48-49) — NO CODE CHANGES NEEDED for Task 2
 - ✅ Added 4 new unit tests for range validation: `test_spread_entry_zero_fails`, `test_spread_entry_above_100_fails`, `test_spread_exit_above_100_fails`, `test_spread_thresholds_at_boundaries`
+- ✅ **CODE REVIEW FIX:** Removed redundant non-negative validation (was lines 100-106, now removed)
 - ✅ All validations passed: 236/236 tests, cargo build --lib successful, cargo clippy clean
 - ✅ Manual test confirmed threshold logging working correctly (Entry: 0.3%, Exit: 0.05%)
 - ✅ Test count increased from 232 to 236 tests (+4 new tests)
 
 ### File List
 
-- `src/config/types.rs` (lines 100-122): Added threshold range validation in `BotConfig::validate()` method
-- `src/config/types.rs` (lines 464-503): Added 4 new unit tests for threshold range validation
+- `src/config/types.rs` (lines 100-114): Added threshold range validation in `BotConfig::validate()` method (Story 4.2)
+- `src/config/types.rs` (lines 462-501): Added 4 new unit tests for threshold range validation (Story 4.2)
+- `src/config/loader.rs` (lines 214-229): Added test `test_empty_bots_array_fails_validation` (from Story 4.1, committed with 4.2)
+- `_bmad-output/implementation-artifacts/4-1-configuration-paires-yaml.md` (File List): Updated to document loader.rs test (from Story 4.1)
