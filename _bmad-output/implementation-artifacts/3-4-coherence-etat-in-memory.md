@@ -19,8 +19,8 @@ So that les décisions du bot soient basées sur des données fiables.
    
 2. **Given** une mise à jour de position
    **When** la synchronisation Supabase échoue
-   **Then** un retry est effectué (géré par le caller)
-   **And** l'erreur est propagée pour permettre au caller de décider (retry/abort)
+   **Then** l'erreur est propagée au caller pour permettre au caller de décider
+   **And** le caller gère la stratégie de retry/abort selon ses besoins
 
 3. **Given** une position supprimée in-memory
    **When** `remove_position()` est appelé
@@ -142,6 +142,12 @@ Story 3.4 implémente la **synchronisation Supabase** pour les opérations UPDAT
 **Note importante:**
 - Story 3.4 ne gère PAS le retry automatique (AC#2 interprété comme: caller gère retry)
 - Epic 4 (FR16-18) ajoutera resilience globale si nécessaire
+
+**Future Enhancement (Code Review M3):**
+- **Batch Operations:** Pour Epic 6+ (multi-pair), considérer ajout de `update_positions_batch()` et `remove_positions_batch()`
+- Supabase supporte batch PATCH/DELETE avec JSON arrays
+- Réduirait overhead HTTP de N requêtes à 1 requête
+- Non nécessaire pour MVP single-pair actuel
 
 ### Code Location & Existing Structure
 
@@ -684,4 +690,4 @@ N/A - No errors encountered during implementation
 
 ### File List
 
-- Modified: `src/core/state.rs` (implemented `update_position()` and `remove_position()`, added 8 unit tests)
+- Modified: `src/core/state.rs` (Lines 437-563: implemented `update_position()` and `remove_position()`, Lines 1207-1436: added 8 unit tests)
