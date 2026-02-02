@@ -121,8 +121,8 @@ development_status:
   4-1-configuration-paires-yaml: done
   4-2-configuration-seuils-spread: done
   4-3-configuration-credentials-env: done
-  4-4-reconnexion-automatique-websocket: review
-  4-5-arret-propre-sigint: backlog
+  4-4-reconnexion-automatique-websocket: done
+  4-5-arret-propre-sigint: review
   4-6-protection-ordres-orphelins: backlog
   epic-4-retrospective: optional
 

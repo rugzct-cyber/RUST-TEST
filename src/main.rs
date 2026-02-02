@@ -8,7 +8,8 @@
 //! 5. Logs opportunities to console
 
 use std::path::Path;
-use std::time::Duration;
+use tokio::signal;
+use tokio::sync::broadcast;
 use tracing::{info, error};
 use hft_bot::config;
 
@@ -65,26 +66,37 @@ async fn main() -> anyhow::Result<()> {
     // vest.subscribe_orderbook(pair).await?;
     // paradex.subscribe_orderbook(pair).await?;
     
-    info!("⏳ MVP scaffold ready. Implement adapter connections next.");
-    info!("📁 Project structure created in c:\\Users\\jules\\Documents\\bot4");
+    // Create shutdown broadcast channel
+    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+
+    // Spawn SIGINT handler task
+    let shutdown_signal = shutdown_tx.clone();
+    tokio::spawn(async move {
+        match signal::ctrl_c().await {
+            Ok(()) => {
+                info!("[SHUTDOWN] Graceful shutdown initiated");
+                // Broadcast shutdown to all tasks
+                let _ = shutdown_signal.send(());
+            }
+            Err(err) => {
+                eprintln!("Failed to listen for Ctrl+C signal: {}", err);
+            }
+        }
+    });
+
+    info!("⏳ MVP scaffold ready. Press Ctrl+C to test graceful shutdown.");
     
-    // Placeholder loop - will be replaced with real polling
-    loop {
-        // TODO: Poll orderbooks
-        // let ob_vest = vest.poll().await?;
-        // let ob_paradex = paradex.poll().await?;
-        
-        // TODO: Calculate spread using VWAP
-        // let vwap_a = calculate_vwap(&ob_vest.asks, size);
-        // let vwap_b = calculate_vwap(&ob_paradex.bids, size);
-        // let spread = (vwap_a.vwap_price - vwap_b.vwap_price) / vwap_b.vwap_price * 100.0;
-        
-        // TODO: Check thresholds
-        // if spread > spread_entry_threshold {
-        //     info!("🎯 Entry opportunity: {:.4}%", spread);
-        // }
-        
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        info!("💓 Heartbeat - waiting for implementation...");
+    // Placeholder task - waits for shutdown
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!("[SHUTDOWN] Shutdown signal received in main task");
+        }
     }
+
+    // TODO Epic 6: Disconnect adapters here
+    // vest_adapter.disconnect().await?;
+    // paradex_adapter.disconnect().await?;
+
+    info!("[SHUTDOWN] Clean exit");
+    Ok(())
 }
