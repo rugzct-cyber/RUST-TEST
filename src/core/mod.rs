@@ -18,6 +18,7 @@
 pub mod channels;
 pub mod execution;
 pub mod logging;
+pub mod reconnect;
 pub mod runtime;
 pub mod spread;
 pub mod state;
@@ -50,3 +51,6 @@ pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
 
 // Explicit re-exports for runtime module (Story 2.3)
 pub use runtime::execution_task;
+
+// Explicit re-exports for reconnect module (Story 4.4)
+pub use reconnect::{ReconnectConfig, reconnect_monitor_task};

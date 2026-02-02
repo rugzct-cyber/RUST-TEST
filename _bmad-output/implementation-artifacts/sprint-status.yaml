@@ -120,8 +120,8 @@ development_status:
   epic-4: in-progress
   4-1-configuration-paires-yaml: done
   4-2-configuration-seuils-spread: done
-  4-3-configuration-credentials-env: review
-  4-4-reconnexion-automatique-websocket: backlog
+  4-3-configuration-credentials-env: done
+  4-4-reconnexion-automatique-websocket: review
   4-5-arret-propre-sigint: backlog
   4-6-protection-ordres-orphelins: backlog
   epic-4-retrospective: optional
@@ -132,3 +132,11 @@ development_status:
   5-2-redaction-automatique-credentials: backlog
   5-3-logging-evenements-trading-contexte: backlog
   epic-5-retrospective: optional
+
+  # Epic 6: Bot Automation & Integration
+  epic-6: backlog
+  6-1-main-runtime-integration: backlog
+  6-2-automatic-delta-neutral-execution: backlog
+  6-3-automatic-position-monitoring-exit: backlog
+  6-5-end-to-end-integration-test: backlog
+  epic-6-retrospective: optional

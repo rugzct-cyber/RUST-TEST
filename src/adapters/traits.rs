@@ -156,8 +156,8 @@ pub trait ExchangeAdapter: Send + Sync {
     fn exchange_name(&self) -> &'static str;
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, doc))]
+pub mod tests {
     use super::*;
     use std::collections::HashMap;
     use crate::adapters::types::{OrderSide, OrderStatus};
@@ -167,6 +167,8 @@ mod tests {
         connected: bool,
         orderbooks: HashMap<String, Orderbook>,
         subscriptions: Vec<String>,
+        is_stale_flag: bool,
+        reconnect_count: usize,
     }
 
     impl MockAdapter {
@@ -175,7 +177,19 @@ mod tests {
                 connected: false,
                 orderbooks: HashMap::new(),
                 subscriptions: Vec::new(),
+                is_stale_flag: false,
+                reconnect_count: 0,
             }
+        }
+        
+        /// Set the stale flag for testing purposes
+        pub fn set_stale(&mut self, stale: bool) {
+            self.is_stale_flag = stale;
+        }
+        
+        /// Get the number of times reconnect() was called
+        pub fn reconnect_call_count(&self) -> usize {
+            self.reconnect_count
         }
     }
 
@@ -233,8 +247,8 @@ mod tests {
         }
         
         fn is_stale(&self) -> bool {
-            // Mock never stale when connected
-            !self.connected
+            // Use explicit stale flag for testing
+            self.is_stale_flag
         }
         
         async fn sync_orderbooks(&mut self) {
@@ -242,7 +256,9 @@ mod tests {
         }
         
         async fn reconnect(&mut self) -> ExchangeResult<()> {
-            // Mock reconnect just calls connect
+            // Increment counter for testing
+            self.reconnect_count += 1;
+            // Mock reconnect calls connect
             self.connect().await
         }
 
