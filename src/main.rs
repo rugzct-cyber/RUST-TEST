@@ -14,6 +14,9 @@ use hft_bot::config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load environment variables from .env file (if it exists)
+    dotenvy::dotenv().ok();
+    
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter("info")
