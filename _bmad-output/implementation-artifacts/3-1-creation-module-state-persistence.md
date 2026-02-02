@@ -1,6 +1,6 @@
 # Story 3.1: Création du Module State Persistence
 
-Status: review
+Status: done
 
 <!-- Note: Ce story pose les fondations de la persistence Supabase pour FR10-12. Le module state.rs existe déjà avec BotState/AppState pour le MVP in-memory, mais ne contient AUCUNE logique Supabase. Ce story ajoute les types Position et StateManager pour la persistence. Stories 3.2-3.4 ajouteront ensuite save/restore/sync. -->
 
