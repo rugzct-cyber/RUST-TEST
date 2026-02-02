@@ -1,28 +1,33 @@
-//! Runtime execution tasks (Story 2.3)
+//! Runtime execution tasks (Story 2.3, Story 6.2)
 //!
 //! This module provides the async task loops for the execution pipeline.
 //! The execution task consumes SpreadOpportunity messages and triggers
-//! delta-neutral trades.
+//! delta-neutral trades, persisting successful trades to Supabase.
 
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::adapters::ExchangeAdapter;
 use crate::core::channels::SpreadOpportunity;
 use crate::core::execution::DeltaNeutralExecutor;
+use crate::core::state::{PositionState, StateManager};
 
-/// Execution task that processes spread opportunities
+/// Execution task that processes spread opportunities (Story 6.2)
 ///
 /// Listens for `SpreadOpportunity` messages on the channel and executes
-/// delta-neutral trades. Shuts down gracefully on shutdown signal.
+/// delta-neutral trades. Persists successful trades to Supabase.
+/// Shuts down gracefully on shutdown signal.
 ///
 /// # Arguments
 /// * `opportunity_rx` - Receiver for spread opportunities
 /// * `executor` - The DeltaNeutralExecutor for trade execution
+/// * `state_manager` - StateManager for position persistence (AC1, AC3)
 /// * `shutdown_rx` - Broadcast receiver for shutdown signal
 pub async fn execution_task<V, P>(
     mut opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
     executor: DeltaNeutralExecutor<V, P>,
+    state_manager: Arc<StateManager>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) where
     V: ExchangeAdapter + Send + Sync,
@@ -39,6 +44,9 @@ pub async fn execution_task<V, P>(
             }
             // Process incoming opportunities
             Some(opportunity) = opportunity_rx.recv() => {
+                let spread_pct = opportunity.spread_percent;
+                let pair = opportunity.pair.clone();
+                
                 info!(
                     pair = %opportunity.pair,
                     spread = %format!("{:.4}%", opportunity.spread_percent),
@@ -49,23 +57,64 @@ pub async fn execution_task<V, P>(
                 match executor.execute_delta_neutral(opportunity).await {
                     Ok(result) => {
                         if result.success {
+                            // AC1: Log [TRADE] Auto-executed with spread
                             info!(
+                                spread = %format!("{:.4}%", spread_pct),
                                 latency_ms = result.execution_latency_ms,
                                 long = %result.long_exchange,
                                 short = %result.short_exchange,
-                                "Delta-neutral trade executed successfully"
+                                "[TRADE] Auto-executed"
                             );
+                            
+                            // AC3 (Story 6.2 Task 4): Save position to Supabase
+                            // Get filled quantities from result for position creation
+                            let (long_size, short_size) = match (&result.long_order, &result.short_order) {
+                                (crate::core::execution::LegStatus::Success(long_resp), 
+                                 crate::core::execution::LegStatus::Success(short_resp)) => {
+                                    (long_resp.filled_quantity, short_resp.filled_quantity)
+                                }
+                                _ => (0.0, 0.0), // Should not happen if success=true
+                            };
+                            
+                            let position = PositionState::new(
+                                pair.clone(),
+                                result.long_exchange.clone(),  // long_symbol uses exchange name for MVP
+                                result.short_exchange.clone(), // short_symbol uses exchange name for MVP
+                                result.long_exchange.clone(),
+                                result.short_exchange.clone(),
+                                long_size,
+                                short_size,
+                                spread_pct,
+                            );
+                            
+                            match state_manager.save_position(&position).await {
+                                Ok(_) => {
+                                    info!(
+                                        pair = %pair,
+                                        entry_spread = %format!("{:.4}%", spread_pct),
+                                        "[STATE] Position saved"
+                                    );
+                                }
+                                Err(e) => {
+                                    // AC1 Task 4.3: Don't block trading if Supabase fails
+                                    warn!(
+                                        pair = %pair,
+                                        error = %e,
+                                        "[STATE] Failed to save position. Trading continues."
+                                    );
+                                }
+                            }
                         } else {
                             error!(
                                 latency_ms = result.execution_latency_ms,
                                 long_success = %result.long_order.is_success(),
                                 short_success = %result.short_order.is_success(),
-                                "Delta-neutral trade partially failed"
+                                "[TRADE] Delta-neutral trade partially failed"
                             );
                         }
                     }
                     Err(e) => {
-                        error!(error = ?e, "Delta-neutral execution error");
+                        error!(error = ?e, "[TRADE] Delta-neutral execution error");
                     }
                 }
             }
@@ -137,9 +186,17 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
+        // Create StateManager with Supabase disabled for testing
+        let supabase_config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+        let state_manager = std::sync::Arc::new(StateManager::new(supabase_config));
+
         // Spawn the execution task
         let handle = tokio::spawn(async move {
-            execution_task(opportunity_rx, executor, shutdown_rx).await;
+            execution_task(opportunity_rx, executor, state_manager, shutdown_rx).await;
         });
 
         // Send an opportunity
@@ -179,8 +236,16 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
+        // Create StateManager with Supabase disabled for testing
+        let supabase_config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+        let state_manager = std::sync::Arc::new(StateManager::new(supabase_config));
+
         let handle = tokio::spawn(async move {
-            execution_task(opportunity_rx, executor, shutdown_rx).await;
+            execution_task(opportunity_rx, executor, state_manager, shutdown_rx).await;
         });
 
         // Send shutdown immediately

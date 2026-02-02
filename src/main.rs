@@ -200,11 +200,14 @@ async fn main() -> anyhow::Result<()> {
     );
     
     // Subtask 3.2: Spawn execution_task with shutdown subscription
+    // Task 4 (Story 6.2): Pass StateManager for position persistence
     let execution_shutdown = shutdown_tx.subscribe();
+    let exec_state_manager = state_manager.clone();
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
             executor,
+            exec_state_manager,
             execution_shutdown,
         ).await;
     });
