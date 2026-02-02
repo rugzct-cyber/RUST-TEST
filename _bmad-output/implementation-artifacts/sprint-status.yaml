@@ -122,8 +122,8 @@ development_status:
   4-2-configuration-seuils-spread: done
   4-3-configuration-credentials-env: done
   4-4-reconnexion-automatique-websocket: done
-  4-5-arret-propre-sigint: review
-  4-6-protection-ordres-orphelins: backlog
+  4-5-arret-propre-sigint: done
+  4-6-protection-ordres-orphelins: review
   epic-4-retrospective: optional
 
   # Epic 5: Observability & Logging

@@ -233,16 +233,29 @@ pub struct PositionUpdate {
     pub status: Option<PositionStatus>,
 }
 
+/// Pending order tracking for shutdown protection (Story 4.6)
+#[derive(Clone, Debug)]
+pub struct PendingOrder {
+    pub order_id: String,
+    pub exchange: String,  // "vest" or "paradex"
+    pub symbol: String,
+    pub created_at: u64,    // timestamp ms
+}
+
 /// Manager for persisting position state to Supabase
 ///
 /// Story 3.1: Stub implementation - all methods return Ok(())
 /// Story 3.2: Implementing actual Supabase save logic
+/// Story 4.6: Added pending order tracking for shutdown protection
 pub struct StateManager {
     /// Supabase project URL (e.g., https://xxx.supabase.co)
     supabase_url: String,
     
     /// Optional Supabase client (None if disabled)
     supabase_client: Option<reqwest::Client>,
+    
+    /// Pending orders (in-memory tracking for shutdown cleanup)
+    pending_orders: Arc<RwLock<Vec<PendingOrder>>>,
 }
 
 impl StateManager {
@@ -253,6 +266,7 @@ impl StateManager {
     ///
     /// # Note
     /// Story 3.2: Initializes reqwest client with proper auth headers
+    /// Story 4.6: Initialize pending_orders tracking
     pub fn new(config: crate::config::SupabaseConfig) -> Self {
         let client = if config.enabled {
             // Build headers with apikey and Authorization
@@ -286,6 +300,7 @@ impl StateManager {
         Self {
             supabase_url: config.url,
             supabase_client: client,
+            pending_orders: Arc::new(RwLock::new(Vec::new())),
         }
     }
     
@@ -560,6 +575,41 @@ impl StateManager {
                 Err(StateError::DatabaseError(err_msg))
             }
         }
+    }
+    
+    // ============================================================================
+    // EPIC 4: ORPHAN ORDER PROTECTION (Story 4.6)
+    // ============================================================================
+    
+    /// Add a pending order to tracking (Story 4.6)
+    ///
+    /// Call this after order POST is sent but before response is received
+    /// to track orders that might become orphaned during shutdown
+    pub async fn add_pending_order(&self, order_id: String, exchange: String, symbol: String) {
+        let mut orders = self.pending_orders.write().await;
+        orders.push(PendingOrder {
+            order_id: order_id.clone(),
+            exchange: exchange.clone(),
+            symbol,
+            created_at: current_time_ms(),
+        });
+        tracing::debug!("Added pending order {} to tracking", order_id);
+    }
+    
+    /// Remove a pending order from tracking (Story 4.6)
+    ///
+    /// Call this after order fill confirmation is received
+    pub async fn remove_pending_order(&self, order_id: &str) {
+        let mut orders = self.pending_orders.write().await;
+        orders.retain(|o| o.order_id != order_id);
+        tracing::debug!("Removed pending order {} from tracking", order_id);
+    }
+    
+    /// Get all pending orders (Story 4.6)
+    ///
+    /// Used during shutdown to cancel all in-flight orders
+    pub async fn get_pending_orders(&self) -> Vec<PendingOrder> {
+        self.pending_orders.read().await.clone()
     }
 }
 
@@ -1433,6 +1483,129 @@ mod tests {
         // Should return Ok (idempotent - already deleted)
         assert!(result.is_ok());
         mock.assert_async().await;
+    }
+
+    // ========================================
+    // Story 4.6 Tests: Pending Order Tracking
+    // ========================================
+
+    #[tokio::test]
+    async fn test_add_pending_order() {
+        // Story 4.6 Task 4.1: Verify add_pending_order() adds correctly
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Initially empty
+        let pending = manager.get_pending_orders().await;
+        assert_eq!(pending.len(), 0);
+
+        // Add first order
+        manager.add_pending_order(
+            "vest-order-123".to_string(),
+            "vest".to_string(),
+            "BTC-PERP".to_string(),
+        ).await;
+
+        let pending = manager.get_pending_orders().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].order_id, "vest-order-123");
+        assert_eq!(pending[0].exchange, "vest");
+        assert_eq!(pending[0].symbol, "BTC-PERP");
+        assert!(pending[0].created_at > 0);
+
+        // Add second order
+        manager.add_pending_order(
+            "paradex-order-456".to_string(),
+            "paradex".to_string(),
+            "BTC-USD-PERP".to_string(),
+        ).await;
+
+        let pending = manager.get_pending_orders().await;
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_remove_pending_order() {
+        // Story 4.6 Task 4.2: Verify remove_pending_order() removes correctly
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Add two orders
+        manager.add_pending_order(
+            "order-1".to_string(),
+            "vest".to_string(),
+            "BTC-PERP".to_string(),
+        ).await;
+        manager.add_pending_order(
+            "order-2".to_string(),
+            "paradex".to_string(),
+            "ETH-USD-PERP".to_string(),
+        ).await;
+
+        assert_eq!(manager.get_pending_orders().await.len(), 2);
+
+        // Remove first order
+        manager.remove_pending_order("order-1").await;
+
+        let pending = manager.get_pending_orders().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].order_id, "order-2");
+
+        // Remove second order
+        manager.remove_pending_order("order-2").await;
+
+        let pending = manager.get_pending_orders().await;
+        assert_eq!(pending.len(), 0);
+
+        // Remove non-existent order (noop)
+        manager.remove_pending_order("nonexistent").await;
+        assert_eq!(manager.get_pending_orders().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_orders() {
+        // Story 4.6 Task 4.3: Verify get_pending_orders() returns correct list
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+
+        let manager = StateManager::new(config);
+
+        // Empty initially
+        assert_eq!(manager.get_pending_orders().await.len(), 0);
+
+        // Add multiple orders
+        for i in 1..=5 {
+            manager.add_pending_order(
+                format!("order-{}", i),
+                if i % 2 == 0 { "vest" } else { "paradex" }.to_string(),
+                format!("SYMBOL-{}", i),
+            ).await;
+        }
+
+        let pending = manager.get_pending_orders().await;
+        assert_eq!(pending.len(), 5);
+
+        // Verify order IDs
+        let order_ids: Vec<String> = pending.iter().map(|o| o.order_id.clone()).collect();
+        assert!(order_ids.contains(&"order-1".to_string()));
+        assert!(order_ids.contains(&"order-5".to_string()));
+
+        // Verify cloning works (returns owned Vec, not reference)
+        let pending_copy = manager.get_pending_orders().await;
+        assert_eq!(pending_copy.len(), 5);
     }
 
 }
