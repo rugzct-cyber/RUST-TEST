@@ -30,7 +30,11 @@ pub use spread::{SpreadCalculator, SpreadDirection, SpreadMonitor, SpreadMonitor
 pub use vwap::{calculate_vwap, VwapResult};
 
 // Explicit re-exports for state module
-pub use state::{AppState, BotState, BotStatus, Metrics, SharedAppState};
+pub use state::{
+    AppState, BotState, BotStatus, Metrics, SharedAppState,
+    // Epic 3: State Persistence (Story 3.1)
+    PositionState, PositionStatus, PositionUpdate, StateError, StateManager,
+};
 
 // Explicit re-exports for channels module
 pub use channels::{ChannelBundle, SpreadOpportunity, DEFAULT_CHANNEL_CAPACITY};

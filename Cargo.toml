@@ -40,8 +40,8 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 # Config
 dotenvy = "0.15"
 
-# UUID for clientOrderId
-uuid = { version = "1", features = ["v4", "v7"] }
+# UUID for clientOrderId and state persistence (Epic 3)
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 # For Starknet signing
 num-bigint = "0.4"
