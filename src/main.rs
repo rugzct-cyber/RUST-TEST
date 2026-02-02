@@ -104,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
     // Task 2: Create channels for data pipeline
     
     // Subtask 2.1: Create spread_opportunity channel
+    // TODO Story 6.2: Connect opportunity_tx to spread monitoring, opportunity_rx to execution_task
     let (_opportunity_tx, _opportunity_rx) = mpsc::channel::<SpreadOpportunity>(100);
     
     // Task 3: Connect to exchanges and restore state
@@ -216,6 +217,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|e| error!("[SHUTDOWN] Failed to disconnect from Vest: {}", e));
     paradex.lock().await.disconnect().await
         .unwrap_or_else(|e| error!("[SHUTDOWN] Failed to disconnect from Paradex: {}", e));
+    info!("[SHUTDOWN] Disconnected from exchanges");
 
     info!("[SHUTDOWN] Clean exit");
 

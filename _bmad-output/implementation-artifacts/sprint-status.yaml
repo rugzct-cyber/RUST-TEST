@@ -135,7 +135,7 @@ development_status:
 
   # Epic 6: Bot Automation & Integration
   epic-6: in-progress
-  6-1-main-runtime-integration: review
+  6-1-main-runtime-integration: done  # Code review completed, all issues fixed (2026-02-02)
   6-2-automatic-delta-neutral-execution: backlog
   6-3-automatic-position-monitoring-exit: backlog
   6-5-end-to-end-integration-test: backlog
