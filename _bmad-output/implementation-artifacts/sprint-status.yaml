@@ -118,8 +118,8 @@ development_status:
 
   # Epic 4: Configuration & Operations
   epic-4: in-progress
-  4-1-configuration-paires-yaml: review
-  4-2-configuration-seuils-spread: backlog
+  4-1-configuration-paires-yaml: done
+  4-2-configuration-seuils-spread: review
   4-3-configuration-credentials-env: backlog
   4-4-reconnexion-automatique-websocket: backlog
   4-5-arret-propre-sigint: backlog

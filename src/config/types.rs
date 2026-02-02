@@ -90,6 +90,36 @@ pub struct BotConfig {
 impl BotConfig {
     /// Validate bot configuration rules
     pub fn validate(&self) -> Result<(), AppError> {
+        // Rule: bot ID cannot be empty
+        if self.id.trim().is_empty() {
+            return Err(AppError::Config(
+                "Bot ID cannot be empty".to_string()
+            ));
+        }
+
+        // Rule: spread values must be non-negative
+        if self.spread_entry < 0.0 || self.spread_exit < 0.0 {
+            return Err(AppError::Config(format!(
+                "Bot '{}': spread values must be >= 0 (entry: {}, exit: {})",
+                self.id, self.spread_entry, self.spread_exit
+            )));
+        }
+
+        // Rule: spread values must be in valid range (0% to 100%)
+        if self.spread_entry <= 0.0 || self.spread_entry >= 100.0 {
+            return Err(AppError::Config(format!(
+                "Bot '{}': spread_entry must be > 0 and < 100% (got {})",
+                self.id, self.spread_entry
+            )));
+        }
+
+        if self.spread_exit <= 0.0 || self.spread_exit >= 100.0 {
+            return Err(AppError::Config(format!(
+                "Bot '{}': spread_exit must be > 0 and < 100% (got {})",
+                self.id, self.spread_exit
+            )));
+        }
+
         // Rule: spread_entry > spread_exit
         if self.spread_entry <= self.spread_exit {
             return Err(AppError::Config(format!(
@@ -160,6 +190,13 @@ pub struct AppConfig {
 impl AppConfig {
     /// Validate all configuration rules
     pub fn validate(&self) -> Result<(), AppError> {
+        // Rule: At least one bot must be configured
+        if self.bots.is_empty() {
+            return Err(AppError::Config(
+                "Configuration must contain at least one bot".to_string()
+            ));
+        }
+
         // Validate each bot configuration
         for bot in &self.bots {
             bot.validate()?;
@@ -340,6 +377,68 @@ api:
     }
 
     #[test]
+    fn test_empty_bot_id_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.id = "".to_string();
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Bot ID cannot be empty"));
+    }
+
+    #[test]
+    fn test_whitespace_only_bot_id_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.id = "   ".to_string();
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Bot ID cannot be empty"));
+    }
+
+    #[test]
+    fn test_negative_spread_entry_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = -0.30;
+        bot.spread_exit = -0.50;  // Still less than entry, but both negative
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("spread values must be >= 0"));
+    }
+
+    #[test]
+    fn test_negative_spread_exit_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = 0.30;
+        bot.spread_exit = -0.05;
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("spread values must be >= 0"));
+    }
+
+    #[test]
+    fn test_empty_bots_array_fails() {
+        let config = AppConfig {
+            bots: vec![],
+            risk: RiskConfig {
+                adl_warning: 10.0,
+                adl_critical: 5.0,
+                max_duration_hours: 24,
+            },
+            api: ApiConfig {
+                port: 8080,
+                ws_heartbeat_sec: 30,
+            },
+        };
+        
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least one bot"));
+    }
+
+    #[test]
     fn test_into_shared() {
         let config = AppConfig {
             bots: vec![],
@@ -357,5 +456,47 @@ api:
         let shared = config.into_shared();
         // Verify it compiles and creates Arc<RwLock<AppConfig>>
         assert!(Arc::strong_count(&shared) == 1);
+    }
+
+    #[test]
+    fn test_spread_entry_zero_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = 0.0;
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("spread_entry must be > 0 and < 100%"));
+    }
+
+    #[test]
+    fn test_spread_entry_above_100_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = 100.5;
+        bot.spread_exit = 0.05;  // Valid exit
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("spread_entry must be > 0 and < 100%"));
+    }
+
+    #[test]
+    fn test_spread_exit_above_100_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = 0.30;  // Valid entry
+        bot.spread_exit = 150.0;
+        
+        let result = bot.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("spread_exit must be > 0 and < 100%"));
+    }
+
+    #[test]
+    fn test_spread_thresholds_at_boundaries() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = 99.99;  // Just below 100%
+        bot.spread_exit = 0.01;    // Just above 0%
+        
+        let result = bot.validate();
+        assert!(result.is_ok(), "Valid boundary values should pass validation");
     }
 }
