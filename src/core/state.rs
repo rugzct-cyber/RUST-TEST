@@ -427,30 +427,139 @@ impl StateManager {
     
     /// Update an existing position in Supabase
     ///
-    /// # Story 3.1 - Stub Implementation
-    /// Always returns Ok(()) without actual update
+    /// # Story 3.4 - Full Implementation
+    /// PATCH to /rest/v1/positions?id=eq.{id}
     ///
-    /// # Story 3.2 - Full Implementation
-    /// Will PATCH /rest/v1/positions?id=eq.{id}
+    /// # Errors
+    /// - `StateError::DatabaseError` for 401 Unauthorized or other DB errors
+    /// - `StateError::NotFound` for 404 Not Found (position doesn't exist)
+    /// - `StateError::NetworkError` for network/timeout failures
     pub async fn update_position(
         &self,
-        _id: Uuid,
-        _updates: PositionUpdate,
+        id: Uuid,
+        updates: PositionUpdate,
     ) -> Result<(), StateError> {
-        // Stub for Story 3.1
-        Ok(())
+        // Handle disabled case
+        if self.supabase_client.is_none() {
+            tracing::debug!("Supabase disabled, position update not synced");
+            return Ok(());
+        }
+        
+        let client = self.supabase_client.as_ref().unwrap();
+        let url = format!("{}/rest/v1/positions?id=eq.{}", self.supabase_url, id);
+        
+        // Send PATCH request
+        let response = client
+            .patch(&url)
+            .header("Prefer", "return=minimal")
+            .json(&updates)
+            .send()
+            .await?;  // NetworkError auto-converted via #[from]
+        
+        // Handle HTTP status codes
+        match response.status() {
+            reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::OK => {
+                tracing::info!(
+                    position_id = %id,
+                    remaining_size = ?updates.remaining_size,
+                    status = ?updates.status,
+                    "Position updated in Supabase"
+                );
+                Ok(())
+            }
+            reqwest::StatusCode::UNAUTHORIZED => {
+                let err_msg = "Invalid Supabase credentials".to_string();
+                tracing::error!(
+                    position_id = %id,
+                    "Failed to update position in Supabase: {}", err_msg
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+            reqwest::StatusCode::NOT_FOUND => {
+                tracing::warn!(
+                    position_id = %id,
+                    "Position not found in Supabase (may have been deleted)"
+                );
+                Err(StateError::NotFound)
+            }
+            status => {
+                let body = response.text().await.unwrap_or_else(|_| "<no body>".to_string());
+                let err_msg = format!("Supabase error {}: {}", status, body);
+                tracing::error!(
+                    position_id = %id,
+                    status = %status,
+                    response_body = %body,
+                    "Failed to update position in Supabase"
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+        }
     }
     
     /// Remove a position from Supabase
     ///
-    /// # Story 3.1 - Stub Implementation
-    /// Always returns Ok(()) without actual deletion
+    /// # Story 3.4 - Full Implementation
+    /// DELETE from /rest/v1/positions?id=eq.{id}
     ///
-    /// # Story 3.2 - Full Implementation
-    /// Will DELETE /rest/v1/positions?id=eq.{id}
-    pub async fn remove_position(&self, _id: Uuid) -> Result<(), StateError> {
-        // Stub for Story 3.1
-        Ok(())
+    /// # Idempotence
+    /// Returns Ok(()) even if position not found (404) - already deleted is acceptable
+    ///
+    /// # Errors
+    /// - `StateError::DatabaseError` for 401 Unauthorized or other DB errors
+    /// - `StateError::NetworkError` for network/timeout failures
+    pub async fn remove_position(&self, id: Uuid) -> Result<(), StateError> {
+        // Handle disabled case
+        if self.supabase_client.is_none() {
+            tracing::debug!("Supabase disabled, position removal not synced");
+            return Ok(());
+        }
+        
+        let client = self.supabase_client.as_ref().unwrap();
+        let url = format!("{}/rest/v1/positions?id=eq.{}", self.supabase_url, id);
+        
+        // Send DELETE request
+        let response = client
+            .delete(&url)
+            .send()
+            .await?;
+        
+        // Handle HTTP status codes
+        match response.status() {
+            reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::OK => {
+                tracing::info!(
+                    position_id = %id,
+                    "Position removed from Supabase"
+                );
+                Ok(())
+            }
+            reqwest::StatusCode::UNAUTHORIZED => {
+                let err_msg = "Invalid Supabase credentials".to_string();
+                tracing::error!(
+                    position_id = %id,
+                    "Failed to remove position from Supabase: {}", err_msg
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+            reqwest::StatusCode::NOT_FOUND => {
+                // NOT_FOUND is acceptable for DELETE (idempotent operation)
+                tracing::info!(
+                    position_id = %id,
+                    "Position already removed from Supabase (idempotent)"
+                );
+                Ok(())
+            }
+            status => {
+                let body = response.text().await.unwrap_or_else(|_| "<no body>".to_string());
+                let err_msg = format!("Supabase error {}: {}", status, body);
+                tracing::error!(
+                    position_id = %id,
+                    status = %status,
+                    response_body = %body,
+                    "Failed to remove position from Supabase"
+                );
+                Err(StateError::DatabaseError(err_msg))
+            }
+        }
     }
 }
 
@@ -1092,6 +1201,237 @@ mod tests {
             _ => panic!("Expected NetworkError for schema mismatch"),
         }
         
+        mock.assert_async().await;
+    }
+
+    // ========================================
+    // Story 3.4 Tests: update_position()
+    // ========================================
+
+    #[tokio::test]
+    async fn test_update_position_disabled() {
+        // Story 3.4 Task 7.1: Disabled configuration test
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+
+        let manager = StateManager::new(config);
+        let id = Uuid::new_v4();
+        let updates = PositionUpdate {
+            remaining_size: Some(0.25),
+            status: Some(PositionStatus::PartialClose),
+        };
+
+        let result = manager.update_position(id, updates).await;
+        assert!(result.is_ok());
+        // Should NOT make HTTP request when disabled
+    }
+
+    #[tokio::test]
+    async fn test_update_position_success() {
+        // Story 3.4 Task 7.2: Success scenario with 204 NO_CONTENT
+        let mut server = mockito::Server::new_async().await;
+        let test_id = Uuid::new_v4();
+
+        let mock = server.mock("PATCH", format!("/rest/v1/positions?id=eq.{}", test_id).as_str())
+            .with_status(204)
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+        let updates = PositionUpdate {
+            remaining_size: Some(0.25),
+            status: Some(PositionStatus::PartialClose),
+        };
+
+        let result = manager.update_position(test_id, updates).await;
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_update_position_unauthorized() {
+        // Story 3.4 Task 7.3: Unauthorized scenario with 401
+        let mut server = mockito::Server::new_async().await;
+        let test_id = Uuid::new_v4();
+
+        let mock = server.mock("PATCH", format!("/rest/v1/positions?id=eq.{}", test_id).as_str())
+            .with_status(401)
+            .with_body("Unauthorized")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "invalid-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+        let updates = PositionUpdate {
+            remaining_size: Some(0.25),
+            status: Some(PositionStatus::PartialClose),
+        };
+
+        let result = manager.update_position(test_id, updates).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(StateError::DatabaseError(msg)) => {
+                assert_eq!(msg, "Invalid Supabase credentials");
+            }
+            _ => panic!("Expected DatabaseError for unauthorized"),
+        }
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_update_position_not_found() {
+        // Story 3.4 Task 7.4: Not Found scenario with 404
+        let mut server = mockito::Server::new_async().await;
+        let test_id = Uuid::new_v4();
+
+        let mock = server.mock("PATCH", format!("/rest/v1/positions?id=eq.{}", test_id).as_str())
+            .with_status(404)
+            .with_body("Not Found")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+        let updates = PositionUpdate {
+            remaining_size: Some(0.25),
+            status: Some(PositionStatus::PartialClose),
+        };
+
+        let result = manager.update_position(test_id, updates).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(StateError::NotFound) => {
+                // Success - position not found is expected error for UPDATE
+            }
+            _ => panic!("Expected NotFound error for 404"),
+        }
+
+        mock.assert_async().await;
+    }
+
+    // ========================================
+    // Story 3.4 Tests: remove_position()
+    // ========================================
+
+    #[tokio::test]
+    async fn test_remove_position_disabled() {
+        // Story 3.4 Task 7.5: Disabled configuration test
+        let config = crate::config::SupabaseConfig {
+            url: "https://test.supabase.co".to_string(),
+            anon_key: "test-key".to_string(),
+            enabled: false,
+        };
+
+        let manager = StateManager::new(config);
+        let id = Uuid::new_v4();
+
+        let result = manager.remove_position(id).await;
+        assert!(result.is_ok());
+        // Should NOT make HTTP request when disabled
+    }
+
+    #[tokio::test]
+    async fn test_remove_position_success() {
+        // Story 3.4 Task 7.6: Success scenario with 204 NO_CONTENT
+        let mut server = mockito::Server::new_async().await;
+        let test_id = Uuid::new_v4();
+
+        let mock = server.mock("DELETE", format!("/rest/v1/positions?id=eq.{}", test_id).as_str())
+            .with_status(204)
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        let result = manager.remove_position(test_id).await;
+        assert!(result.is_ok());
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_remove_position_unauthorized() {
+        // Story 3.4 Task 7.7: Unauthorized scenario with 401
+        let mut server = mockito::Server::new_async().await;
+        let test_id = Uuid::new_v4();
+
+        let mock = server.mock("DELETE", format!("/rest/v1/positions?id=eq.{}", test_id).as_str())
+            .with_status(401)
+            .with_body("Unauthorized")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "invalid-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        let result = manager.remove_position(test_id).await;
+        assert!(result.is_err());
+
+        match result {
+            Err(StateError::DatabaseError(msg)) => {
+                assert_eq!(msg, "Invalid Supabase credentials");
+            }
+            _ => panic!("Expected DatabaseError for unauthorized"),
+        }
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn test_remove_position_idempotent() {
+        // Story 3.4 Task 7.8: Idempotent behavior with 404
+        let mut server = mockito::Server::new_async().await;
+        let test_id = Uuid::new_v4();
+
+        let mock = server.mock("DELETE", format!("/rest/v1/positions?id=eq.{}", test_id).as_str())
+            .with_status(404)
+            .with_body("Not Found")
+            .create_async()
+            .await;
+
+        let config = crate::config::SupabaseConfig {
+            url: server.url(),
+            anon_key: "test-key".to_string(),
+            enabled: true,
+        };
+
+        let manager = StateManager::new(config);
+
+        let result = manager.remove_position(test_id).await;
+        // Should return Ok (idempotent - already deleted)
+        assert!(result.is_ok());
         mock.assert_async().await;
     }
 
