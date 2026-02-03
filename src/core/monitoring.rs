@@ -34,6 +34,8 @@ pub struct MonitoringConfig {
     pub pair: String,
     /// Entry threshold in percentage (e.g., 0.30 = 0.30%)
     pub spread_entry: f64,
+    /// Exit threshold in percentage (e.g., 0.05 = 0.05%)
+    pub spread_exit: f64,
 }
 
 /// Lock-free monitoring task that reads shared orderbooks directly
@@ -88,7 +90,7 @@ pub async fn monitoring_task(
                 // Only calculate spread if both orderbooks are available
                 if let (Some(vest_orderbook), Some(paradex_orderbook)) = (vest_ob, paradex_ob) {
                     if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
-                        debug!(
+                        info!(
                             spread = %format!("{:.4}%", spread_result.spread_pct),
                             direction = ?spread_result.direction,
                             threshold = %format!("{:.4}%", config.spread_entry),
@@ -166,19 +168,6 @@ mod tests {
     use crate::adapters::types::{Orderbook, OrderbookLevel};
     use tokio::time::timeout;
     
-    /// Create test orderbooks with given prices
-    fn create_test_orderbooks(ask: f64, bid: f64) -> SharedOrderbooks {
-        let mut ob = Orderbook::new();
-        ob.asks.push(OrderbookLevel::new(ask, 1.0));
-        ob.bids.push(OrderbookLevel::new(bid, 1.0));
-        
-        let mut books = HashMap::new();
-        books.insert("BTC-PERP".to_string(), ob.clone());
-        books.insert("BTC-USD-PERP".to_string(), ob);
-        
-        Arc::new(RwLock::new(books))
-    }
-    
     #[tokio::test]
     async fn test_monitoring_task_shutdown() {
         let vest_orderbooks = Arc::new(RwLock::new(HashMap::new()));
@@ -189,6 +178,7 @@ mod tests {
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
             spread_entry: 0.30,
+            spread_exit: 0.05,
         };
         
         // Spawn monitoring task
@@ -236,6 +226,7 @@ mod tests {
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
             spread_entry: 0.30,  // 0.30% threshold
+            spread_exit: 0.05,
         };
         
         // Spawn monitoring task
@@ -285,6 +276,7 @@ mod tests {
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
             spread_entry: 0.30,  // 0.30% threshold
+            spread_exit: 0.05,
         };
         
         // Spawn monitoring task

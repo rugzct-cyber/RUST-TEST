@@ -3,7 +3,7 @@ bots:
     pair: BTC-PERP
     dex_a: vest
     dex_b: paradex
-    spread_entry: 0.08
+    spread_entry: 0.14
     spread_exit: -0.01
     leverage: 5
     position_size: 0.0002  # Size in base asset (e.g., 0.001 BTC)

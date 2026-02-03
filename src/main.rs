@@ -149,16 +149,26 @@ async fn main() -> anyhow::Result<()> {
         paradex_symbol.clone(),
     );
     
-    // Spawn execution_task (V1: no StateManager, no position channel)
+    // Spawn execution_task (V1: with exit monitoring)
     let execution_shutdown = shutdown_tx.subscribe();
+    let exit_spread_target = bot.spread_exit;
+    let exec_vest_orderbooks = vest_shared_orderbooks.clone();
+    let exec_paradex_orderbooks = paradex_shared_orderbooks.clone();
+    let exec_vest_symbol = vest_symbol.clone();
+    let exec_paradex_symbol = paradex_symbol.clone();
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
             executor,
+            exec_vest_orderbooks,
+            exec_paradex_orderbooks,
+            exec_vest_symbol,
+            exec_paradex_symbol,
             execution_shutdown,
+            exit_spread_target,
         ).await;
     });
-    info!("[INFO] Execution task spawned (V1 HFT mode)");
+    info!("[INFO] Execution task spawned (V1 HFT mode with exit monitoring)");
     
     // Spawn monitoring task (using SharedOrderbooks - NO Mutex!)
     let monitoring_tx = opportunity_tx.clone();
@@ -167,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
     let monitoring_config = MonitoringConfig {
         pair: bot.pair.to_string(),
         spread_entry: bot.spread_entry,
+        spread_exit: bot.spread_exit,
     };
     let monitoring_shutdown = shutdown_tx.subscribe();
     

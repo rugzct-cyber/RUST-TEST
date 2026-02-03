@@ -32,6 +32,41 @@ pub struct SpreadOpportunity {
     pub dex_b_bid: f64,
 }
 
+/// Signal to close an open position (Story 6.3: Exit Monitoring)
+#[derive(Debug, Clone)]
+pub struct ExitSignal {
+    /// Current exit spread when condition was detected
+    pub exit_spread: f64,
+    /// Timestamp when exit condition was detected
+    pub detected_at_ms: u64,
+}
+
+/// Shared position state for coordination between executor and monitoring (Story 6.3)
+/// 
+/// Uses atomics for lock-free read/write across tasks.
+#[derive(Debug)]
+pub struct PositionState {
+    /// True if a position is currently open
+    pub is_open: std::sync::atomic::AtomicBool,
+    /// Entry direction: 0=none, 1=AOverB (long Vest), 2=BOverA (long Paradex)
+    pub entry_direction: std::sync::atomic::AtomicU8,
+}
+
+impl PositionState {
+    pub fn new() -> Self {
+        Self {
+            is_open: std::sync::atomic::AtomicBool::new(false),
+            entry_direction: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+}
+
+impl Default for PositionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 
 /// Bundle of all inter-task communication channels
 #[derive(Debug)]

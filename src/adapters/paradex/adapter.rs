@@ -1299,6 +1299,11 @@ impl ExchangeAdapter for ParadexAdapter {
             return true;
         }
         
+        // Check if JWT needs refresh (critical for order placement)
+        if self.jwt_needs_refresh() {
+            return true;
+        }
+        
         let last_data = self.connection_health.last_data.load(Ordering::Relaxed);
         if last_data == 0 {
             // No data ever received - check if we just connected
