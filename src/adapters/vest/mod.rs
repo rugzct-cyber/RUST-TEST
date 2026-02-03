@@ -17,6 +17,6 @@ mod adapter;
 // Re-export public items
 pub use config::VestConfig;
 pub use types::{VestDepthMessage, VestDepthData, VestPositionData, PreSignedOrder};
-pub use adapter::VestAdapter;
+pub use adapter::{VestAdapter, SharedOrderbooks};
 
 // Test constants available in config module for test use

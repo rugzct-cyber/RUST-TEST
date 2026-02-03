@@ -77,8 +77,9 @@ type WsSink = SplitSink<WsStream, Message>;
 /// Type alias for WebSocket receiver (read half)
 type WsReader = SplitStream<WsStream>;
 
-/// Shared orderbook storage for concurrent access
-type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+/// Shared orderbook storage for concurrent access (Story 7.3: lock-free monitoring)
+pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+
 
 // =============================================================================
 // Paradex Adapter
@@ -152,6 +153,15 @@ impl ParadexAdapter {
             heartbeat_handle: None,
             starknet_chain_id: None,
         }
+    }
+
+    /// Get shared orderbooks for lock-free monitoring (Story 7.3)
+    /// 
+    /// Returns Arc<RwLock<...>> that can be read directly without acquiring
+    /// the adapter's Mutex. This enables high-frequency orderbook polling
+    /// without blocking execution.
+    pub fn get_shared_orderbooks(&self) -> SharedOrderbooks {
+        Arc::clone(&self.shared_orderbooks)
     }
 
     /// Authenticate with Paradex REST API to obtain JWT token

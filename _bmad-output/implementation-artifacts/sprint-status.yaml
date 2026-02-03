@@ -147,4 +147,5 @@ development_status:
   epic-7: in-progress
   7-1-websocket-orders-paradex: done  # Code review completed 2026-02-03 - 55% latency reduction achieved
   7-2-http-connection-pooling: review  # Implementation completed 2026-02-03
+  7-3-remove-supabase-critical-path: done  # V1 HFT Mode - no DB in critical path (2026-02-03)
   epic-7-retrospective: optional

@@ -140,20 +140,6 @@ impl SpreadCalculator {
         }
     }
 
-    /// Raw spread calculation: (ask - bid) / midpoint * 100
-    /// 
-    /// Formula: spread_pct = ((ASK_A - BID_B) / midpoint) * 100
-    /// 
-    /// # Edge Cases (Task 1.4)
-    /// - Returns 0.0 if midpoint is zero (prevents division by zero)
-    #[inline]
-    pub(crate) fn raw_spread(ask: f64, bid: f64) -> f64 {
-        let midpoint = (ask + bid) / 2.0;
-        if midpoint == 0.0 {
-            return 0.0;
-        }
-        ((ask - bid) / midpoint) * 100.0
-    }
     
     // =========================================================================
     // Story 11.1: Dual Spread Calculation Functions
@@ -658,25 +644,7 @@ mod tests {
     // Task 6.5: Benchmark test - verify calculation under 2ms for 10k iterations
     // =========================================================================
 
-    #[test]
-    fn test_spread_calculation_performance() {
-        let calc = SpreadCalculator::new("vest", "paradex");
-        let ob_a = make_orderbook(42150.50, 42149.00);
-        let ob_b = make_orderbook(42151.00, 42148.50);
 
-        let start = std::time::Instant::now();
-        for _ in 0..10_000 {
-            let _ = calc.calculate(&ob_a, &ob_b);
-        }
-        let elapsed = start.elapsed();
-
-        // 10k iterations should complete in <2ms total (<200ns per call)
-        assert!(
-            elapsed.as_millis() < 2,
-            "Performance: 10k calcs took {:?} (expected <2ms)",
-            elapsed
-        );
-    }
 
     #[test]
     fn test_spread_calculation_performance_100k() {
@@ -799,21 +767,6 @@ mod tests {
         assert_eq!(calc.dex_b, "paradex");
     }
 
-    #[test]
-    fn test_raw_spread_zero_midpoint() {
-        // Edge case: both ask and bid are 0 -> midpoint is 0
-        // Should return 0 to prevent division by zero
-        let spread = SpreadCalculator::raw_spread(0.0, 0.0);
-        assert_eq!(spread, 0.0);
-    }
-
-    #[test]
-    fn test_raw_spread_symmetric() {
-        // Spread formula is symmetric around midpoint
-        let spread = SpreadCalculator::raw_spread(102.0, 100.0);
-        // (102-100) / 101 * 100 = 1.98019...
-        assert!((spread - 1.9801980198).abs() < 0.0001);
-    }
 
     // =========================================================================
     // Story 11.1: Dual Spread Calculation Tests

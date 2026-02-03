@@ -57,7 +57,8 @@ pub(crate) type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 pub(crate) type WsWriter = SplitSink<WsStream, Message>;
 pub(crate) type WsReader = SplitStream<WsStream>;
-pub(crate) type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+/// Thread-safe shared orderbooks storage for lock-free monitoring (Story 7.3)
+pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 
 // =============================================================================
 // Subscription ID Generation
@@ -176,6 +177,15 @@ impl VestAdapter {
     /// Get the required REST header for server routing
     pub fn rest_server_header(&self) -> String {
         format!("restserver{}", self.config.account_group)
+    }
+
+    /// Get shared orderbooks for lock-free monitoring (Story 7.3)
+    /// 
+    /// Returns Arc<RwLock<...>> that can be read directly without acquiring
+    /// the adapter's Mutex. This enables high-frequency orderbook polling
+    /// without blocking execution.
+    pub fn get_shared_orderbooks(&self) -> SharedOrderbooks {
+        Arc::clone(&self.shared_orderbooks)
     }
 
     // =========================================================================

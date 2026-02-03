@@ -1,14 +1,16 @@
-//! Core module - Spread calculation, VWAP, state management, channels, logging
+//! Core module - Spread calculation, VWAP, channels, logging
 //!
-//! # Module Architecture (Story 0.3)
+//! # Module Architecture (Story 0.3, Story 7.3)
 //!
 //! This module uses **explicit re-exports** instead of glob exports (`pub use module::*`)
 //! to provide better API visibility and prevent accidental public API changes.
 //!
+//! V1 HFT Mode: State and position_monitor modules removed for clean codebase.
+//!
 //! ## Usage
 //! Prefer importing from `crate::core`:
 //! ```ignore
-//! use crate::core::{SpreadCalculator, VwapResult, AppState};
+//! use crate::core::{SpreadCalculator, VwapResult};
 //! ```
 //!
 //! ## Adding New Public Types
@@ -19,11 +21,9 @@ pub mod channels;
 pub mod execution;
 pub mod logging;
 pub mod monitoring;
-pub mod position_monitor;
 pub mod reconnect;
 pub mod runtime;
 pub mod spread;
-pub mod state;
 pub mod vwap;
 
 // Explicit re-exports for spread module
@@ -31,13 +31,6 @@ pub use spread::{SpreadCalculator, SpreadDirection, SpreadMonitor, SpreadMonitor
 
 // Explicit re-exports for vwap module
 pub use vwap::{calculate_vwap, VwapResult};
-
-// Explicit re-exports for state module
-pub use state::{
-    AppState, BotState, BotStatus, Metrics, SharedAppState,
-    // Epic 3: State Persistence (Story 3.1)
-    PositionState, PositionStatus, PositionUpdate, StateError, StateManager,
-};
 
 // Explicit re-exports for channels module
 pub use channels::{ChannelBundle, SpreadOpportunity, DEFAULT_CHANNEL_CAPACITY};
@@ -51,7 +44,7 @@ pub use logging::{
 // Explicit re-exports for execution module (Story 2.3)
 pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
 
-// Explicit re-exports for runtime module (Story 2.3)
+// Explicit re-exports for runtime module (Story 2.3, Story 7.3)
 pub use runtime::execution_task;
 
 // Explicit re-exports for reconnect module (Story 4.4)
@@ -59,7 +52,3 @@ pub use reconnect::{ReconnectConfig, reconnect_monitor_task};
 
 // Explicit re-exports for monitoring module (Story 6.2)
 pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
-
-// Explicit re-exports for position_monitor module (Story 6.3)
-pub use position_monitor::{position_monitoring_task, PositionMonitoringConfig, POSITION_POLL_INTERVAL_MS};
-

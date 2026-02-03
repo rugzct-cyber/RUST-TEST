@@ -17,6 +17,6 @@ pub use types::{
     PositionInfo,
 };
 pub use traits::{ExchangeAdapter, OrderbookStream};
-pub use vest::{VestAdapter, VestConfig};
+pub use vest::{VestAdapter, VestConfig, SharedOrderbooks};
 pub use paradex::{ParadexAdapter, ParadexConfig};
 

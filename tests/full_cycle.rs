@@ -1,12 +1,11 @@
-//! End-to-End Integration Tests (Story 6.5)
+//! End-to-End Integration Tests (Story 6.5, Story 7.3)
 //!
 //! This module tests the complete trading cycle:
 //! 1. Config loading and adapter initialization
 //! 2. Spread detection and opportunity generation
 //! 3. Delta-neutral trade execution
-//! 4. Position state persistence
-//! 5. Automatic position exit on spread convergence
-//! 6. Final state verification
+//!
+//! V1 HFT Mode: State persistence tests removed (Supabase eliminated)
 //!
 //! # Running the tests
 //! ```bash
@@ -27,8 +26,6 @@ use hft_bot::adapters::types::{
     Orderbook, OrderbookLevel, OrderRequest, OrderResponse, OrderStatus, OrderSide, PositionInfo,
 };
 use hft_bot::core::channels::{SpreadOpportunity, SpreadDirection};
-use hft_bot::core::state::{PositionState, PositionStatus, PositionUpdate, StateManager};
-use hft_bot::config::SupabaseConfig;
 
 // =============================================================================
 // Mock Exchange Adapter (Task 1.2)
@@ -186,57 +183,24 @@ fn current_time_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// Create a mock StateManager for testing (using disabled Supabase)
-fn create_test_state_manager() -> Arc<StateManager> {
-    Arc::new(StateManager::new(SupabaseConfig {
-        url: "https://test.supabase.co".to_string(),
-        anon_key: "test-key".to_string(),
-        enabled: false, // Disabled = in-memory only
-    }))
-}
-
-/// Create a test position for monitoring
-fn create_test_position() -> PositionState {
-    PositionState::new(
-        "BTC-PERP".to_string(),
-        "BTC-PERP".to_string(),       // long_symbol (Vest)
-        "BTC-USD-PERP".to_string(),   // short_symbol (Paradex)
-        "vest".to_string(),
-        "paradex".to_string(),
-        0.001,                         // long_size
-        0.001,                         // short_size
-        0.35,                          // entry_spread (0.35%)
-    )
-}
-
 // =============================================================================
-// Test 1: Full Trading Cycle (AC: Full Cycle Coverage)
+// Test 1: Trade Execution (AC: Full Cycle Coverage)
 // =============================================================================
 
-/// Test the complete trading cycle: entry → persist → monitored
-/// 
-/// This test verifies:
-/// 1. Spread opportunity detection and emission
-/// 2. Delta-neutral order placement
-/// 3. Position state creation and persistence
+/// Test the trading cycle: spread detection → order placement
 #[tokio::test]
 async fn test_spread_opportunity_triggers_execution() {
     // === SETUP ===
     let spread_entry: f64 = 0.30; // 0.30% entry threshold
     
     // Create mock adapters with spread > entry_threshold
-    // Vest ask = 100.50, Paradex bid = 100.15
-    // Spread = (100.50 - 100.15) / ((100.50 + 100.15) / 2) = 0.35%
     let vest = MockExchangeAdapter::with_orderbook("vest", 100.10, 100.50);
     let paradex = MockExchangeAdapter::with_orderbook("paradex", 100.15, 100.55);
     
     let vest = Arc::new(Mutex::new(vest));
     let paradex = Arc::new(Mutex::new(paradex));
     
-    // Create state manager
-    let state_manager = create_test_state_manager();
-    
-    // Create spread opportunity using the correct API
+    // Create spread opportunity
     let opportunity = SpreadOpportunity {
         pair: "BTC-PERP".to_string(),
         dex_a: "vest".to_string(),
@@ -259,13 +223,12 @@ async fn test_spread_opportunity_triggers_execution() {
     );
     
     // === EXECUTE: Simulate DeltaNeutralExecutor behavior ===
-    // Place orders on both exchanges
     {
         let vest_guard = vest.lock().await;
         let vest_order = OrderRequest::ioc_limit(
             "e2e-vest-1".to_string(),
             "BTC-PERP".to_string(),
-            OrderSide::Sell, // Short on Vest (higher ask)
+            OrderSide::Sell,
             100.50,
             0.001,
         );
@@ -277,7 +240,7 @@ async fn test_spread_opportunity_triggers_execution() {
         let paradex_order = OrderRequest::ioc_limit(
             "e2e-paradex-1".to_string(),
             "BTC-USD-PERP".to_string(),
-            OrderSide::Buy, // Long on Paradex (lower bid)
+            OrderSide::Buy,
             100.15,
             0.001,
         );
@@ -287,40 +250,22 @@ async fn test_spread_opportunity_triggers_execution() {
     // === VERIFY ===
     assert_eq!(vest.lock().await.orders_placed(), 1, "One order on Vest");
     assert_eq!(paradex.lock().await.orders_placed(), 1, "One order on Paradex");
-    
-    // Create and save position
-    let position = create_test_position();
-    state_manager.save_position(&position).await.expect("Position save should succeed");
-    
-    // Verify position persisted (StateManager with disabled Supabase returns empty but doesn't error)
-    // In real test with enabled mock server, we'd verify the position is loaded
-    let result = state_manager.load_positions().await;
-    assert!(result.is_ok(), "Load should succeed");
 }
 
 // =============================================================================
-// Test 2: Position Exit Detection (AC: Automatic Close)
+// Test 2: Position Exit Execution (AC: Automatic Close)
 // =============================================================================
 
-/// Test automatic position exit when spread converges
+/// Test position close execution with reduce_only orders
 #[tokio::test]
 async fn test_position_exit_on_spread_convergence() {
-    let spread_exit: f64 = 0.05; // 0.05% exit threshold
+    let spread_exit: f64 = 0.05;
     
-    // Create mock adapters with low spread (< exit_threshold)
-    // Vest ask = 100.15, Paradex bid = 100.12
-    // Spread ≈ 0.03% < 0.05% threshold
     let vest = MockExchangeAdapter::with_orderbook("vest", 100.10, 100.15);
     let paradex = MockExchangeAdapter::with_orderbook("paradex", 100.12, 100.18);
     
     let vest = Arc::new(Mutex::new(vest));
     let paradex = Arc::new(Mutex::new(paradex));
-    
-    let state_manager = create_test_state_manager();
-    
-    // Pre-create an open position
-    let position = create_test_position();
-    state_manager.save_position(&position).await.unwrap();
     
     // Calculate current spread
     let vest_ask = 100.15;
@@ -337,44 +282,31 @@ async fn test_position_exit_on_spread_convergence() {
     );
     
     // === SIMULATE CLOSE EXECUTION ===
-    // In real system, position_monitoring_task would detect and close
-    // Here we manually execute the close logic
-    
-    // Close Vest leg (reduce_only)
     {
         let vest_guard = vest.lock().await;
         let mut close_order = OrderRequest::ioc_limit(
             "close-vest-1".to_string(),
             "BTC-PERP".to_string(),
-            OrderSide::Buy, // Buy to close short
+            OrderSide::Buy,
             vest_ask,
-            position.long_size,
+            0.001,
         );
         close_order.reduce_only = true;
         vest_guard.place_order(close_order).await.expect("Vest close should succeed");
     }
     
-    // Close Paradex leg (reduce_only)
     {
         let paradex_guard = paradex.lock().await;
         let mut close_order = OrderRequest::ioc_limit(
             "close-paradex-1".to_string(),
             "BTC-USD-PERP".to_string(),
-            OrderSide::Sell, // Sell to close long
+            OrderSide::Sell,
             paradex_bid,
-            position.short_size,
+            0.001,
         );
         close_order.reduce_only = true;
         paradex_guard.place_order(close_order).await.expect("Paradex close should succeed");
     }
-    
-    // Update position status using correct API
-    let update = PositionUpdate {
-        remaining_size: Some(0.0),
-        status: Some(PositionStatus::Closed),
-    };
-    state_manager.update_position(position.id, update)
-        .await.expect("Update should succeed");
     
     // === VERIFY ===
     assert_eq!(vest.lock().await.reduce_only_orders(), 1, "One reduce_only on Vest");
@@ -382,64 +314,7 @@ async fn test_position_exit_on_spread_convergence() {
 }
 
 // =============================================================================
-// Test 3: Restored Positions Are Monitored (AC: State Recovery)
-// =============================================================================
-
-/// Test that pre-existing positions are loaded and monitored
-#[tokio::test]
-async fn test_restored_positions_loaded() {
-    let state_manager = create_test_state_manager();
-    
-    // Pre-create positions (simulating restored state from Supabase)
-    let position1 = PositionState::new(
-        "BTC-PERP".to_string(),
-        "BTC-PERP".to_string(),
-        "BTC-USD-PERP".to_string(),
-        "vest".to_string(),
-        "paradex".to_string(),
-        0.001,
-        0.001,
-        0.25,
-    );
-    
-    let position2 = PositionState::new(
-        "ETH-PERP".to_string(),
-        "ETH-PERP".to_string(),
-        "ETH-USD-PERP".to_string(),
-        "vest".to_string(),
-        "paradex".to_string(),
-        0.01,
-        0.01,
-        0.30,
-    );
-    
-    // Save positions (simulating restored state from Supabase)
-    state_manager.save_position(&position1).await.unwrap();
-    state_manager.save_position(&position2).await.unwrap();
-    
-    // Verify save API works without errors
-    // Note: With disabled Supabase, actual persistence is skipped but API succeeds
-    
-    // Verify positions have required fields for monitoring
-    assert!(!position1.long_symbol.is_empty(), "Long symbol required");
-    assert!(!position1.short_symbol.is_empty(), "Short symbol required");
-    assert!(position1.long_size > 0.0, "Long size must be positive");
-    assert!(position1.short_size > 0.0, "Short size must be positive");
-    assert_eq!(position1.status, PositionStatus::Open, "Initial status should be Open");
-    
-    assert!(!position2.long_symbol.is_empty(), "Long symbol required");
-    assert!(!position2.short_symbol.is_empty(), "Short symbol required");
-    assert!(position2.long_size > 0.0, "Long size must be positive");
-    assert!(position2.short_size > 0.0, "Short size must be positive");
-    assert_eq!(position2.status, PositionStatus::Open, "Initial status should be Open");
-    
-    // Verify load_positions API works (even if returns empty with disabled Supabase)
-    let load_result = state_manager.load_positions().await;
-    assert!(load_result.is_ok(), "load_positions should succeed");
-}
-
-// =============================================================================
-// Test 4: Graceful Shutdown (AC: Clean Exit)
+// Test 3: Graceful Shutdown (AC: Clean Exit)
 // =============================================================================
 
 /// Test that shutdown signal is properly propagated
@@ -447,11 +322,9 @@ async fn test_restored_positions_loaded() {
 async fn test_graceful_shutdown_propagation() {
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
     
-    // Flag to verify shutdown was received
     let shutdown_received = Arc::new(AtomicBool::new(false));
     let shutdown_flag = Arc::clone(&shutdown_received);
     
-    // Spawn a task that waits for shutdown
     let task = tokio::spawn(async move {
         tokio::select! {
             _ = shutdown_rx.recv() => {
@@ -463,17 +336,13 @@ async fn test_graceful_shutdown_propagation() {
         }
     });
     
-    // Small delay to ensure task is running
     sleep(Duration::from_millis(10)).await;
     
-    // === SEND SHUTDOWN ===
     let receivers = shutdown_tx.send(()).expect("Shutdown send should succeed");
     assert!(receivers >= 1, "At least one receiver should get shutdown");
     
-    // Wait for task
     task.await.expect("Task should complete");
     
-    // === VERIFY ===
     assert!(
         shutdown_received.load(Ordering::SeqCst),
         "Shutdown signal should be received"
@@ -481,7 +350,7 @@ async fn test_graceful_shutdown_propagation() {
 }
 
 // =============================================================================
-// Test 5: Channel Communication (AC: Data Pipeline)
+// Test 4: Channel Communication (AC: Data Pipeline)
 // =============================================================================
 
 /// Test that spread opportunities flow through channels correctly
@@ -489,7 +358,6 @@ async fn test_graceful_shutdown_propagation() {
 async fn test_channel_spread_opportunity_flow() {
     let (tx, mut rx) = mpsc::channel::<SpreadOpportunity>(100);
     
-    // Create and send multiple opportunities
     for i in 0..5 {
         let opportunity = SpreadOpportunity {
             pair: format!("BTC-PERP-{}", i),
@@ -506,26 +374,22 @@ async fn test_channel_spread_opportunity_flow() {
         tx.send(opportunity).await.expect("Send should succeed");
     }
     
-    // Drop sender to close channel
     drop(tx);
     
-    // Receive all
     let mut received = Vec::new();
     while let Some(opp) = rx.recv().await {
         received.push(opp);
     }
     
-    // === VERIFY ===
     assert_eq!(received.len(), 5, "All 5 opportunities should be received");
     
-    // Verify ordering preserved
     for (i, opp) in received.iter().enumerate() {
         assert_eq!(opp.pair, format!("BTC-PERP-{}", i));
     }
 }
 
 // =============================================================================
-// Test 6: Mock Adapter Order Tracking (AC: Order Verification)
+// Test 5: Mock Adapter Order Tracking (AC: Order Verification)
 // =============================================================================
 
 /// Test that mock adapter correctly tracks order placement
@@ -561,41 +425,7 @@ async fn test_mock_adapter_order_tracking() {
         guard.place_order(order).await.expect("Close should succeed");
     }
     
-    // === VERIFY ===
     let guard = adapter.lock().await;
     assert_eq!(guard.orders_placed(), 5, "Total 5 orders placed");
     assert_eq!(guard.reduce_only_orders(), 2, "2 reduce_only orders");
-}
-
-// =============================================================================
-// Test 7: State Manager CRUD Operations (AC: Persistence)
-// =============================================================================
-
-/// Test StateManager create/read/update operations
-#[tokio::test]
-async fn test_state_manager_crud_operations() {
-    let state_manager = create_test_state_manager();
-    
-    // === CREATE ===
-    let position = create_test_position();
-    let position_id = position.id;
-    state_manager.save_position(&position).await.expect("Save should succeed");
-    
-    // === READ (with disabled Supabase, returns empty but API should work) ===
-    let load_result = state_manager.load_positions().await;
-    assert!(load_result.is_ok(), "Load should succeed without errors");
-    // Note: With disabled Supabase, positions won't be persisted to DB
-    // The API call itself should complete without error
-    
-    // === UPDATE ===
-    let update = PositionUpdate {
-        remaining_size: Some(0.0),
-        status: Some(PositionStatus::Closed),
-    };
-    state_manager.update_position(position_id, update)
-        .await.expect("Update should succeed");
-    
-    // === REMOVE ===
-    state_manager.remove_position(position_id)
-        .await.expect("Remove should succeed");
 }

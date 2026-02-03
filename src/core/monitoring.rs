@@ -1,26 +1,31 @@
-//! Orderbook monitoring task for automatic spread detection (Story 6.2)
+//! Orderbook monitoring task for automatic spread detection (Story 6.2, 7.3)
 //!
 //! This module provides the polling-based monitoring task that continuously
-//! polls orderbooks from both exchanges, calculates spreads, and emits
+//! reads orderbooks from shared storage (lock-free), calculates spreads, and emits
 //! SpreadOpportunity messages when thresholds are exceeded.
 //!
-//! # Architecture
-//! - Polls orderbooks every 100ms using `tokio::time::interval`
+//! # Architecture (V1 HFT optimized - Story 7.3)
+//! - Polls orderbooks every 25ms using `tokio::time::interval`
+//! - Reads directly from SharedOrderbooks (RwLock) - NO Mutex locks!
 //! - Calculates spreads using `SpreadCalculator`
 //! - Emits `SpreadOpportunity` via mpsc channel to execution_task
 //! - Shutdown-aware via broadcast receiver
 
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use std::collections::HashMap;
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{interval, Duration};
 use tracing::{debug, info, warn, error};
 
-use crate::adapters::ExchangeAdapter;
+use crate::adapters::Orderbook;
 use crate::core::channels::SpreadOpportunity;
 use crate::core::spread::SpreadCalculator;
 
-/// Polling interval for orderbook monitoring (100ms)
-pub const POLL_INTERVAL_MS: u64 = 100;
+/// Type alias for shared orderbooks (same as adapters::SharedOrderbooks)
+pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+
+/// Polling interval for orderbook monitoring (25ms for V1 HFT)
+pub const POLL_INTERVAL_MS: u64 = 25;
 
 /// Monitoring configuration for the task
 #[derive(Clone, Debug)]
@@ -31,39 +36,31 @@ pub struct MonitoringConfig {
     pub spread_entry: f64,
 }
 
-/// Monitoring task that polls orderbooks and detects spread opportunities
+/// Lock-free monitoring task that reads shared orderbooks directly
 ///
-/// # Story 6.2 Implementation
-/// - Polls orderbooks from both exchanges every 100ms
-/// - Calculates spread using SpreadCalculator
-/// - Emits SpreadOpportunity when spread >= entry threshold
-/// - Responds to shutdown signal for graceful termination
-///
-/// # Type Parameters
-/// * `V` - Vest exchange adapter implementing ExchangeAdapter
-/// * `P` - Paradex exchange adapter implementing ExchangeAdapter
+/// # Story 7.3 Optimization: Lock-Free Design
+/// - NO Mutex locks - reads directly from Arc<RwLock<...>>
+/// - Polls every 25ms (4x faster than original 100ms)
+/// - WebSocket handlers write to SharedOrderbooks asynchronously
 ///
 /// # Arguments
-/// * `vest` - Vest adapter wrapped in Arc<Mutex<>>
-/// * `paradex` - Paradex adapter wrapped in Arc<Mutex<>>
+/// * `vest_orderbooks` - Vest shared orderbooks (Arc<RwLock<...>>)
+/// * `paradex_orderbooks` - Paradex shared orderbooks (Arc<RwLock<...>>)
 /// * `opportunity_tx` - Channel to send spread opportunities to execution_task
 /// * `vest_symbol` - Symbol for Vest orderbook (e.g., "BTC-PERP")
 /// * `paradex_symbol` - Symbol for Paradex orderbook (e.g., "BTC-USD-PERP")
 /// * `config` - Monitoring configuration with spread thresholds
 /// * `shutdown_rx` - Broadcast receiver for shutdown signal
-pub async fn monitoring_task<V, P>(
-    vest: Arc<Mutex<V>>,
-    paradex: Arc<Mutex<P>>,
+pub async fn monitoring_task(
+    vest_orderbooks: SharedOrderbooks,
+    paradex_orderbooks: SharedOrderbooks,
     opportunity_tx: mpsc::Sender<SpreadOpportunity>,
     vest_symbol: String,
     paradex_symbol: String,
     config: MonitoringConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
-) where
-    V: ExchangeAdapter + Send,
-    P: ExchangeAdapter + Send,
-{
-    info!("Monitoring task started");
+) {
+    info!("Monitoring task started (V1 HFT: lock-free, {}ms polling)", POLL_INTERVAL_MS);
     
     let calculator = SpreadCalculator::new("vest", "paradex");
     let mut poll_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
@@ -77,32 +74,21 @@ pub async fn monitoring_task<V, P>(
             }
             // Poll orderbooks on interval
             _ = poll_interval.tick() => {
-                // Sync orderbooks from WebSocket shared storage BEFORE reading
-                // This is CRITICAL - without sync, orderbooks are always empty!
-                {
-                    let mut guard = vest.lock().await;
-                    guard.sync_orderbooks().await;
-                }
-                {
-                    let mut guard = paradex.lock().await;
-                    guard.sync_orderbooks().await;
-                }
-                
-                // Get orderbooks from both adapters (clone to release lock quickly)
+                // Read directly from shared storage - NO Mutex contention!
                 let vest_ob = {
-                    let guard = vest.lock().await;
-                    guard.get_orderbook(&vest_symbol).cloned()
+                    let books = vest_orderbooks.read().await;
+                    books.get(&vest_symbol).cloned()
                 };
                 
                 let paradex_ob = {
-                    let guard = paradex.lock().await;
-                    guard.get_orderbook(&paradex_symbol).cloned()
+                    let books = paradex_orderbooks.read().await;
+                    books.get(&paradex_symbol).cloned()
                 };
                 
                 // Only calculate spread if both orderbooks are available
                 if let (Some(vest_orderbook), Some(paradex_orderbook)) = (vest_ob, paradex_ob) {
                     if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
-                        info!(
+                        debug!(
                             spread = %format!("{:.4}%", spread_result.spread_pct),
                             direction = ?spread_result.direction,
                             threshold = %format!("{:.4}%", config.spread_entry),
@@ -131,7 +117,6 @@ pub async fn monitoring_task<V, P>(
                                 direction: spread_result.direction,
                                 detected_at_ms: now_ms,
                                 // Include orderbook prices for order placement
-                                // Vest requires limitPrice for all orders (even MARKET)
                                 dex_a_ask: vest_orderbook.best_ask().unwrap_or(0.0),
                                 dex_a_bid: vest_orderbook.best_bid().unwrap_or(0.0),
                                 dex_b_ask: paradex_orderbook.best_ask().unwrap_or(0.0),
@@ -157,16 +142,10 @@ pub async fn monitoring_task<V, P>(
                     // Log when orderbooks are missing (helps debug connection issues)
                     static WARN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                     let count = WARN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // Only warn every 100 iterations (~10 seconds) to avoid spam
-                    if count % 100 == 0 {
-                        let vest_has_ob = {
-                            let guard = vest.lock().await;
-                            guard.get_orderbook(&vest_symbol).is_some()
-                        };
-                        let paradex_has_ob = {
-                            let guard = paradex.lock().await;
-                            guard.get_orderbook(&paradex_symbol).is_some()
-                        };
+                    // Only warn every 400 iterations (~10 seconds at 25ms) to avoid spam
+                    if count % 400 == 0 {
+                        let vest_has_ob = vest_orderbooks.read().await.contains_key(&vest_symbol);
+                        let paradex_has_ob = paradex_orderbooks.read().await.contains_key(&paradex_symbol);
                         warn!(
                             vest_ob = vest_has_ob,
                             paradex_ob = paradex_has_ob,
@@ -184,60 +163,26 @@ pub async fn monitoring_task<V, P>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::ExchangeAdapter;
-    use crate::adapters::types::{Orderbook, OrderbookLevel, OrderRequest, OrderResponse, OrderStatus, PositionInfo};
-    use crate::adapters::ExchangeResult;
-    use async_trait::async_trait;
+    use crate::adapters::types::{Orderbook, OrderbookLevel};
     use tokio::time::timeout;
     
-    /// Mock adapter for monitoring tests
-    struct MockMonitoringAdapter {
-        name: &'static str,
-        orderbook: Option<Orderbook>,
-    }
-    
-    impl MockMonitoringAdapter {
-        fn new(name: &'static str) -> Self {
-            Self { name, orderbook: None }
-        }
+    /// Create test orderbooks with given prices
+    fn create_test_orderbooks(ask: f64, bid: f64) -> SharedOrderbooks {
+        let mut ob = Orderbook::new();
+        ob.asks.push(OrderbookLevel::new(ask, 1.0));
+        ob.bids.push(OrderbookLevel::new(bid, 1.0));
         
-        fn with_orderbook(name: &'static str, best_ask: f64, best_bid: f64) -> Self {
-            let mut ob = Orderbook::new();
-            ob.asks.push(OrderbookLevel::new(best_ask, 1.0));
-            ob.bids.push(OrderbookLevel::new(best_bid, 1.0));
-            Self { name, orderbook: Some(ob) }
-        }
-    }
-    
-    #[async_trait]
-    impl ExchangeAdapter for MockMonitoringAdapter {
-        async fn connect(&mut self) -> ExchangeResult<()> { Ok(()) }
-        async fn disconnect(&mut self) -> ExchangeResult<()> { Ok(()) }
-        async fn subscribe_orderbook(&mut self, _symbol: &str) -> ExchangeResult<()> { Ok(()) }
-        async fn unsubscribe_orderbook(&mut self, _symbol: &str) -> ExchangeResult<()> { Ok(()) }
-        async fn place_order(&self, _order: OrderRequest) -> ExchangeResult<OrderResponse> {
-            Ok(OrderResponse {
-                order_id: "mock-order".to_string(),
-                client_order_id: "client-order".to_string(),
-                status: OrderStatus::Filled,
-                filled_quantity: 0.01,
-                avg_price: Some(42000.0),
-            })
-        }
-        async fn cancel_order(&self, _order_id: &str) -> ExchangeResult<()> { Ok(()) }
-        fn get_orderbook(&self, _symbol: &str) -> Option<&Orderbook> { self.orderbook.as_ref() }
-        fn is_connected(&self) -> bool { true }
-        fn is_stale(&self) -> bool { false }
-        async fn sync_orderbooks(&mut self) {}
-        async fn reconnect(&mut self) -> ExchangeResult<()> { Ok(()) }
-        async fn get_position(&self, _symbol: &str) -> ExchangeResult<Option<PositionInfo>> { Ok(None) }
-        fn exchange_name(&self) -> &'static str { self.name }
+        let mut books = HashMap::new();
+        books.insert("BTC-PERP".to_string(), ob.clone());
+        books.insert("BTC-USD-PERP".to_string(), ob);
+        
+        Arc::new(RwLock::new(books))
     }
     
     #[tokio::test]
     async fn test_monitoring_task_shutdown() {
-        let vest = Arc::new(Mutex::new(MockMonitoringAdapter::new("vest")));
-        let paradex = Arc::new(Mutex::new(MockMonitoringAdapter::new("paradex")));
+        let vest_orderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let paradex_orderbooks = Arc::new(RwLock::new(HashMap::new()));
         let (opportunity_tx, _opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         
@@ -248,8 +193,8 @@ mod tests {
         
         // Spawn monitoring task
         let handle = tokio::spawn(monitoring_task(
-            vest,
-            paradex,
+            vest_orderbooks,
+            paradex_orderbooks,
             opportunity_tx,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
@@ -268,14 +213,23 @@ mod tests {
     
     #[tokio::test]
     async fn test_monitoring_task_sends_opportunity_when_threshold_exceeded() {
-        // Create mock adapters with orderbooks that create a spread > threshold
-        // NEW FORMULA: spread_A_to_B = (bid_B - ask_A) / ask_A * 100
-        // We need bid_B > ask_A for positive spread
+        // Create orderbooks with spread > threshold
         // Vest: ask=99.0, bid=98.5
-        // Paradex: ask=100.0, bid=100.5 (bid_B > ask_A, so 100.5 > 99.0)
-        // Spread A→B: (100.5 - 99.0) / 99.0 * 100 = 1.515% (> 0.30% threshold)
-        let vest = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("vest", 99.0, 98.5)));
-        let paradex = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("paradex", 100.0, 100.5)));
+        // Paradex: bid=100.5 (> ask_A so spread = (100.5-99)/99*100 = 1.515%)
+        let mut vest_books = HashMap::new();
+        let mut vest_ob = Orderbook::new();
+        vest_ob.asks.push(OrderbookLevel::new(99.0, 1.0));
+        vest_ob.bids.push(OrderbookLevel::new(98.5, 1.0));
+        vest_books.insert("BTC-PERP".to_string(), vest_ob);
+        let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        
+        let mut paradex_books = HashMap::new();
+        let mut paradex_ob = Orderbook::new();
+        paradex_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
+        paradex_ob.bids.push(OrderbookLevel::new(100.5, 1.0));
+        paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
+        let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         
@@ -286,8 +240,8 @@ mod tests {
         
         // Spawn monitoring task
         tokio::spawn(monitoring_task(
-            vest,
-            paradex,
+            vest_orderbooks,
+            paradex_orderbooks,
             opportunity_tx,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
@@ -311,11 +265,20 @@ mod tests {
     #[tokio::test]
     async fn test_monitoring_task_no_opportunity_below_threshold() {
         // Create orderbooks with spread below threshold
-        // Vest: ask=100.1, bid=100.0
-        // Paradex: ask=100.0, bid=99.9
-        // Spread: very small, below 0.30%
-        let vest = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("vest", 100.1, 100.0)));
-        let paradex = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("paradex", 100.0, 99.95)));
+        let mut vest_books = HashMap::new();
+        let mut vest_ob = Orderbook::new();
+        vest_ob.asks.push(OrderbookLevel::new(100.1, 1.0));
+        vest_ob.bids.push(OrderbookLevel::new(100.0, 1.0));
+        vest_books.insert("BTC-PERP".to_string(), vest_ob);
+        let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        
+        let mut paradex_books = HashMap::new();
+        let mut paradex_ob = Orderbook::new();
+        paradex_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
+        paradex_ob.bids.push(OrderbookLevel::new(99.95, 1.0));
+        paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
+        let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         
@@ -326,8 +289,8 @@ mod tests {
         
         // Spawn monitoring task
         tokio::spawn(monitoring_task(
-            vest,
-            paradex,
+            vest_orderbooks,
+            paradex_orderbooks,
             opportunity_tx,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
@@ -336,7 +299,7 @@ mod tests {
         ));
         
         // Wait briefly - no opportunity should arrive
-        let result = timeout(Duration::from_millis(300), opportunity_rx.recv()).await;
+        let result = timeout(Duration::from_millis(200), opportunity_rx.recv()).await;
         
         // Shutdown monitoring task
         let _ = shutdown_tx.send(());

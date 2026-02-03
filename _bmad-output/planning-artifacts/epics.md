@@ -7,7 +7,7 @@ workflowType: 'epics-and-stories'
 project_name: 'bot4'
 workflowStatus: 'complete'
 totalEpics: 8
-totalStories: 32
+totalStories: 33
 frsCovered: 21
 ---
 
@@ -705,3 +705,18 @@ So que la latence REST (Vest) soit optimisée.
 **And** la latence est réduite de ~50ms minimum
 **And** les paramètres de pooling sont configurables
 **And** un log au démarrage confirme la configuration du pool
+
+### Story 7.3: Remove Supabase from Critical Path
+
+As a opérateur HFT,
+I want que le bot n'utilise pas Supabase pendant le trading,
+So that la latence soit minimale.
+
+**Acceptance Criteria:**
+
+**Given** le bot en mode V1 HFT
+**When** une opportunité de spread est détectée
+**Then** aucune requête Supabase n'est effectuée avant l'exécution
+**And** aucune requête Supabase n'est effectuée après l'exécution
+**And** la latence pré-trade est réduite de ~70ms
+**And** un commentaire TODO V2 est présent pour la réactivation
