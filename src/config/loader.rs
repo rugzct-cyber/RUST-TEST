@@ -96,7 +96,7 @@ bots:
     spread_entry: 0.30
     spread_exit: 0.05
     leverage: 10
-    capital: 100.0
+    position_size: 0.001
 risk:
   adl_warning: 10.0
   adl_critical: 5.0
@@ -133,7 +133,7 @@ bots:
     spread_entry: 0.30
     spread_exit: 0.05
     leverage: 10
-    capital: 100.0
+    position_size: 0.001
 risk:
   adl_warning: 10.0
   adl_critical: 5.0
@@ -188,7 +188,7 @@ bots:
     spread_entry: 0.30
     spread_exit: 0.05
     leverage: 10
-    capital: 100.0
+    position_size: 0.001
   - id: eth_bot
     pair: ETH-PERP
     dex_a: hyperliquid
@@ -196,7 +196,7 @@ bots:
     spread_entry: 0.40
     spread_exit: 0.10
     leverage: 20
-    capital: 200.0
+    position_size: 0.002
 risk:
   adl_warning: 10.0
   adl_critical: 5.0

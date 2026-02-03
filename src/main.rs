@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     info!("   Entry threshold: {}%", bot.spread_entry);
     info!("   Exit threshold: {}%", bot.spread_exit);
     info!("   Leverage: {}x", bot.leverage);
-    info!("   Capital: ${}", bot.capital);
+    info!("   Position Size: {} {}", bot.position_size, bot.pair);
     
     
     // Story 6.1 Task 1: Create adapters with real credentials
@@ -195,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
     let executor = DeltaNeutralExecutor::new(
         execution_vest,
         execution_paradex,
-        0.001,  // MVP: Fixed position size (TODO: calculate from config.capital)
+        bot.position_size,  // Position size from config (e.g., 0.001 BTC)
         vest_symbol.clone(),
         paradex_symbol.clone(),
     );

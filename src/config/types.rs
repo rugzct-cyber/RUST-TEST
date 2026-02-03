@@ -83,8 +83,8 @@ pub struct BotConfig {
     pub spread_exit: f64,
     /// Leverage multiplier (1-100)
     pub leverage: u8,
-    /// Capital in USD
-    pub capital: f64,
+    /// Position size in base asset (e.g., 0.001 BTC)
+    pub position_size: f64,
 }
 
 impl BotConfig {
@@ -136,11 +136,11 @@ impl BotConfig {
             )));
         }
 
-        // Rule: capital > 0
-        if self.capital <= 0.0 {
+        // Rule: position_size > 0
+        if self.position_size <= 0.0 {
             return Err(AppError::Config(format!(
-                "Bot '{}': capital must be > 0, got {}",
-                self.id, self.capital
+                "Bot '{}': position_size must be > 0, got {}",
+                self.id, self.position_size
             )));
         }
 
@@ -247,7 +247,7 @@ mod tests {
             spread_entry: 0.30,
             spread_exit: 0.05,
             leverage: 10,
-            capital: 100.0,
+            position_size: 0.001,
         }
     }
 
@@ -309,19 +309,19 @@ mod tests {
     }
 
     #[test]
-    fn test_capital_zero_fails() {
+    fn test_position_size_zero_fails() {
         let mut bot = create_valid_bot_config();
-        bot.capital = 0.0;
+        bot.position_size = 0.0;
         
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("capital must be > 0"));
+        assert!(result.unwrap_err().to_string().contains("position_size must be > 0"));
     }
 
     #[test]
-    fn test_capital_negative_fails() {
+    fn test_position_size_negative_fails() {
         let mut bot = create_valid_bot_config();
-        bot.capital = -100.0;
+        bot.position_size = -0.001;
         
         let result = bot.validate();
         assert!(result.is_err());
@@ -338,7 +338,7 @@ bots:
     spread_entry: 0.30
     spread_exit: 0.05
     leverage: 10
-    capital: 100.0
+    position_size: 0.001
 risk:
   adl_warning: 10.0
   adl_critical: 5.0
