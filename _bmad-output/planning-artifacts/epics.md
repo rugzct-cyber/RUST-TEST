@@ -6,8 +6,8 @@ inputDocuments:
 workflowType: 'epics-and-stories'
 project_name: 'bot4'
 workflowStatus: 'complete'
-totalEpics: 7
-totalStories: 30
+totalEpics: 8
+totalStories: 32
 frsCovered: 21
 ---
 
@@ -665,3 +665,43 @@ So que je puisse vérifier que tout fonctionne end-to-end.
 - Vérification état final
 **And** le test passe sur CI/CD pipeline
 **And** le test utilise testnet ou mocked exchanges
+
+---
+
+## Epic 7: Latency Optimization
+
+L'opérateur bénéficie d'une exécution plus rapide pour capturer les opportunités HFT.
+
+**Outcome utilisateur :** Latence d'exécution réduite de ~980ms à ~150-200ms via WebSocket orders et connection pooling.
+
+**NFRs couverts :** NFR2 (Execution <500ms)
+
+### Story 7.1: WebSocket Orders Paradex
+
+As a opérateur,
+I want que les ordres Paradex soient envoyés via WebSocket,
+So that la latence d'exécution soit minimisée.
+
+**Acceptance Criteria:**
+
+**Given** une connexion WebSocket active avec Paradex
+**When** un ordre est placé
+**Then** il est envoyé via le WebSocket (pas REST)
+**And** la latence d'ordre est < 150ms
+**And** un log `[ORDER] Paradex WS order: latency=Xms` est émis
+**And** les réponses d'ordre sont gérées de manière asynchrone
+
+### Story 7.2: HTTP Connection Pooling
+
+As a opérateur,
+I want que les connexions HTTP soient réutilisées,
+So que la latence REST (Vest) soit optimisée.
+
+**Acceptance Criteria:**
+
+**Given** le client HTTP `reqwest` utilisé pour Vest
+**When** plusieurs requêtes REST sont envoyées
+**Then** les connexions TCP/TLS sont réutilisées (keep-alive)
+**And** la latence est réduite de ~50ms minimum
+**And** les paramètres de pooling sont configurables
+**And** un log au démarrage confirme la configuration du pool

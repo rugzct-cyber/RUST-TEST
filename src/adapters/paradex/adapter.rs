@@ -895,7 +895,11 @@ impl ExchangeAdapter for ParadexAdapter {
             TimeInForce::Fok => "FOK",
         };
         // For MARKET orders, use "0" as price placeholder for signature (Paradex convention)
-        let price_str = order.price.map(|p| p.to_string()).unwrap_or_else(|| "0".to_string());
+        // For LIMIT orders, format to 1 decimal place to match body format
+        let price_str = match order.order_type {
+            OrderType::Market => "0".to_string(),
+            OrderType::Limit => order.price.map(|p| format!("{:.1}", p)).unwrap_or_else(|| "0".to_string()),
+        };
         let size_str = order.quantity.to_string();
         
         // 5. Get chain ID for signing (from system config, cached during auth)
@@ -942,10 +946,11 @@ impl ExchangeAdapter for ParadexAdapter {
             "signature_timestamp": timestamp,
         });
         
-        // Add price for limit orders
+        // Add price for limit orders - format to 1 decimal place for Paradex
         if order.order_type == OrderType::Limit {
             if let Some(price) = order.price {
-                body["price"] = serde_json::json!(price.to_string());
+                // Paradex requires price as string with consistent decimal precision
+                body["price"] = serde_json::json!(format!("{:.1}", price));
             }
         }
         

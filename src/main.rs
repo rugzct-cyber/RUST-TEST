@@ -108,7 +108,9 @@ async fn main() -> anyhow::Result<()> {
     // Task 2: Create channels for data pipeline
     
     // Subtask 2.1: Create spread_opportunity channel (Story 6.2)
-    let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(100);
+    // Channel capacity of 1 ensures only one opportunity at a time
+    // New opportunities are dropped if execution is in progress (see try_send in monitoring)
+    let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(1);
     
     // Task 3: Connect to exchanges and restore state
     info!("🌐 Connecting to exchanges...");
@@ -154,8 +156,53 @@ async fn main() -> anyhow::Result<()> {
     // Create shutdown broadcast channel (moved up from Task 5 for Story 6.2)
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<>(1);
     
-    // Task 4: Monitoring and execution tasks (Story 6.2 - automatic execution)
-    // Subtask 4.1: Spawn orderbook monitoring task
+    // IMPORTANT: Connect execution adapters BEFORE spawning monitoring task
+    // This prevents race conditions where spreads are detected before executor is ready
+    info!("🔌 Initializing execution adapters...");
+    
+    // Task 3 (Story 6.2): Create DeltaNeutralExecutor with separate adapter instances
+    // Note: Execution adapters are separate from monitoring adapters
+    // MVP: Use from_env() to create new instances with same credentials
+    let execution_vest_config = VestConfig::from_env()
+        .expect("VEST credentials must be configured for execution adapter");
+    let mut execution_vest = VestAdapter::new(execution_vest_config);
+    execution_vest.connect().await
+        .expect("Failed to connect Vest execution adapter");
+    info!("[INFO] Vest execution adapter connected");
+    
+    let execution_paradex_config = ParadexConfig::from_env()
+        .expect("PARADEX credentials must be configured for execution adapter");
+    let mut execution_paradex = ParadexAdapter::new(execution_paradex_config);
+    execution_paradex.connect().await
+        .expect("Failed to connect Paradex execution adapter");
+    info!("[INFO] Paradex execution adapter connected");
+    
+    let executor = DeltaNeutralExecutor::new(
+        execution_vest,
+        execution_paradex,
+        bot.position_size,  // Position size from config (e.g., 0.001 BTC)
+        vest_symbol.clone(),
+        paradex_symbol.clone(),
+    );
+    
+    // Story 6.3: Create channel for new positions (execution -> monitoring)
+    let (new_position_tx, new_position_rx) = mpsc::channel::<PositionState>(10);
+    
+    // Now spawn execution_task first (it will wait for opportunities from channel)
+    let execution_shutdown = shutdown_tx.subscribe();
+    let exec_state_manager = state_manager.clone();
+    tokio::spawn(async move {
+        execution_task(
+            opportunity_rx,
+            executor,
+            exec_state_manager,
+            Some(new_position_tx),  // Story 6.3: Send new positions to monitor
+            execution_shutdown,
+        ).await;
+    });
+    info!("[INFO] Execution task spawned");
+    
+    // NOW spawn monitoring task - execution is ready to receive opportunities
     let monitoring_vest = Arc::clone(&vest);
     let monitoring_paradex = Arc::clone(&paradex);
     let monitoring_tx = opportunity_tx.clone();
@@ -179,44 +226,6 @@ async fn main() -> anyhow::Result<()> {
         ).await;
     });
     info!("[INFO] Monitoring task spawned");
-    
-    // Task 3 (Story 6.2): Spawn execution_task to consume SpreadOpportunity and execute trades
-    // Subtask 3.1: Create DeltaNeutralExecutor with separate adapter instances
-    // Note: Execution adapters are separate from monitoring adapters
-    // MVP: Use from_env() to create new instances with same credentials
-    let execution_vest_config = VestConfig::from_env()
-        .expect("VEST credentials must be configured for execution adapter");
-    let execution_vest = VestAdapter::new(execution_vest_config);
-    
-    let execution_paradex_config = ParadexConfig::from_env()
-        .expect("PARADEX credentials must be configured for execution adapter");
-    let execution_paradex = ParadexAdapter::new(execution_paradex_config);
-    
-    let executor = DeltaNeutralExecutor::new(
-        execution_vest,
-        execution_paradex,
-        bot.position_size,  // Position size from config (e.g., 0.001 BTC)
-        vest_symbol.clone(),
-        paradex_symbol.clone(),
-    );
-    
-    // Story 6.3: Create channel for new positions (execution -> monitoring)
-    let (new_position_tx, new_position_rx) = mpsc::channel::<PositionState>(10);
-    
-    // Subtask 3.2: Spawn execution_task with shutdown subscription
-    // Task 4 (Story 6.2): Pass StateManager for position persistence
-    let execution_shutdown = shutdown_tx.subscribe();
-    let exec_state_manager = state_manager.clone();
-    tokio::spawn(async move {
-        execution_task(
-            opportunity_rx,
-            executor,
-            exec_state_manager,
-            Some(new_position_tx),  // Story 6.3: Send new positions to monitor
-            execution_shutdown,
-        ).await;
-    });
-    info!("[INFO] Execution task spawned");
     
     // Story 6.3: Spawn position_monitoring_task for automatic exit
     let monitor_config = PositionMonitoringConfig::new(

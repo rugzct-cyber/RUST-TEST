@@ -77,6 +77,17 @@ pub async fn monitoring_task<V, P>(
             }
             // Poll orderbooks on interval
             _ = poll_interval.tick() => {
+                // Sync orderbooks from WebSocket shared storage BEFORE reading
+                // This is CRITICAL - without sync, orderbooks are always empty!
+                {
+                    let mut guard = vest.lock().await;
+                    guard.sync_orderbooks().await;
+                }
+                {
+                    let mut guard = paradex.lock().await;
+                    guard.sync_orderbooks().await;
+                }
+                
                 // Get orderbooks from both adapters (clone to release lock quickly)
                 let vest_ob = {
                     let guard = vest.lock().await;
@@ -91,9 +102,10 @@ pub async fn monitoring_task<V, P>(
                 // Only calculate spread if both orderbooks are available
                 if let (Some(vest_orderbook), Some(paradex_orderbook)) = (vest_ob, paradex_ob) {
                     if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
-                        debug!(
+                        info!(
                             spread = %format!("{:.4}%", spread_result.spread_pct),
                             direction = ?spread_result.direction,
+                            threshold = %format!("{:.4}%", config.spread_entry),
                             "Spread calculated"
                         );
                         
@@ -118,6 +130,12 @@ pub async fn monitoring_task<V, P>(
                                 spread_percent: spread_result.spread_pct,
                                 direction: spread_result.direction,
                                 detected_at_ms: now_ms,
+                                // Include orderbook prices for order placement
+                                // Vest requires limitPrice for all orders (even MARKET)
+                                dex_a_ask: vest_orderbook.best_ask().unwrap_or(0.0),
+                                dex_a_bid: vest_orderbook.best_bid().unwrap_or(0.0),
+                                dex_b_ask: paradex_orderbook.best_ask().unwrap_or(0.0),
+                                dex_b_bid: paradex_orderbook.best_bid().unwrap_or(0.0),
                             };
                             
                             // Non-blocking send to avoid blocking monitoring loop
@@ -134,6 +152,26 @@ pub async fn monitoring_task<V, P>(
                                 }
                             }
                         }
+                    }
+                } else {
+                    // Log when orderbooks are missing (helps debug connection issues)
+                    static WARN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                    let count = WARN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // Only warn every 100 iterations (~10 seconds) to avoid spam
+                    if count % 100 == 0 {
+                        let vest_has_ob = {
+                            let guard = vest.lock().await;
+                            guard.get_orderbook(&vest_symbol).is_some()
+                        };
+                        let paradex_has_ob = {
+                            let guard = paradex.lock().await;
+                            guard.get_orderbook(&paradex_symbol).is_some()
+                        };
+                        warn!(
+                            vest_ob = vest_has_ob,
+                            paradex_ob = paradex_has_ob,
+                            "Waiting for orderbooks"
+                        );
                     }
                 }
             }
@@ -231,11 +269,13 @@ mod tests {
     #[tokio::test]
     async fn test_monitoring_task_sends_opportunity_when_threshold_exceeded() {
         // Create mock adapters with orderbooks that create a spread > threshold
-        // Vest: ask=100.5, bid=100.0
-        // Paradex: ask=100.0, bid=99.5
-        // Spread A>B: (100.5 - 99.5) / 100 * 100 = 1.0% (> 0.30% threshold)
-        let vest = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("vest", 100.5, 100.0)));
-        let paradex = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("paradex", 100.0, 99.5)));
+        // NEW FORMULA: spread_A_to_B = (bid_B - ask_A) / ask_A * 100
+        // We need bid_B > ask_A for positive spread
+        // Vest: ask=99.0, bid=98.5
+        // Paradex: ask=100.0, bid=100.5 (bid_B > ask_A, so 100.5 > 99.0)
+        // Spread A→B: (100.5 - 99.0) / 99.0 * 100 = 1.515% (> 0.30% threshold)
+        let vest = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("vest", 99.0, 98.5)));
+        let paradex = Arc::new(Mutex::new(MockMonitoringAdapter::with_orderbook("paradex", 100.0, 100.5)));
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
         

@@ -370,6 +370,11 @@ where
             paradex_symbol,
         }
     }
+    
+    /// Get the default quantity used for trades
+    pub fn get_default_quantity(&self) -> f64 {
+        self.default_quantity
+    }
 
     /// Execute delta-neutral trade based on spread opportunity
     ///
@@ -386,13 +391,18 @@ where
         let start = Instant::now();
 
         // Determine which exchange gets long vs short based on direction
+        // NEW CORRECT LOGIC (matching arbitrage-v5):
+        // - AOverB: spread = (bid_B - ask_A)/ask_A → BUY on A, SELL on B
+        // - BOverA: spread = (bid_A - ask_B)/ask_B → BUY on B, SELL on A
         let (long_exchange, short_exchange) = match opportunity.direction {
             SpreadDirection::AOverB => {
-                // A's ask > B's bid: Buy on A (vest), Sell on B (paradex)
+                // A→B: Buy on A (Vest at ask_a), Sell on B (Paradex at bid_b)
+                // long = vest (we BUY here), short = paradex (we SELL here)
                 ("vest", "paradex")
             }
             SpreadDirection::BOverA => {
-                // B's ask > A's bid: Buy on B (paradex), Sell on A (vest)
+                // B→A: Buy on B (Paradex at ask_b), Sell on A (Vest at bid_a)
+                // long = paradex (we BUY here), short = vest (we SELL here)
                 ("paradex", "vest")
             }
         };
@@ -572,7 +582,7 @@ where
     /// Create order requests for both exchanges based on spread direction
     fn create_orders(
         &self,
-        _opportunity: &SpreadOpportunity,
+        opportunity: &SpreadOpportunity,
         long_exchange: &str,
         long_order_id: &str,
         short_order_id: &str,
@@ -603,15 +613,48 @@ where
             short_order_id.to_string()
         };
 
-        // Create IOC limit orders at market price
-        // TODO: Get actual market price from orderbook for proper limit price
-        // For MVP, use market orders (via high limit price for buy, low for sell)
+        // Calculate aggressive limit prices with slippage buffer (0.1% for immediate fill)
+        // Vest requires limitPrice for ALL orders (including MARKET) as slippage protection
+        const SLIPPAGE_BUFFER_PCT: f64 = 0.001; // 0.1%
+        
+        // Log orderbook prices for debugging
+        tracing::info!(
+            dex_a_ask = opportunity.dex_a_ask,
+            dex_a_bid = opportunity.dex_a_bid,
+            dex_b_ask = opportunity.dex_b_ask,
+            dex_b_bid = opportunity.dex_b_bid,
+            "[DEBUG] Orderbook prices from opportunity"
+        );
+        
+        // Vest price: Buy at slightly above ask, Sell at slightly below bid
+        let vest_price = match vest_side {
+            OrderSide::Buy => opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
+            OrderSide::Sell => opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
+        };
+        
+        // Paradex price: Buy at slightly above ask, Sell at slightly below bid
+        let paradex_price = match paradex_side {
+            OrderSide::Buy => opportunity.dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
+            OrderSide::Sell => opportunity.dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
+        };
+        
+        // Log calculated prices
+        tracing::info!(
+            vest_side = ?vest_side,
+            vest_price = vest_price,
+            paradex_side = ?paradex_side,
+            paradex_price = paradex_price,
+            "[DEBUG] Calculated limit prices"
+        );
+
+        // Use LIMIT IOC orders with aggressive prices for immediate fill
+        // This gives us slippage protection while acting like market orders
         let vest_order = OrderRequest {
             client_order_id: vest_order_id,
             symbol: self.vest_symbol.clone(),
             side: vest_side,
-            order_type: crate::adapters::types::OrderType::Market,
-            price: None,
+            order_type: crate::adapters::types::OrderType::Limit,  // LIMIT instead of MARKET
+            price: Some(vest_price),  // Required by Vest
             quantity,
             time_in_force: TimeInForce::Ioc,
             reduce_only: false,
@@ -621,8 +664,8 @@ where
             client_order_id: paradex_order_id,
             symbol: self.paradex_symbol.clone(),
             side: paradex_side,
-            order_type: crate::adapters::types::OrderType::Market,
-            price: None,
+            order_type: crate::adapters::types::OrderType::Limit,  // LIMIT instead of MARKET
+            price: Some(paradex_price),  // Consistent with Vest
             quantity,
             time_in_force: TimeInForce::Ioc,
             reduce_only: false,
@@ -751,6 +794,10 @@ mod tests {
             spread_percent: 0.35,
             direction: SpreadDirection::AOverB,
             detected_at_ms: 1706000000000,
+            dex_a_ask: 42000.0,
+            dex_a_bid: 41990.0,
+            dex_b_ask: 42005.0,
+            dex_b_bid: 41985.0,
         }
     }
 
@@ -858,9 +905,9 @@ mod tests {
         // Result should indicate partial failure
         assert!(!result.success);
         
-        // For AOverB direction: vest=long (should succeed), paradex=short (should fail)
-        assert!(result.long_order.is_success(), "Long order should succeed");
-        assert!(!result.short_order.is_success(), "Short order should fail");
+        // For AOverB direction (NEW LOGIC): vest=long (buy), paradex=short (sell - should fail)
+        assert!(result.long_order.is_success(), "Long order should succeed (vest succeeds)");
+        assert!(!result.short_order.is_success(), "Short order should fail (paradex fails)");
     }
 
     // =========================================================================
@@ -880,7 +927,9 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
         
-        // AOverB: Buy on A (vest), Sell on B (paradex)
+        // NEW LOGIC: AOverB = spread_A_to_B = (bid_B - ask_A) / ask_A 
+        //   = Buy on A (Vest), Sell on B (Paradex)
+        //   = Long=Vest, Short=Paradex
         let opportunity = SpreadOpportunity {
             pair: "BTC-PERP".to_string(),
             dex_a: "vest".to_string(),
@@ -888,11 +937,15 @@ mod tests {
             spread_percent: 0.35,
             direction: SpreadDirection::AOverB,
             detected_at_ms: 1706000000000,
+            dex_a_ask: 42000.0,
+            dex_a_bid: 41990.0,
+            dex_b_ask: 42005.0,
+            dex_b_bid: 41985.0,
         };
         
         let result = executor.execute_delta_neutral(opportunity).await.unwrap();
         
-        // Vest should be long, Paradex should be short
+        // Vest = long (we BUY here), Paradex = short (we SELL here)
         assert_eq!(result.long_exchange, "vest");
         assert_eq!(result.short_exchange, "paradex");
     }
@@ -910,7 +963,9 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
         
-        // BOverA: Buy on B (paradex), Sell on A (vest)
+        // NEW LOGIC: BOverA = spread_B_to_A = (bid_A - ask_B) / ask_B
+        //   = Buy on B (Paradex), Sell on A (Vest)
+        //   = Long=Paradex, Short=Vest
         let opportunity = SpreadOpportunity {
             pair: "BTC-PERP".to_string(),
             dex_a: "vest".to_string(),
@@ -918,11 +973,15 @@ mod tests {
             spread_percent: 0.35,
             direction: SpreadDirection::BOverA,
             detected_at_ms: 1706000000000,
+            dex_a_ask: 42000.0,
+            dex_a_bid: 41990.0,
+            dex_b_ask: 42005.0,
+            dex_b_bid: 41985.0,
         };
         
         let result = executor.execute_delta_neutral(opportunity).await.unwrap();
         
-        // Paradex should be long, Vest should be short
+        // Paradex = long (we BUY here), Vest = short (we SELL here)
         assert_eq!(result.long_exchange, "paradex");
         assert_eq!(result.short_exchange, "vest");
     }
@@ -1330,10 +1389,12 @@ mod tests {
         }
     }
 
-    /// Story 2.5 - Task 7.1: Integration test - long leg fails, short leg auto-closed
+    /// Story 2.5 - Task 7.1: Integration test - short leg fails, long leg auto-closed
+    /// NEW LOGIC: AOverB means vest=LONG, paradex=SHORT
     #[tokio::test]
     async fn test_delta_neutral_with_auto_close_long_fails() {
-        // Vest (long) will fail all retries, Paradex (short) will succeed
+        // For AOverB (NEW): vest=long (will fail), paradex=short (will succeed)
+        // Using vest failure to test long leg failing
         let vest = FailNTimesAdapter::new_always_fail("vest");
         let paradex = MockAdapter::new("paradex");
 
@@ -1345,14 +1406,14 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // AOverB: vest=long (will fail), paradex=short (will succeed, then auto-close)
+        // AOverB (NEW): vest=long (will fail), paradex=short (will succeed, then auto-close)
         let opportunity = create_test_opportunity();
         let result = executor.execute_delta_neutral(opportunity).await.unwrap();
 
         // Delta-neutral should fail overall
         assert!(!result.success, "Overall execution should fail when one leg fails");
-        assert!(!result.long_order.is_success(), "Long order should fail");
-        assert!(result.short_order.is_success(), "Short order should succeed initially");
+        assert!(!result.long_order.is_success(), "Long order should fail (vest)");
+        assert!(result.short_order.is_success(), "Short order should succeed initially (paradex)");
 
         // Auto-close should have been triggered for the successful short leg
         assert!(result.auto_close_result.is_some(), "Auto-close should be triggered");
@@ -1367,9 +1428,11 @@ mod tests {
     }
 
     /// Story 2.5 - Task 7.2: Integration test - short leg fails, long leg auto-closed
+    /// NEW LOGIC: AOverB means vest=LONG, paradex=SHORT
     #[tokio::test]
     async fn test_delta_neutral_with_auto_close_short_fails() {
-        // Vest (long) will succeed, Paradex (short) will fail all retries
+        // For AOverB (NEW): vest=long (will succeed), paradex=short (will fail)
+        // Using paradex failure to test short leg failing
         let vest = MockAdapter::new("vest");
         let paradex = FailNTimesAdapter::new_always_fail("paradex");
 
@@ -1381,14 +1444,14 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // AOverB: vest=long (will succeed, then auto-close), paradex=short (will fail)
+        // AOverB (NEW): vest=long (will succeed, then auto-close), paradex=short (will fail)
         let opportunity = create_test_opportunity();
         let result = executor.execute_delta_neutral(opportunity).await.unwrap();
 
         // Delta-neutral should fail overall
         assert!(!result.success, "Overall execution should fail when one leg fails");
-        assert!(result.long_order.is_success(), "Long order should succeed initially");
-        assert!(!result.short_order.is_success(), "Short order should fail");
+        assert!(result.long_order.is_success(), "Long order should succeed initially (vest)");
+        assert!(!result.short_order.is_success(), "Short order should fail (paradex)");
 
         // Auto-close should have been triggered for the successful long leg
         assert!(result.auto_close_result.is_some(), "Auto-close should be triggered");

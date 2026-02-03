@@ -140,3 +140,11 @@ development_status:
   6-3-automatic-position-monitoring-exit: done  # Code review completed, all issues fixed (2026-02-03)
   6-5-end-to-end-integration-test: done  # Code review completed, all issues fixed (2026-02-03)
   epic-6-retrospective: optional
+
+  # Epic 7: Latency Optimization
+  # Added 2026-02-03 via correct-course workflow
+  # Target: Reduce execution latency from ~980ms to ~150-200ms
+  epic-7: backlog
+  7-1-websocket-orders-paradex: backlog
+  7-2-http-connection-pooling: backlog
+  epic-7-retrospective: optional

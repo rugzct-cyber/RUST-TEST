@@ -244,6 +244,10 @@ async fn test_spread_opportunity_triggers_execution() {
         spread_percent: 0.35,
         direction: SpreadDirection::AOverB,
         detected_at_ms: current_time_ms(),
+        dex_a_ask: 42000.0,
+        dex_a_bid: 41990.0,
+        dex_b_ask: 42005.0,
+        dex_b_bid: 41985.0,
     };
     
     // Verify spread is above threshold
@@ -494,6 +498,10 @@ async fn test_channel_spread_opportunity_flow() {
             spread_percent: 0.30 + (i as f64 * 0.01),
             direction: SpreadDirection::AOverB,
             detected_at_ms: current_time_ms(),
+            dex_a_ask: 42000.0,
+            dex_a_bid: 41990.0,
+            dex_b_ask: 42005.0,
+            dex_b_bid: 41985.0,
         };
         tx.send(opportunity).await.expect("Send should succeed");
     }

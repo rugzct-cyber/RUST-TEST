@@ -1094,7 +1094,12 @@ impl ExchangeAdapter for VestAdapter {
             "symbol": order.symbol,
             "isBuy": is_buy,
             "size": format!("{:.4}", order.quantity),
-            "limitPrice": order.price.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "0.00".to_string()),
+            // Vest requires limitPrice for ALL orders (including MARKET) as a slippage protection
+            // If price is None, this will fail - caller must provide a price
+            "limitPrice": order.price.map(|p| format!("{:.2}", p)).unwrap_or_else(|| {
+                tracing::error!("Vest requires limitPrice for all orders! Order rejected due to missing price.");
+                "0.00".to_string() // Will be rejected by Vest with "Limit price must be positive"
+            }),
             "reduceOnly": order.reduce_only,
         });
 

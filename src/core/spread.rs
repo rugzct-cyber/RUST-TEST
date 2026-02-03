@@ -96,35 +96,45 @@ impl SpreadCalculator {
         orderbook_a: &Orderbook,
         orderbook_b: &Orderbook,
     ) -> Option<SpreadResult> {
-        // Get best prices from both orderbooks (Task 4.2, 4.3)
+        // Get best prices from both orderbooks
         let ask_a = orderbook_a.best_ask()?;
         let bid_a = orderbook_a.best_bid()?;
         let ask_b = orderbook_b.best_ask()?;
         let bid_b = orderbook_b.best_bid()?;
 
-        // Calculate both directions (Task 2.3)
-        let spread_a_over_b = Self::raw_spread(ask_a, bid_b);
-        let spread_b_over_a = Self::raw_spread(ask_b, bid_a);
+        // Calculate spreads in both directions using CORRECT formula from arbitrage-v5:
+        // spread = (bid_sell - ask_buy) / ask_buy * 100
+        // This represents the actual profit percentage on entry
+        // Positive spread = we can sell higher than we buy = PROFIT
+        
+        // Direction A→B: Buy on A (at ask_a), Sell on B (at bid_b)
+        let spread_a_to_b = ((bid_b - ask_a) / ask_a) * 100.0;
+        
+        // Direction B→A: Buy on B (at ask_b), Sell on A (at bid_a)  
+        let spread_b_to_a = ((bid_a - ask_b) / ask_b) * 100.0;
 
-        // Return the better opportunity
         let timestamp_ms = current_time_ms();
+        let midpoint = (ask_a + bid_b + ask_b + bid_a) / 4.0;
 
-        if spread_a_over_b >= spread_b_over_a {
+        // Return the better (higher) spread opportunity
+        if spread_a_to_b >= spread_b_to_a {
+            // A→B: Buy on A (Vest), Sell on B (Paradex)
             Some(SpreadResult {
-                spread_pct: spread_a_over_b,
+                spread_pct: spread_a_to_b,
                 direction: SpreadDirection::AOverB,
-                ask_price: ask_a,
-                bid_price: bid_b,
-                midpoint: (ask_a + bid_b) / 2.0, // Task 2.4
+                ask_price: ask_a,   // We BUY at this price (on A)
+                bid_price: bid_b,   // We SELL at this price (on B)
+                midpoint,
                 timestamp_ms,
             })
         } else {
+            // B→A: Buy on B (Paradex), Sell on A (Vest)
             Some(SpreadResult {
-                spread_pct: spread_b_over_a,
+                spread_pct: spread_b_to_a,
                 direction: SpreadDirection::BOverA,
-                ask_price: ask_b,
-                bid_price: bid_a,
-                midpoint: (ask_b + bid_a) / 2.0, // Task 2.4
+                ask_price: ask_b,   // We BUY at this price (on B)
+                bid_price: bid_a,   // We SELL at this price (on A)
+                midpoint,
                 timestamp_ms,
             })
         }
@@ -404,6 +414,10 @@ impl SpreadMonitor {
                         spread_percent: entry_spread,
                         direction: SpreadDirection::AOverB,
                         detected_at_ms: current_time_ms(),
+                        dex_a_ask: vest.best_ask().unwrap_or(0.0),
+                        dex_a_bid: vest.best_bid().unwrap_or(0.0),
+                        dex_b_ask: paradex.best_ask().unwrap_or(0.0),
+                        dex_b_bid: paradex.best_bid().unwrap_or(0.0),
                     };
                     
                     tx.send(opportunity).await.map_err(|_| SpreadMonitorError::ChannelClosed)?;
@@ -426,6 +440,10 @@ impl SpreadMonitor {
                         spread_percent: exit_spread,
                         direction: SpreadDirection::BOverA, // Exit = opposite direction
                         detected_at_ms: current_time_ms(),
+                        dex_a_ask: vest.best_ask().unwrap_or(0.0),
+                        dex_a_bid: vest.best_bid().unwrap_or(0.0),
+                        dex_b_ask: paradex.best_ask().unwrap_or(0.0),
+                        dex_b_bid: paradex.best_bid().unwrap_or(0.0),
                     };
                     
                     tx.send(opportunity).await.map_err(|_| SpreadMonitorError::ChannelClosed)?;
@@ -478,26 +496,32 @@ mod tests {
 
         let result = calc.calculate(&ob_a, &ob_b).unwrap();
 
-        // A ask (100) > B bid (98.5): spread = (100-98.5) / 99.25 * 100 ≈ 1.51%
-        assert!(result.spread_pct > 1.5, "Spread should be > 1.5%, got {}", result.spread_pct);
-        assert!(result.spread_pct < 1.52, "Spread should be < 1.52%, got {}", result.spread_pct);
-        assert_eq!(result.direction, SpreadDirection::AOverB);
-        assert_eq!(result.ask_price, 100.0);
-        assert_eq!(result.bid_price, 98.5);
+        // NEW FORMULA: spread_A_to_B = (bid_B - ask_A) / ask_A * 100 = (98.5 - 100) / 100 = -1.5%
+        //              spread_B_to_A = (bid_A - ask_B) / ask_B * 100 = (99 - 99.5) / 99.5 = -0.503%
+        // B→A is less negative (better), so direction = BOverA
+        assert_eq!(result.direction, SpreadDirection::BOverA);
+        // Spread is the better one (B→A) which is -0.503%
+        assert!(result.spread_pct < 0.0, "Spread should be negative, got {}", result.spread_pct);
+        assert_eq!(result.ask_price, 99.5);  // B's ask (we BUY here)
+        assert_eq!(result.bid_price, 99.0);  // A's bid (we SELL here)
     }
 
     #[test]
     fn test_spread_calculation_exact_values() {
         let calc = SpreadCalculator::new("vest", "paradex");
-        // Simple case: ask=102, bid=100 -> spread = (102-100)/101 * 100 = 1.9801...%
-        let ob_a = make_orderbook(102.0, 101.0);
-        let ob_b = make_orderbook(101.5, 100.0);
+        // Test with orderbooks where one direction has positive spread
+        // A: ask=98, bid=97  |  B: ask=99, bid=101 (B's bid > A's ask)
+        let ob_a = make_orderbook(98.0, 97.0);
+        let ob_b = make_orderbook(99.0, 101.0);
 
         let result = calc.calculate(&ob_a, &ob_b).unwrap();
 
-        // A ask (102) - B bid (100) = 2, midpoint = 101, spread = 2/101*100 ≈ 1.98%
-        let expected = (102.0 - 100.0) / 101.0 * 100.0;
+        // NEW FORMULA: spread_A_to_B = (bid_B - ask_A) / ask_A * 100 = (101 - 98) / 98 = 3.0612%
+        //              spread_B_to_A = (bid_A - ask_B) / ask_B * 100 = (97 - 99) / 99 = -2.0202%
+        // A→B is positive and larger, so direction = AOverB
+        let expected = (101.0 - 98.0) / 98.0 * 100.0;  // 3.0612...%
         assert!((result.spread_pct - expected).abs() < 0.0001);
+        assert_eq!(result.direction, SpreadDirection::AOverB);
     }
 
     // =========================================================================
@@ -507,33 +531,37 @@ mod tests {
     #[test]
     fn test_spread_direction_a_over_b() {
         let calc = SpreadCalculator::new("vest", "paradex");
-        // A has higher ask, B has lower bid -> A over B opportunity
-        let ob_a = make_orderbook(105.0, 104.0);
-        let ob_b = make_orderbook(103.0, 102.0);
+        // A→B: Buy on A, Sell on B. Need bid_B > ask_A for profit
+        // A: ask=98, bid=97  |  B: ask=99, bid=102 (bid_B > ask_A)
+        let ob_a = make_orderbook(98.0, 97.0);
+        let ob_b = make_orderbook(99.0, 102.0);
 
         let result = calc.calculate(&ob_a, &ob_b).unwrap();
         
-        // A ask (105) - B bid (102) = 3 -> A over B
-        // B ask (103) - A bid (104) = -1 -> no opportunity
+        // spread_A_to_B = (102 - 98) / 98 = 4.08% (positive)
+        // spread_B_to_A = (97 - 99) / 99 = -2.02% (negative)
+        // A→B is better, so direction = AOverB
         assert_eq!(result.direction, SpreadDirection::AOverB);
-        assert!(result.spread_pct > 0.0);
+        assert!(result.spread_pct > 0.0, "Spread should be positive, got {}", result.spread_pct);
     }
 
     #[test]
     fn test_spread_direction_b_over_a() {
         let calc = SpreadCalculator::new("vest", "paradex");
-        // B has higher ask, A has lower bid -> B over A opportunity
-        let ob_a = make_orderbook(98.0, 97.0);
-        let ob_b = make_orderbook(100.0, 99.0);
+        // B→A: Buy on B, Sell on A. Need bid_A > ask_B for profit
+        // A: ask=99, bid=102  |  B: ask=98, bid=97 (bid_A > ask_B)
+        let ob_a = make_orderbook(99.0, 102.0);
+        let ob_b = make_orderbook(98.0, 97.0);
 
         let result = calc.calculate(&ob_a, &ob_b).unwrap();
 
-        // A ask (98) - B bid (99) = -1 -> no opportunity in A->B
-        // B ask (100) - A bid (97) = 3 -> B over A opportunity
+        // spread_A_to_B = (97 - 99) / 99 = -2.02% (negative)
+        // spread_B_to_A = (102 - 98) / 98 = 4.08% (positive)
+        // B→A is better, so direction = BOverA
         assert_eq!(result.direction, SpreadDirection::BOverA);
-        assert!(result.spread_pct > 0.0);
-        assert_eq!(result.ask_price, 100.0); // B's ask
-        assert_eq!(result.bid_price, 97.0);  // A's bid
+        assert!(result.spread_pct > 0.0, "Spread should be positive, got {}", result.spread_pct);
+        assert_eq!(result.ask_price, 98.0);  // B's ask (we BUY here)
+        assert_eq!(result.bid_price, 102.0); // A's bid (we SELL here)
     }
 
     // =========================================================================
@@ -594,39 +622,36 @@ mod tests {
     #[test]
     fn test_spread_negative_in_one_direction() {
         let calc = SpreadCalculator::new("vest", "paradex");
-        // A ask < B bid: negative spread in A->B direction
-        let ob_a = make_orderbook(98.0, 97.0);
-        let ob_b = make_orderbook(99.0, 98.5);
+        // One direction has less negative spread
+        // A: ask=100, bid=99  |  B: ask=101, bid=98
+        let ob_a = make_orderbook(100.0, 99.0);
+        let ob_b = make_orderbook(101.0, 98.0);
 
         let result = calc.calculate(&ob_a, &ob_b).unwrap();
 
-        // A ask (98) - B bid (98.5) = -0.5 -> negative in A->B
-        // B ask (99) - A bid (97) = +2 -> positive in B->A
-        // Calculator should return B->A as the better direction
+        // spread_A_to_B = (98 - 100) / 100 = -2% 
+        // spread_B_to_A = (99 - 101) / 101 = -1.98%
+        // B→A is less negative (better), so direction = BOverA
         assert_eq!(result.direction, SpreadDirection::BOverA);
-        assert!(result.spread_pct > 0.0);
+        // Both are negative, spread should be negative
+        assert!(result.spread_pct < 0.0, "Expected negative spread, got {}", result.spread_pct);
     }
 
     #[test]
     fn test_spread_negative_both_directions() {
         let calc = SpreadCalculator::new("vest", "paradex");
-        // Both directions have negative spread (crossed market within each exchange)
-        // A: ask=100, bid=101 (crossed)
-        // B: ask=100, bid=101 (crossed)
-        // This is an edge case with crossed markets
-        let mut ob_a = Orderbook::new();
-        ob_a.asks.push(OrderbookLevel::new(100.0, 1.0));
-        ob_a.bids.push(OrderbookLevel::new(101.0, 1.0)); // bid > ask (crossed)
-
-        let mut ob_b = Orderbook::new();
-        ob_b.asks.push(OrderbookLevel::new(100.0, 1.0));
-        ob_b.bids.push(OrderbookLevel::new(101.0, 1.0)); // bid > ask (crossed)
+        // Both directions have negative spread (normal market, no arbitrage)
+        // A: ask=100, bid=99  |  B: ask=101, bid=98
+        let ob_a = make_orderbook(100.0, 99.0);
+        let ob_b = make_orderbook(101.0, 98.0);
 
         let result = calc.calculate(&ob_a, &ob_b).unwrap();
 
-        // Both A ask (100) - B bid (101) = -1 and B ask (100) - A bid (101) = -1
-        // Both spreads are negative, but calculator returns the "better" (less negative) one
-        assert!(result.spread_pct < 0.0, "Both directions negative, spread should be < 0");
+        // spread_A_to_B = (98 - 100) / 100 = -2%
+        // spread_B_to_A = (99 - 101) / 101 = -1.98%
+        // Both spreads are negative (no arbitrage opportunity)
+        // Calculator returns the better (less negative) one = B→A at -1.98%
+        assert!(result.spread_pct < 0.0, "Both directions negative, spread should be < 0, got {}", result.spread_pct);
     }
 
     // =========================================================================

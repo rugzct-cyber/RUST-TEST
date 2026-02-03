@@ -146,6 +146,12 @@ pub async fn position_monitoring_task<V, P>(
                 }
                 
                 // Get orderbooks from both exchanges
+                // Sync orderbooks from WebSocket shared storage
+                {
+                    vest.lock().await.sync_orderbooks().await;
+                    paradex.lock().await.sync_orderbooks().await;
+                }
+                
                 let (vest_ob, paradex_ob) = {
                     let vest_guard = vest.lock().await;
                     let paradex_guard = paradex.lock().await;
@@ -220,6 +226,10 @@ pub async fn position_monitoring_task<V, P>(
                         &state_manager,
                         &position,
                         &config,
+                        vest_best_bid,
+                        vest_best_ask,
+                        paradex_best_bid,
+                        paradex_best_ask,
                     ).await {
                         Ok(()) => {
                             // Remove from open positions
@@ -268,6 +278,10 @@ async fn close_position<V, P>(
     state_manager: &Arc<StateManager>,
     position: &PositionState,
     config: &PositionMonitoringConfig,
+    vest_best_bid: f64,
+    vest_best_ask: f64,
+    paradex_best_bid: f64,
+    paradex_best_ask: f64,
 ) -> Result<(), String>
 where
     V: ExchangeAdapter + Send,
@@ -292,25 +306,41 @@ where
             (OrderSide::Buy, position.short_size, OrderSide::Sell, position.long_size)
         };
     
+    // Calculate aggressive limit prices with slippage buffer (0.2% for immediate fill)
+    // Vest REQUIRES limitPrice for ALL orders (including what would be MARKET orders)
+    const SLIPPAGE_BUFFER_PCT: f64 = 0.002; // 0.2%
+    
+    let vest_price = match vest_side {
+        OrderSide::Buy => vest_best_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
+        OrderSide::Sell => vest_best_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
+    };
+    
+    let paradex_price = match paradex_side {
+        OrderSide::Buy => paradex_best_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
+        OrderSide::Sell => paradex_best_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
+    };
+    
     // Create close order for Vest leg - CRITICAL: reduce_only = true
+    // Use LIMIT with aggressive price - Vest rejects MARKET orders without price
     let vest_close_order = OrderRequest {
         client_order_id: format!("close-vest-{}-{}", position.id, timestamp),
         symbol: config.vest_symbol.clone(),
-        side: vest_side,
-        order_type: OrderType::Market,
-        price: None,
+        side: vest_side.clone(),
+        order_type: OrderType::Limit,  // LIMIT not MARKET - Vest requires limitPrice
+        price: Some(vest_price),
         quantity: vest_quantity,
         time_in_force: TimeInForce::Ioc,
         reduce_only: true,  // CRITICAL: Must be true to close position
     };
     
     // Create close order for Paradex leg - CRITICAL: reduce_only = true
+    // Use LIMIT for consistency with Vest
     let paradex_close_order = OrderRequest {
         client_order_id: format!("close-paradex-{}-{}", position.id, timestamp),
         symbol: config.paradex_symbol.clone(),
-        side: paradex_side,
-        order_type: OrderType::Market,
-        price: None,
+        side: paradex_side.clone(),
+        order_type: OrderType::Limit,  // LIMIT for consistency
+        price: Some(paradex_price),
         quantity: paradex_quantity,
         time_in_force: TimeInForce::Ioc,
         reduce_only: true,  // CRITICAL: Must be true to close position
@@ -319,7 +349,9 @@ where
     info!(
         position_id = %position.id,
         vest_side = ?vest_side,
+        vest_price = vest_price,
         paradex_side = ?paradex_side,
+        paradex_price = paradex_price,
         vest_quantity = vest_quantity,
         paradex_quantity = paradex_quantity,
         "[EXIT] Executing simultaneous close orders"
@@ -595,7 +627,8 @@ mod tests {
         
         let position = create_test_position_long_vest();
         
-        let result = close_position(&vest, &paradex, &state_manager, &position, &config).await;
+        // Mock orderbook prices for LIMIT orders
+        let result = close_position(&vest, &paradex, &state_manager, &position, &config, 42000.0, 42010.0, 42005.0, 42015.0).await;
         
         assert!(result.is_ok(), "Close position should succeed");
         
@@ -628,7 +661,8 @@ mod tests {
         
         let position = create_test_position_long_paradex();
         
-        let result = close_position(&vest, &paradex, &state_manager, &position, &config).await;
+        // Mock orderbook prices for LIMIT orders
+        let result = close_position(&vest, &paradex, &state_manager, &position, &config, 42000.0, 42010.0, 42005.0, 42015.0).await;
         
         assert!(result.is_ok(), "Close position should succeed");
     }
@@ -654,7 +688,8 @@ mod tests {
         
         let position = create_test_position_long_vest();
         
-        let result = close_position(&vest, &paradex, &state_manager, &position, &config).await;
+        // Mock orderbook prices for LIMIT orders
+        let result = close_position(&vest, &paradex, &state_manager, &position, &config, 42000.0, 42010.0, 42005.0, 42015.0).await;
         
         assert!(result.is_err(), "Should fail with partial failure");
         assert!(result.unwrap_err().contains("Paradex"));

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::adapters::ExchangeAdapter;
 use crate::core::channels::SpreadOpportunity;
@@ -36,93 +36,143 @@ pub async fn execution_task<V, P>(
     P: ExchangeAdapter + Send + Sync,
 {
     info!("Execution task started");
+    
+    // Track execution statistics
+    let mut execution_count: u64 = 0;
+    let mut last_execution: Option<std::time::Instant> = None;
+    const EXECUTION_COOLDOWN_SECS: u64 = 5; // Minimum seconds between executions
+    
+    // Check if DB is disabled for testing (set DISABLE_DB=1)
+    let db_disabled = std::env::var("DISABLE_DB").map(|v| v == "1").unwrap_or(false);
+    if db_disabled {
+        warn!("⚠️ Database operations DISABLED for testing");
+    }
 
     loop {
         tokio::select! {
             // Shutdown takes priority
             _ = shutdown_rx.recv() => {
-                info!("Execution task shutting down");
+                info!(total_executions = execution_count, "Execution task shutting down");
                 break;
             }
             // Process incoming opportunities
             Some(opportunity) = opportunity_rx.recv() => {
+                // Check cooldown - skip if too soon after last execution
+                if let Some(last) = last_execution {
+                    let elapsed = last.elapsed().as_secs();
+                    if elapsed < EXECUTION_COOLDOWN_SECS {
+                        debug!(
+                            elapsed_secs = elapsed,
+                            cooldown_secs = EXECUTION_COOLDOWN_SECS,
+                            "Skipping opportunity - cooldown active"
+                        );
+                        continue;
+                    }
+                }
+                
                 let spread_pct = opportunity.spread_percent;
                 let pair = opportunity.pair.clone();
                 
+                // Check if we already have an open position for this pair
+                // Skip this check if DB is disabled for testing
+                if !db_disabled {
+                    match state_manager.load_positions().await {
+                        Ok(positions) => {
+                            let has_open_position = positions.iter().any(|p| p.pair == pair && p.status == crate::core::state::PositionStatus::Open);
+                            if has_open_position {
+                                debug!(
+                                    pair = %pair,
+                                    "Skipping opportunity - already have open position for this pair"
+                                );
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to check open positions, proceeding with caution");
+                            // Continue anyway - don't block trading on DB read failures
+                        }
+                    }
+                }
+                
+                execution_count += 1;
                 info!(
                     pair = %opportunity.pair,
                     spread = %format!("{:.4}%", opportunity.spread_percent),
                     direction = ?opportunity.direction,
-                    "Processing spread opportunity"
+                    execution_number = execution_count,
+                    "Processing spread opportunity #{}", execution_count
                 );
 
                 match executor.execute_delta_neutral(opportunity).await {
                     Ok(result) => {
                         if result.success {
+                            // Update cooldown timer
+                            last_execution = Some(std::time::Instant::now());
+                            
                             // AC1: Log [TRADE] Auto-executed with spread
                             info!(
                                 spread = %format!("{:.4}%", spread_pct),
                                 latency_ms = result.execution_latency_ms,
                                 long = %result.long_exchange,
                                 short = %result.short_exchange,
+                                execution_number = execution_count,
                                 "[TRADE] Auto-executed"
                             );
                             
-                            // AC3 (Story 6.2 Task 4): Save position to Supabase
-                            // Get filled quantities from result for position creation
-                            let (long_size, short_size) = match (&result.long_order, &result.short_order) {
-                                (crate::core::execution::LegStatus::Success(long_resp), 
-                                 crate::core::execution::LegStatus::Success(short_resp)) => {
-                                    (long_resp.filled_quantity, short_resp.filled_quantity)
-                                }
-                                _ => (0.0, 0.0), // Should not happen if success=true
-                            };
-                            
-                            let position = PositionState::new(
-                                pair.clone(),
-                                result.long_exchange.clone(),  // long_symbol uses exchange name for MVP
-                                result.short_exchange.clone(), // short_symbol uses exchange name for MVP
-                                result.long_exchange.clone(),
-                                result.short_exchange.clone(),
-                                long_size,
-                                short_size,
-                                spread_pct,
-                            );
-                            
-                            match state_manager.save_position(&position).await {
-                                Ok(_) => {
-                                    info!(
-                                        pair = %pair,
-                                        entry_spread = %format!("{:.4}%", spread_pct),
-                                        "[STATE] Position saved"
-                                    );
-                                    
-                                    // Story 6.3: Notify position_monitoring_task of new position
-                                    if let Some(tx) = &new_position_tx {
-                                        if let Err(e) = tx.send(position.clone()).await {
-                                            warn!(
-                                                error = %e,
-                                                "[MONITOR] Failed to send position to monitor"
-                                            );
+                            // Skip DB operations if disabled for testing
+                            if db_disabled {
+                                info!("[TEST] Skipping DB save (DISABLE_DB=1)");
+                            } else {
+                                // AC3 (Story 6.2 Task 4): Save position to Supabase
+                                // Use default_quantity since IOC orders may not report filled_quantity correctly
+                                let trade_quantity = executor.get_default_quantity();
+                                
+                                let position = PositionState::new(
+                                    pair.clone(),
+                                    result.long_exchange.clone(),  // long_symbol uses exchange name for MVP
+                                    result.short_exchange.clone(), // short_symbol uses exchange name for MVP
+                                    result.long_exchange.clone(),
+                                    result.short_exchange.clone(),
+                                    trade_quantity,
+                                    trade_quantity,
+                                    spread_pct,
+                                );
+                                
+                                match state_manager.save_position(&position).await {
+                                    Ok(_) => {
+                                        info!(
+                                            pair = %pair,
+                                            entry_spread = %format!("{:.4}%", spread_pct),
+                                            "[STATE] Position saved"
+                                        );
+                                        
+                                        // Story 6.3: Notify position_monitoring_task of new position
+                                        if let Some(tx) = &new_position_tx {
+                                            if let Err(e) = tx.send(position.clone()).await {
+                                                warn!(
+                                                    error = %e,
+                                                    "[MONITOR] Failed to send position to monitor"
+                                                );
+                                            }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    // AC1 Task 4.3: Don't block trading if Supabase fails
-                                    warn!(
-                                        pair = %pair,
-                                        error = %e,
-                                        "[STATE] Failed to save position. Trading continues."
-                                    );
-                                    
-                                    // Still notify monitor even if DB save fails
-                                    // (position exists in-memory for monitoring)
-                                    if let Some(tx) = &new_position_tx {
-                                        if let Err(e) = tx.send(position.clone()).await {
-                                            warn!(
-                                                error = %e,
-                                                "[MONITOR] Failed to send position to monitor"
-                                            );
+                                    Err(e) => {
+                                        // AC1 Task 4.3: Don't block trading if Supabase fails
+                                        warn!(
+                                            pair = %pair,
+                                            error = %e,
+                                            "[STATE] Failed to save position. Trading continues."
+                                        );
+                                        
+                                        // Still notify monitor even if DB save fails
+                                        // (position exists in-memory for monitoring)
+                                        if let Some(tx) = &new_position_tx {
+                                            if let Err(e) = tx.send(position.clone()).await {
+                                                warn!(
+                                                    error = %e,
+                                                    "[MONITOR] Failed to send position to monitor"
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -134,6 +184,16 @@ pub async fn execution_task<V, P>(
                                 short_success = %result.short_order.is_success(),
                                 "[TRADE] Delta-neutral trade partially failed"
                             );
+                        }
+                        
+                        // Drain any stale opportunities that accumulated during execution
+                        // This prevents executing multiple trades for the same spread
+                        let mut drained = 0;
+                        while opportunity_rx.try_recv().is_ok() {
+                            drained += 1;
+                        }
+                        if drained > 0 {
+                            debug!("Drained {} stale opportunities after execution", drained);
                         }
                     }
                     Err(e) => {
@@ -230,6 +290,10 @@ mod tests {
             spread_percent: 0.35,
             direction: SpreadDirection::AOverB,
             detected_at_ms: 1706000000000,
+            dex_a_ask: 42000.0,
+            dex_a_bid: 41990.0,
+            dex_b_ask: 42005.0,
+            dex_b_bid: 41985.0,
         };
         opportunity_tx.send(opportunity).await.unwrap();
 

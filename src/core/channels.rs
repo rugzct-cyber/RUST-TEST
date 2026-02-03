@@ -22,7 +22,16 @@ pub struct SpreadOpportunity {
     pub spread_percent: f64,
     pub direction: SpreadDirection,
     pub detected_at_ms: u64,
+    /// Best ask price on DEX A (buy price)
+    pub dex_a_ask: f64,
+    /// Best bid price on DEX A (sell price)
+    pub dex_a_bid: f64,
+    /// Best ask price on DEX B (buy price)
+    pub dex_b_ask: f64,
+    /// Best bid price on DEX B (sell price)
+    pub dex_b_bid: f64,
 }
+
 
 /// Bundle of all inter-task communication channels
 #[derive(Debug)]

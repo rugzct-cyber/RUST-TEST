@@ -3,10 +3,10 @@ bots:
     pair: BTC-PERP
     dex_a: vest
     dex_b: paradex
-    spread_entry: 0.09
-    spread_exit: -0.05
-    leverage: 50
-    position_size: 0.01  # Size in base asset (e.g., 0.001 BTC)
+    spread_entry: 0.04
+    spread_exit: -0.01
+    leverage: 5
+    position_size: 0.0002  # Size in base asset (e.g., 0.001 BTC)
 risk:
   adl_warning: 10.0
   adl_critical: 5.0
