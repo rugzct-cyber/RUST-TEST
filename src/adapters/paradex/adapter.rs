@@ -125,10 +125,18 @@ impl ParadexAdapter {
     pub fn new(config: ParadexConfig) -> Self {
         Self {
             config,
-            http_client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(REST_TIMEOUT_SECS))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            http_client: {
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(REST_TIMEOUT_SECS))
+                    .pool_max_idle_per_host(2)           // Keep 2 idle connections per host
+                    .pool_idle_timeout(Duration::from_secs(60))  // Keep connections for 60s
+                    .tcp_keepalive(Duration::from_secs(30))      // TCP keepalive every 30s
+                    .connect_timeout(Duration::from_secs(10))    // Connection timeout
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new());
+                tracing::info!("[INIT] Paradex HTTP client configured: pool_max_idle=2, pool_idle_timeout=60s, tcp_keepalive=30s");
+                client
+            },
             jwt_token: None,
             jwt_expiry: None,
             ws_stream: None,
@@ -428,7 +436,40 @@ impl ParadexAdapter {
                     // Log raw message at trace level
                     tracing::trace!("Paradex raw WS message: {}", text);
                     
-                    // Try to parse as different message types
+                    // First, check for order channel messages (different structure than orderbook)
+                    // Parse as raw JSON to check channel type
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                        // Check if this is a subscription notification for orders channel
+                        if let Some(params) = json.get("params") {
+                            if let Some(channel) = params.get("channel").and_then(|c| c.as_str()) {
+                                if channel.starts_with("orders.") {
+                                    // This is an order channel notification
+                                    if let Some(data) = params.get("data") {
+                                        let order_id = data.get("id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?");
+                                        let status = data.get("status")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?");
+                                        let side = data.get("side")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?");
+                                        let market = data.get("market")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?");
+                                        
+                                        tracing::info!(
+                                            "[ORDER] Paradex order confirmed via WS: id={}, status={}, side={}, market={}",
+                                            order_id, status, side, market
+                                        );
+                                    }
+                                    continue; // Skip regular parsing for order messages
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Try to parse as typed message (orderbook updates, etc.)
                     match serde_json::from_str::<ParadexWsMessage>(&text) {
                         Ok(msg) => {
                             match msg {
@@ -570,6 +611,46 @@ impl ParadexAdapter {
         Ok(unsub_id)
     }
     
+    /// Subscribe to order status updates for a symbol via WebSocket
+    /// 
+    /// This is a private channel that requires authentication.
+    /// Order updates will be received in the message reader loop and logged with [ORDER] prefix.
+    pub async fn subscribe_orders(&self, symbol: &str) -> ExchangeResult<u64> {
+        if !self.ws_authenticated {
+            return Err(ExchangeError::AuthenticationFailed(
+                "WebSocket not authenticated - cannot subscribe to private orders channel".into()
+            ));
+        }
+        
+        let ws_sender = self.ws_sender.as_ref()
+            .ok_or_else(|| ExchangeError::ConnectionFailed("WebSocket not connected".into()))?;
+        
+        let sub_id = next_subscription_id();
+        // Paradex orders channel format: orders.{symbol}
+        let channel = format!("orders.{}", symbol);
+        
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "channel": channel
+            },
+            "id": sub_id
+        });
+        
+        let mut sender = ws_sender.lock().await;
+        sender.send(Message::Text(msg.to_string()))
+            .await
+            .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
+        
+        tracing::info!(
+            "[ORDER] Subscribed to Paradex orders channel: {} (sub_id={})",
+            channel, sub_id
+        );
+        
+        Ok(sub_id)
+    }
+    
     /// Spawn heartbeat monitoring task 
     /// 
     /// Paradex uses native WebSocket PING/PONG which tokio-tungstenite handles automatically.
@@ -606,6 +687,35 @@ impl ParadexAdapter {
         
         self.heartbeat_handle = Some(handle);
         tracing::info!("Paradex: Heartbeat monitoring started (30s interval)");
+    }
+
+    /// Warm up HTTP connection pool by making a lightweight request
+    /// 
+    /// This establishes TCP/TLS connections upfront to avoid handshake latency
+    /// on the first real request. Uses GET /system/time as it's lightweight.
+    async fn warm_up_http(&self) -> ExchangeResult<()> {
+        let url = format!("{}/system/time", self.config.rest_base_url());
+        let start = std::time::Instant::now();
+        
+        let response = self.http_client.get(&url).send().await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("HTTP warm-up failed: {}", e)))?;
+        
+        let elapsed = start.elapsed();
+        
+        if response.status().is_success() {
+            tracing::info!(
+                "[INIT] Paradex HTTP connection pool warmed up (latency={}ms)",
+                elapsed.as_millis()
+            );
+        } else {
+            tracing::warn!(
+                "[INIT] Paradex HTTP warm-up returned status {} (latency={}ms)",
+                response.status(),
+                elapsed.as_millis()
+            );
+        }
+        
+        Ok(())
     }
 }
 
@@ -760,6 +870,11 @@ impl ExchangeAdapter for ParadexAdapter {
         
         // Step 5: Start heartbeat monitoring 
         self.spawn_heartbeat_task();
+        
+        // Step 6: Warm up HTTP connection pool (establish TCP/TLS upfront)
+        if let Err(e) = self.warm_up_http().await {
+            tracing::warn!("HTTP warm-up failed (non-fatal): {}", e);
+        }
         
         self.connected = true;
         tracing::info!("Paradex adapter fully connected");
