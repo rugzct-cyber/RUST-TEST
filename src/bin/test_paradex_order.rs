@@ -35,6 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log(&format!("\n2. Subscribing to {}", PARADEX_PAIR));
     adapter.subscribe_orderbook(PARADEX_PAIR).await?;
     
+    // Subscribe to order confirmations via WebSocket (Story 7.1)
+    adapter.subscribe_orders(PARADEX_PAIR).await?;
+    log("   Subscribed to orderbook and order confirmations (WS)");
+    
     // Wait for orderbook
     for i in 0..5 {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
