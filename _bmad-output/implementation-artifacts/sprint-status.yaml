@@ -137,6 +137,6 @@ development_status:
   epic-6: in-progress
   6-1-main-runtime-integration: done  # Code review completed, all issues fixed (2026-02-02)
   6-2-automatic-delta-neutral-execution: done  # All issues fixed, Task 4 persistence implemented (2026-02-02)
-  6-3-automatic-position-monitoring-exit: backlog
-  6-5-end-to-end-integration-test: backlog
+  6-3-automatic-position-monitoring-exit: done  # Code review completed, all issues fixed (2026-02-03)
+  6-5-end-to-end-integration-test: review  # Implementation complete, 7 tests passing (2026-02-03)
   epic-6-retrospective: optional
