@@ -23,11 +23,13 @@ use crate::core::state::{PositionState, StateManager};
 /// * `opportunity_rx` - Receiver for spread opportunities
 /// * `executor` - The DeltaNeutralExecutor for trade execution
 /// * `state_manager` - StateManager for position persistence (AC1, AC3)
+/// * `new_position_tx` - Optional sender to notify position_monitoring_task of new positions
 /// * `shutdown_rx` - Broadcast receiver for shutdown signal
 pub async fn execution_task<V, P>(
     mut opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
     executor: DeltaNeutralExecutor<V, P>,
     state_manager: Arc<StateManager>,
+    new_position_tx: Option<mpsc::Sender<PositionState>>,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) where
     V: ExchangeAdapter + Send + Sync,
@@ -94,6 +96,16 @@ pub async fn execution_task<V, P>(
                                         entry_spread = %format!("{:.4}%", spread_pct),
                                         "[STATE] Position saved"
                                     );
+                                    
+                                    // Story 6.3: Notify position_monitoring_task of new position
+                                    if let Some(tx) = &new_position_tx {
+                                        if let Err(e) = tx.send(position.clone()).await {
+                                            warn!(
+                                                error = %e,
+                                                "[MONITOR] Failed to send position to monitor"
+                                            );
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     // AC1 Task 4.3: Don't block trading if Supabase fails
@@ -102,6 +114,17 @@ pub async fn execution_task<V, P>(
                                         error = %e,
                                         "[STATE] Failed to save position. Trading continues."
                                     );
+                                    
+                                    // Still notify monitor even if DB save fails
+                                    // (position exists in-memory for monitoring)
+                                    if let Some(tx) = &new_position_tx {
+                                        if let Err(e) = tx.send(position.clone()).await {
+                                            warn!(
+                                                error = %e,
+                                                "[MONITOR] Failed to send position to monitor"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         } else {
@@ -196,7 +219,7 @@ mod tests {
 
         // Spawn the execution task
         let handle = tokio::spawn(async move {
-            execution_task(opportunity_rx, executor, state_manager, shutdown_rx).await;
+            execution_task(opportunity_rx, executor, state_manager, None, shutdown_rx).await;
         });
 
         // Send an opportunity
@@ -245,7 +268,7 @@ mod tests {
         let state_manager = std::sync::Arc::new(StateManager::new(supabase_config));
 
         let handle = tokio::spawn(async move {
-            execution_task(opportunity_rx, executor, state_manager, shutdown_rx).await;
+            execution_task(opportunity_rx, executor, state_manager, None, shutdown_rx).await;
         });
 
         // Send shutdown immediately

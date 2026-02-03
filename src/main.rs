@@ -13,7 +13,7 @@ use tokio::signal;
 use tokio::sync::{broadcast, Mutex, mpsc};
 use tracing::{info, error};
 use hft_bot::config;
-use hft_bot::core::state::StateManager;
+use hft_bot::core::state::{PositionState, StateManager};
 use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
@@ -21,6 +21,7 @@ use hft_bot::core::channels::SpreadOpportunity;
 use hft_bot::core::monitoring::{monitoring_task, MonitoringConfig};
 use hft_bot::core::runtime::execution_task;
 use hft_bot::core::execution::DeltaNeutralExecutor;
+use hft_bot::core::position_monitor::{position_monitoring_task, PositionMonitoringConfig};
 
 
 // Story 4.6: Orphan order protection (Epic 6 integration pending)
@@ -199,6 +200,9 @@ async fn main() -> anyhow::Result<()> {
         paradex_symbol.clone(),
     );
     
+    // Story 6.3: Create channel for new positions (execution -> monitoring)
+    let (new_position_tx, new_position_rx) = mpsc::channel::<PositionState>(10);
+    
     // Subtask 3.2: Spawn execution_task with shutdown subscription
     // Task 4 (Story 6.2): Pass StateManager for position persistence
     let execution_shutdown = shutdown_tx.subscribe();
@@ -208,10 +212,33 @@ async fn main() -> anyhow::Result<()> {
             opportunity_rx,
             executor,
             exec_state_manager,
+            Some(new_position_tx),  // Story 6.3: Send new positions to monitor
             execution_shutdown,
         ).await;
     });
     info!("[INFO] Execution task spawned");
+    
+    // Story 6.3: Spawn position_monitoring_task for automatic exit
+    let monitor_config = PositionMonitoringConfig::new(
+        bot.spread_exit,  // Exit threshold from config
+        vest_symbol.clone(),
+        paradex_symbol.clone(),
+    );
+    let monitor_vest = Arc::clone(&vest);
+    let monitor_paradex = Arc::clone(&paradex);
+    let monitor_state_manager = state_manager.clone();
+    let monitor_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        position_monitoring_task(
+            monitor_vest,
+            monitor_paradex,
+            monitor_state_manager,
+            new_position_rx,
+            monitor_config,
+            monitor_shutdown,
+        ).await;
+    });
+    info!("[INFO] Position monitoring task spawned");
     
     info!("✅ Bot runtime started with automatic spread monitoring and execution");
 

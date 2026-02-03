@@ -19,6 +19,7 @@ pub mod channels;
 pub mod execution;
 pub mod logging;
 pub mod monitoring;
+pub mod position_monitor;
 pub mod reconnect;
 pub mod runtime;
 pub mod spread;
@@ -58,3 +59,7 @@ pub use reconnect::{ReconnectConfig, reconnect_monitor_task};
 
 // Explicit re-exports for monitoring module (Story 6.2)
 pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
+
+// Explicit re-exports for position_monitor module (Story 6.3)
+pub use position_monitor::{position_monitoring_task, PositionMonitoringConfig, POSITION_POLL_INTERVAL_MS};
+
