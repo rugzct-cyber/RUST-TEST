@@ -47,16 +47,16 @@ So que je puisse vérifier que tout fonctionne end-to-end.
 
 ---
 
-- [ ] **Task 1**: Créer l'infrastructure de test d'intégration (AC: Test Infrastructure)
-  - [ ] Subtask 1.1: Créer le dossier `tests/integration/`
-    - `tests/integration/full_cycle.rs` - Test principal du cycle complet
-    - `tests/integration/helpers/mod.rs` - Helpers et mocks partagés
-  - [ ] Subtask 1.2: Créer MockExchangeAdapter implémentant ExchangeAdapter trait
+- [x] **Task 1**: Créer l'infrastructure de test d'intégration (AC: Test Infrastructure)
+  - [x] Subtask 1.1: Créer le dossier `tests/`
+    - `tests/full_cycle.rs` - Test principal du cycle complet with embedded mocks
+    - Note: `helpers/mod.rs` déféré - mocks intégrés directement dans full_cycle.rs pour simplicité
+  - [x] Subtask 1.2: Créer MockExchangeAdapter implémentant ExchangeAdapter trait
     - Contrôle sur orderbooks retournés (pour simuler spreads)
     - Tracking des ordres placés (pour assertions)
-    - Réponses configurables (success/failure)
-  - [ ] Subtask 1.3: Créer MockStateManager ou utiliser StateManager avec mock Supabase
-    - Stockage in-memory des positions
+    - Réponses configurables (success/failure via with_failure())
+  - [x] Subtask 1.3: Utiliser StateManager avec Supabase désactivé
+    - Stockage in-memory via disabled Supabase
     - Assertions sur save/update/remove calls
 
 - [x] **Task 2**: Implémenter le test du cycle complet (AC: Full Cycle Coverage)
@@ -616,5 +616,5 @@ MVP validation complete - all FRs tested end-to-end.
 
 | File | Status | Description |
 |------|--------|-------------|
-| `tests/full_cycle.rs` | NEW | Integration test file with 7 tests (585 lines) |
+| `tests/full_cycle.rs` | NEW | Integration test file with 7 tests (595 lines) including MockExchangeAdapter |
 

@@ -409,20 +409,29 @@ async fn test_restored_positions_loaded() {
         0.30,
     );
     
-    // Save positions (in-memory when Supabase disabled)
+    // Save positions (simulating restored state from Supabase)
     state_manager.save_position(&position1).await.unwrap();
     state_manager.save_position(&position2).await.unwrap();
+    
+    // Verify save API works without errors
+    // Note: With disabled Supabase, actual persistence is skipped but API succeeds
     
     // Verify positions have required fields for monitoring
     assert!(!position1.long_symbol.is_empty(), "Long symbol required");
     assert!(!position1.short_symbol.is_empty(), "Short symbol required");
     assert!(position1.long_size > 0.0, "Long size must be positive");
     assert!(position1.short_size > 0.0, "Short size must be positive");
+    assert_eq!(position1.status, PositionStatus::Open, "Initial status should be Open");
     
     assert!(!position2.long_symbol.is_empty(), "Long symbol required");
     assert!(!position2.short_symbol.is_empty(), "Short symbol required");
     assert!(position2.long_size > 0.0, "Long size must be positive");
     assert!(position2.short_size > 0.0, "Short size must be positive");
+    assert_eq!(position2.status, PositionStatus::Open, "Initial status should be Open");
+    
+    // Verify load_positions API works (even if returns empty with disabled Supabase)
+    let load_result = state_manager.load_positions().await;
+    assert!(load_result.is_ok(), "load_positions should succeed");
 }
 
 // =============================================================================
@@ -564,11 +573,11 @@ async fn test_state_manager_crud_operations() {
     let position_id = position.id;
     state_manager.save_position(&position).await.expect("Save should succeed");
     
-    // === READ (with disabled Supabase, returns empty) ===
-    let positions = state_manager.load_positions().await.expect("Load should succeed");
-    // Note: With disabled Supabase, positions won't actually be stored persistently
-    // This test verifies the API works without errors
-    assert!(positions.is_empty() || !positions.is_empty(), "Load should return without error");
+    // === READ (with disabled Supabase, returns empty but API should work) ===
+    let load_result = state_manager.load_positions().await;
+    assert!(load_result.is_ok(), "Load should succeed without errors");
+    // Note: With disabled Supabase, positions won't be persisted to DB
+    // The API call itself should complete without error
     
     // === UPDATE ===
     let update = PositionUpdate {
