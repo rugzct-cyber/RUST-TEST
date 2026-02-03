@@ -105,14 +105,18 @@ impl BotConfig {
             )));
         }
 
-        if self.spread_exit <= 0.0 || self.spread_exit >= 100.0 {
+        // Rule: spread_exit can be negative (profit when spread inverts) but must be < 100%
+        // Negative exit spread = close when spread reverses (profit-taking)
+        // Example: entry=0.09%, exit=-0.05% = close when spread inverts by -0.05%
+        if self.spread_exit >= 100.0 || self.spread_exit <= -100.0 {
             return Err(AppError::Config(format!(
-                "Bot '{}': spread_exit must be > 0 and < 100% (got {})",
+                "Bot '{}': spread_exit must be between -100% and 100% (got {})",
                 self.id, self.spread_exit
             )));
         }
 
-        // Rule: spread_entry > spread_exit
+        // Rule: spread_entry > spread_exit (entry threshold must be higher)
+        // This ensures we enter at a higher spread than we exit
         if self.spread_entry <= self.spread_exit {
             return Err(AppError::Config(format!(
                 "Bot '{}': spread_entry ({}) must be > spread_exit ({})",
@@ -400,14 +404,14 @@ api:
     }
 
     #[test]
-    fn test_negative_spread_exit_fails() {
+    fn test_negative_spread_exit_is_valid() {
+        // Negative spread_exit is now VALID - allows profit-taking when spread inverts
         let mut bot = create_valid_bot_config();
         bot.spread_entry = 0.30;
-        bot.spread_exit = -0.05;
+        bot.spread_exit = -0.05;  // Exit when spread >= -0.05% (profit-taking)
         
         let result = bot.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_exit must be > 0 and < 100%"));
+        assert!(result.is_ok(), "Negative spread_exit should be valid for profit-taking");
     }
 
     #[test]
@@ -479,7 +483,7 @@ api:
         
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_exit must be > 0 and < 100%"));
+        assert!(result.unwrap_err().to_string().contains("spread_exit must be between -100% and 100%"));
     }
 
     #[test]

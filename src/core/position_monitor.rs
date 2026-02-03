@@ -181,24 +181,24 @@ pub async fn position_monitoring_task<V, P>(
                     
                     let (exit_spread, should_exit) = if position.long_exchange == "vest" {
                         // Entry: long vest (bought at ask), short paradex (sold at bid)
-                        // To exit: sell vest (at bid), buy paradex (at ask)
                         // Exit spread = (vest_bid - paradex_ask) / paradex_ask * 100
+                        // Exit when spread >= threshold (spread rising = profit)
                         let exit_sp = if paradex_best_ask > 0.0 {
                             ((vest_best_bid - paradex_best_ask) / paradex_best_ask) * 100.0
                         } else {
                             0.0
                         };
-                        (exit_sp, exit_sp <= config.spread_exit)
+                        (exit_sp, exit_sp >= config.spread_exit)
                     } else {
                         // Entry: long paradex (bought at ask), short vest (sold at bid)
-                        // To exit: sell paradex (at bid), buy vest (at ask)
                         // Exit spread = (paradex_bid - vest_ask) / vest_ask * 100
+                        // Exit when spread >= threshold (spread rising = profit)
                         let exit_sp = if vest_best_ask > 0.0 {
                             ((paradex_best_bid - vest_best_ask) / vest_best_ask) * 100.0
                         } else {
                             0.0
                         };
-                        (exit_sp, exit_sp <= config.spread_exit)
+                        (exit_sp, exit_sp >= config.spread_exit)
                     };
                     
                     if should_exit {
