@@ -151,7 +151,13 @@ async fn main() -> anyhow::Result<()> {
     paradex.lock().await.subscribe_orderbook(&paradex_symbol).await
         .expect("Failed to subscribe to Paradex orderbook");
     
+    // Story 7.1: Subscribe to Paradex order confirmations via WebSocket
+    // This enables real-time order status updates without polling REST API
+    paradex.lock().await.subscribe_orders(&paradex_symbol).await
+        .expect("Failed to subscribe to Paradex order channel");
+    
     info!("[INFO] Subscribed to orderbooks: {}, {}", vest_symbol, paradex_symbol);
+    info!("[INFO] Subscribed to Paradex order confirmations (WS)");
 
     // Create shutdown broadcast channel (moved up from Task 5 for Story 6.2)
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<>(1);

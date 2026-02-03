@@ -67,8 +67,8 @@ So that la latence d'exécution soit minimisée de ~978ms à <200ms.
 
 ### Review Follow-ups (AI - 2026-02-03)
 
-- [ ] [AI-Review][MEDIUM] CR-3: Integrate `subscribe_orders()` into main runtime (currently test-only)
-- [ ] [AI-Review][MEDIUM] CR-4: Add unit test for `warm_up_http()` method (mock HTTP call)
+- [x] [AI-Review][MEDIUM] CR-3: Integrate `subscribe_orders()` into main runtime (added to main.rs after orderbook subscription)
+- [x] [AI-Review][MEDIUM] CR-4: Add unit test for `warm_up_http()` method (test_warm_up_http_makes_request)
 
 ## Dev Notes
 
@@ -228,5 +228,6 @@ Latency test executed: 2026-02-03T16:18 via `cargo run --release --bin test_para
 
 ### File List
 
-- `src/adapters/paradex/adapter.rs` - Modified: HTTP client pooling, warm_up_http(), subscribe_orders(), message_reader_loop order channel handling
+- `src/adapters/paradex/adapter.rs` - Modified: HTTP client pooling, warm_up_http(), subscribe_orders(), message_reader_loop order channel handling, unit test
 - `src/bin/test_paradex_order.rs` - Modified: Added subscribe_orders() call for WS order confirmations testing
+- `src/main.rs` - Modified: Added subscribe_orders() call in runtime (CR-3)

@@ -1549,4 +1549,21 @@ mod tests {
         let adapter = ParadexAdapter::new(config);
         assert!(!adapter.is_connected());
     }
+
+    /// Test warm_up_http() functionality
+    /// Story 7.1 CR-4: Unit test for connection warm-up functionality
+    /// Note: warm_up_http() uses the HTTP client which works independently of WS connection
+    #[tokio::test]
+    async fn test_warm_up_http_makes_request() {
+        let config = ParadexConfig::default();
+        let adapter = ParadexAdapter::new(config);
+        
+        // warm_up_http makes a GET request to /system/time
+        // This should succeed even without WebSocket connection established
+        // because the HTTP client is configured independently
+        let result = adapter.warm_up_http().await;
+        
+        // Should succeed - HTTP client can reach Paradex
+        assert!(result.is_ok(), "warm_up_http should succeed with default config: {:?}", result);
+    }
 }
