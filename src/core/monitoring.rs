@@ -23,7 +23,7 @@ use tracing::{debug, info, warn, error};
 
 use crate::adapters::Orderbook;
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, log_event, current_timestamp_ms};
+use crate::core::events::{TradingEvent, log_event, current_timestamp_ms, format_pct};
 use crate::core::spread::SpreadCalculator;
 
 /// Type alias for shared orderbooks (same as adapters::SharedOrderbooks)
@@ -109,8 +109,8 @@ pub async fn monitoring_task(
                         if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
                             debug!(
                                 event_type = "SPREAD_MONITORING",
-                                entry_spread = %format!("{:.4}%", spread_result.spread_pct),
-                                spread_threshold = %format!("{:.4}%", config.spread_entry),
+                                entry_spread = %format_pct(spread_result.spread_pct),
+                                spread_threshold = %format_pct(config.spread_entry),
                                 direction = ?spread_result.direction,
                                 "Monitoring spread"
                             );
@@ -120,15 +120,18 @@ pub async fn monitoring_task(
                         if spread_result.spread_pct >= config.spread_entry {
                             let now_ms = current_timestamp_ms();
                             
-                            // Log SPREAD_DETECTED event (structured)
-                            let direction_str = format!("{:?}", spread_result.direction);
-                            let event = TradingEvent::spread_detected(
-                                &config.pair,
-                                spread_result.spread_pct,
-                                config.spread_entry,
-                                &direction_str,
-                            );
-                            log_event(&event);
+                            // Log SPREAD_DETECTED event (structured, throttled to reduce noise)
+                            // Only log once per ~2 seconds to avoid flooding
+                            if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                                let direction_str = format!("{:?}", spread_result.direction);
+                                let event = TradingEvent::spread_detected(
+                                    &config.pair,
+                                    spread_result.spread_pct,
+                                    config.spread_entry,
+                                    &direction_str,
+                                );
+                                log_event(&event);
+                            }
                             
                             let opportunity = SpreadOpportunity {
                                 pair: config.pair.clone(),
@@ -150,7 +153,8 @@ pub async fn monitoring_task(
                                     debug!("Spread opportunity sent to execution task");
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {
-                                    warn!("Opportunity channel full, dropping opportunity");
+                                    // Silent drop: channel full means position is open or executor is busy
+                                    // This is expected behavior, no need to log
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
                                     error!("Opportunity channel closed, shutting down monitoring");

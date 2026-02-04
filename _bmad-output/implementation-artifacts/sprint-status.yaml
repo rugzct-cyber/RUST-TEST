@@ -154,7 +154,7 @@ development_status:
   # Epic 8: Execution Quality & Slippage
   # Added 2026-02-04 during Epic 7 retrospective
   # Target: Analyze and reduce slippage between detection and execution
-  epic-8: backlog
-  8-1-slippage-investigation-timing-breakdown: backlog  # P1: Investigate 0.10% → 0.02% gap
-  8-2-execution-speed-optimization: backlog  # Depends on 8.1 findings
+  epic-8: in-progress
+  8-1-slippage-investigation-timing-breakdown: done  # Completed 2026-02-04: bottleneck=order_to_confirm (~386ms)
+  8-2-execution-speed-optimization: blocked  # BLOCKED: À faire après installation VPS (ADSL = 386ms incompressible)
 

@@ -18,7 +18,7 @@ use tracing::{debug, error, info};
 
 use crate::adapters::{ExchangeAdapter, Orderbook};
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, log_event, calculate_latency_ms};
+use crate::core::events::{TradingEvent, log_event, calculate_latency_ms, format_pct};
 use crate::core::execution::DeltaNeutralExecutor;
 use crate::core::spread::{SpreadCalculator, SpreadDirection};
 
@@ -34,6 +34,21 @@ const EXIT_POLL_INTERVAL_MS: u64 = 25;
 
 /// Log throttle interval - log every N polls (~1 second at 25ms polling)
 const LOG_THROTTLE_POLLS: u64 = 40;
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Drain all pending messages from a channel and log if any were drained
+fn drain_channel<T>(rx: &mut mpsc::Receiver<T>, context: &str) {
+    let mut drained = 0;
+    while rx.try_recv().is_ok() {
+        drained += 1;
+    }
+    if drained > 0 {
+        debug!("Drained {} stale messages from {}", drained, context);
+    }
+}
 
 // =============================================================================
 // Functions
@@ -88,7 +103,7 @@ pub async fn execution_task<V, P>(
                 execution_count += 1;
                 info!(
                     pair = %pair,
-                    spread = %format!("{:.4}%", spread_pct),
+                    spread = %format_pct(spread_pct),
                     direction = ?opportunity.direction,
                     execution_number = execution_count,
                     "Processing spread opportunity #{}", execution_count
@@ -96,7 +111,7 @@ pub async fn execution_task<V, P>(
 
                 // Ensure adapters are ready (refresh JWT if expired)
                 if let Err(e) = executor.ensure_ready().await {
-                    error!(error = ?e, "[TRADE] Failed to prepare adapters - skipping opportunity");
+                    error!(event_type = "TRADE_FAILED", error = ?e, "Failed to prepare adapters - skipping opportunity");
                     continue;
                 }
 
@@ -131,7 +146,7 @@ pub async fn execution_task<V, P>(
                                 debug!(
                                     event_type = "POSITION_OPENED",
                                     direction = ?direction,
-                                    exit_target = %format!("{:.4}%", exit_spread_target),
+                                    exit_target = %format_pct(exit_spread_target),
                                     "Starting exit monitoring"
                                 );
                                 
@@ -251,20 +266,14 @@ pub async fn execution_task<V, P>(
                         }
                         
                         // Drain any stale opportunities that accumulated during execution
-                        let mut drained = 0;
-                        while opportunity_rx.try_recv().is_ok() {
-                            drained += 1;
-                        }
-                        if drained > 0 {
-                            debug!("Drained {} stale opportunities after execution", drained);
-                        }
+                        drain_channel(&mut opportunity_rx, "opportunity queue");
                     }
                     Err(e) => {
                         // Check if it's a "position already open" error
                         let err_msg = format!("{:?}", e);
                         if err_msg.contains("Position already open") {
                             debug!(event_type = "TRADE_SKIPPED", "Position already open - draining queue");
-                            while opportunity_rx.try_recv().is_ok() {}
+                            drain_channel(&mut opportunity_rx, "opportunity queue");
                         } else {
                             error!(event_type = "ORDER_FAILED", error = ?e, "Delta-neutral execution error");
                         }

@@ -40,5 +40,5 @@ pub use runtime::execution_task;
 pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
 
 // Explicit re-exports for events module (Story 5.3)
-pub use events::{TradingEvent, TradingEventType, log_event, log_trading_event, current_timestamp_ms, calculate_latency_ms};
+pub use events::{TradingEvent, TradingEventType, log_event, log_trading_event, current_timestamp_ms, calculate_latency_ms, format_pct, fmt_price};
 

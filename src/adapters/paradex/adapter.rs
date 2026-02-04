@@ -280,7 +280,7 @@ impl ParadexAdapter {
         )?;
         
         self.jwt_expiry = Some(timestamp_ms + JWT_LIFETIME_MS);
-        tracing::info!("✅ JWT obtained successfully, expires at: {}", self.jwt_expiry.unwrap());
+        tracing::info!(event_type = "AUTH_SUCCESS", exchange = "paradex", expiry = self.jwt_expiry.unwrap(), "JWT obtained successfully");
         
         Ok(jwt)
     }
@@ -1116,12 +1116,14 @@ impl ExchangeAdapter for ParadexAdapter {
         
         // === PROFILING: Log all timings ===
         tracing::info!(
-            "📊 Order latency breakdown: signature={}ms, json={}μs, http={}ms, parse={}μs, total={}ms",
-            sig_elapsed.as_millis(),
-            json_elapsed.as_micros(),
-            http_elapsed.as_millis(),
-            parse_elapsed.as_micros(),
-            (sig_elapsed + json_elapsed + http_elapsed + parse_elapsed).as_millis()
+            event_type = "ORDER_LATENCY",
+            exchange = "paradex",
+            signature_ms = sig_elapsed.as_millis() as u64,
+            json_us = json_elapsed.as_micros() as u64,
+            http_ms = http_elapsed.as_millis() as u64,
+            parse_us = parse_elapsed.as_micros() as u64,
+            total_ms = (sig_elapsed + json_elapsed + http_elapsed + parse_elapsed).as_millis() as u64,
+            "Order latency breakdown"
         );
         
         tracing::debug!("Paradex order response ({}): {}", status_code, text);

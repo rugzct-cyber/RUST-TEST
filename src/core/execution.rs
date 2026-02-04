@@ -19,7 +19,7 @@ use crate::adapters::{
 };
 use crate::core::channels::SpreadOpportunity;
 use crate::core::spread::SpreadDirection;
-use crate::core::events::{TradingEvent, TimingBreakdown, current_timestamp_ms, log_event};
+use crate::core::events::{TradingEvent, TimingBreakdown, current_timestamp_ms, log_event, format_pct, fmt_price};
 
 // =============================================================================
 // Constants
@@ -96,7 +96,7 @@ fn log_successful_trade(
 ) {
     info!(
         event_type = "TRADE_ENTRY",
-        spread = %format!("{:.4}%", opportunity.spread_percent),
+        spread = %format_pct(opportunity.spread_percent),
         long = %result.long_exchange,
         short = %result.short_exchange,
         latency_ms = result.execution_latency_ms,
@@ -380,7 +380,7 @@ where
             // Log partial/total failure - user handles exposed positions manually
             warn!(
                 event_type = "TRADE_FAILED",
-                spread = %format!("{:.4}%", opportunity.spread_percent),
+                spread = %format_pct(opportunity.spread_percent),
                 long_success = long_status.is_success(),
                 short_success = short_status.is_success(),
                 latency_ms = execution_latency_ms,
@@ -434,12 +434,12 @@ where
         // Structured entry verification log (Story 5.3)
         info!(
             event_type = "POSITION_VERIFIED",
-            vest_price = %format!("${:.2}", vest_price),
-            paradex_price = %format!("${:.2}", paradex_price),
+            vest_price = %fmt_price(vest_price),
+            paradex_price = %fmt_price(paradex_price),
             direction = ?entry_direction.unwrap_or(SpreadDirection::AOverB),
-            detected_spread = %format!("{:.4}%", entry_spread),
-            captured_spread = %format!("{:.4}%", captured_spread),
-            exit_target = %format!("{:.4}%", exit_spread_target),
+            detected_spread = %format_pct(entry_spread),
+            captured_spread = %format_pct(captured_spread),
+            exit_target = %format_pct(exit_spread_target),
             "Entry positions verified"
         );
         
@@ -552,7 +552,7 @@ where
             
             info!(
                 event_type = "TRADE_EXIT",
-                exit_spread = %format!("{:.4}%", exit_spread),
+                exit_spread = %format_pct(exit_spread),
                 latency_ms = execution_latency_ms,
                 "Position closed"
             );

@@ -22,7 +22,7 @@ use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::core::channels::SpreadOpportunity;
-use hft_bot::core::events::{TradingEvent, log_event};
+use hft_bot::core::events::{TradingEvent, log_event, format_pct};
 use hft_bot::core::monitoring::{monitoring_task, MonitoringConfig};
 use hft_bot::core::runtime::execution_task;
 use hft_bot::core::execution::DeltaNeutralExecutor;
@@ -71,8 +71,8 @@ async fn main() -> anyhow::Result<()> {
         pair = %bot.pair,
         dex_a = %bot.dex_a,
         dex_b = %bot.dex_b,
-        spread_entry = %format!("{:.2}%", bot.spread_entry),
-        spread_exit = %format!("{:.2}%", bot.spread_exit),
+        spread_entry = %format_pct(bot.spread_entry),
+        spread_exit = %format_pct(bot.spread_exit),
         leverage = %format!("{}x", bot.leverage),
         position_size = %format!("{} {}", bot.position_size, bot.pair),
         "Active bot configuration"
