@@ -15,7 +15,8 @@ use tracing::{info, warn, error};
 
 use crate::adapters::{
     ExchangeAdapter, ExchangeResult, ExchangeError,
-    types::{OrderRequest, OrderResponse, OrderSide, OrderType, TimeInForce},
+    types::{OrderRequest, OrderResponse, OrderSide},
+    OrderBuilder,
 };
 use crate::core::channels::SpreadOpportunity;
 use crate::core::spread::SpreadDirection;
@@ -305,7 +306,7 @@ where
             long_exchange,
             &long_order_id,
             &short_order_id,
-        );
+        )?;
         
         // Story 8.1: Capture t_signal AFTER create_orders (Red Team V1 critical fix)
         timings.mark_signal_received();
@@ -508,27 +509,19 @@ where
             .map(|d| d.as_millis())
             .unwrap_or(0);
         
-        let vest_order = OrderRequest {
-            client_order_id: format!("close-vest-{}", timestamp),
-            symbol: self.vest_symbol.clone(),
-            side: vest_side,
-            order_type: OrderType::Market,
-            price: None, // Market order
-            quantity: self.default_quantity,
-            time_in_force: TimeInForce::Ioc,
-            reduce_only: true,  // Critical: only reduce position
-        };
-        
-        let paradex_order = OrderRequest {
-            client_order_id: format!("close-paradex-{}", timestamp),
-            symbol: self.paradex_symbol.clone(),
-            side: paradex_side,
-            order_type: OrderType::Market,
-            price: None,
-            quantity: self.default_quantity,
-            time_in_force: TimeInForce::Ioc,
-            reduce_only: true,
-        };
+        let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, self.default_quantity)
+            .client_order_id(format!("close-vest-{}", timestamp))
+            .market()
+            .reduce_only()
+            .build()
+            .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
+
+        let paradex_order = OrderBuilder::new(&self.paradex_symbol, paradex_side, self.default_quantity)
+            .client_order_id(format!("close-paradex-{}", timestamp))
+            .market()
+            .reduce_only()
+            .build()
+            .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
         
         // Execute close orders in parallel
         let vest_guard = self.vest_adapter.lock().await;
@@ -592,7 +585,7 @@ where
         long_exchange: &str,
         long_order_id: &str,
         short_order_id: &str,
-    ) -> (OrderRequest, OrderRequest) {
+    ) -> Result<(OrderRequest, OrderRequest), ExchangeError> {
         let quantity = self.default_quantity;
 
         // Vest order
@@ -634,30 +627,21 @@ where
         };
 
         // Vest: MARKET order (limitPrice acts as slippage protection)
-        let vest_order = OrderRequest {
-            client_order_id: vest_order_id,
-            symbol: self.vest_symbol.clone(),
-            side: vest_side,
-            order_type: crate::adapters::types::OrderType::Market,
-            price: Some(vest_price), // Required by Vest as slippage protection
-            quantity,
-            time_in_force: TimeInForce::Ioc, // Ignored for MARKET but required by struct
-            reduce_only: false,
-        };
+        let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, quantity)
+            .client_order_id(vest_order_id)
+            .market()
+            .price(vest_price)  // Required by Vest as slippage protection (keeps Market type)
+            .build()
+            .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
         // Paradex: LIMIT IOC for immediate fill with price protection
-        let paradex_order = OrderRequest {
-            client_order_id: paradex_order_id,
-            symbol: self.paradex_symbol.clone(),
-            side: paradex_side,
-            order_type: crate::adapters::types::OrderType::Limit,
-            price: Some(paradex_price),
-            quantity,
-            time_in_force: TimeInForce::Ioc,
-            reduce_only: false,
-        };
+        let paradex_order = OrderBuilder::new(&self.paradex_symbol, paradex_side, quantity)
+            .client_order_id(paradex_order_id)
+            .limit(paradex_price)
+            .build()
+            .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
-        (vest_order, paradex_order)
+        Ok((vest_order, paradex_order))
     }
 }
 

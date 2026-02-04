@@ -227,6 +227,137 @@ impl OrderRequest {
     }
 }
 
+// =============================================================================
+// Order Builder (Stage 6 Refactoring)
+// =============================================================================
+
+/// Builder for OrderRequest with sensible defaults for HFT
+/// 
+/// Defaults:
+/// - `time_in_force`: `TimeInForce::Ioc` (Immediate-or-Cancel)
+/// - `order_type`: `OrderType::Limit`
+/// - `reduce_only`: `false`
+/// - `client_order_id`: Empty (must be set)
+/// 
+/// # Examples
+/// ```ignore
+/// let order = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
+///     .client_order_id("trade-123")
+///     .limit(42000.0)
+///     .build()
+///     .expect("valid order");
+/// ```
+#[derive(Debug)]
+pub struct OrderBuilder {
+    symbol: String,
+    side: OrderSide,
+    quantity: f64,
+    client_order_id: String,
+    order_type: OrderType,
+    price: Option<f64>,
+    time_in_force: TimeInForce,
+    reduce_only: bool,
+}
+
+impl OrderBuilder {
+    /// Create a new OrderBuilder with required fields and HFT defaults
+    /// 
+    /// Defaults:
+    /// - `time_in_force`: `Ioc`
+    /// - `order_type`: `Limit`
+    /// - `reduce_only`: `false`
+    pub fn new(symbol: &str, side: OrderSide, quantity: f64) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            side,
+            quantity,
+            client_order_id: String::new(),
+            order_type: OrderType::Limit,
+            price: None,
+            time_in_force: TimeInForce::Ioc,
+            reduce_only: false,
+        }
+    }
+
+    /// Set the client order ID (required for valid orders)
+    pub fn client_order_id(mut self, id: impl Into<String>) -> Self {
+        self.client_order_id = id.into();
+        self
+    }
+
+    /// Set order type to Market (no price needed)
+    pub fn market(mut self) -> Self {
+        self.order_type = OrderType::Market;
+        self
+    }
+
+    /// Set order type to Limit with specified price
+    pub fn limit(mut self, price: f64) -> Self {
+        self.order_type = OrderType::Limit;
+        self.price = Some(price);
+        self
+    }
+
+    /// Set price without changing order type
+    /// 
+    /// # Warning: Exchange-Specific Behavior
+    /// This is primarily for **Vest MARKET orders** which require a `limitPrice`
+    /// as slippage protection. Most exchanges don't support price on MARKET orders.
+    /// 
+    /// For standard limit orders, prefer `.limit(price)` instead.
+    /// 
+    /// # Example (Vest slippage protection)
+    /// ```ignore
+    /// OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
+    ///     .client_order_id("vest-123")
+    ///     .market()
+    ///     .price(42100.0)  // Slippage ceiling for Vest
+    ///     .build()
+    /// ```
+    pub fn price(mut self, price: f64) -> Self {
+        self.price = Some(price);
+        self
+    }
+
+    /// Set reduce_only to true (for closing positions)
+    pub fn reduce_only(mut self) -> Self {
+        self.reduce_only = true;
+        self
+    }
+
+    /// Build the OrderRequest with validation
+    /// 
+    /// # Errors
+    /// - `"client_order_id is required"` if client_order_id is empty
+    /// - `"Limit orders require a price"` if order_type is Limit but no price set
+    /// - `"Quantity must be positive"` if quantity <= 0
+    /// - `"Price must be positive"` if price is set but <= 0
+    pub fn build(self) -> Result<OrderRequest, &'static str> {
+        // Red Team hardening: validate client_order_id
+        if self.client_order_id.is_empty() {
+            return Err("client_order_id is required");
+        }
+
+        let order = OrderRequest {
+            client_order_id: self.client_order_id,
+            symbol: self.symbol,
+            side: self.side,
+            order_type: self.order_type,
+            price: self.price,
+            quantity: self.quantity,
+            time_in_force: self.time_in_force,
+            reduce_only: self.reduce_only,
+        };
+
+        // Red Team hardening: run OrderRequest validation
+        if let Some(err) = order.validate() {
+            return Err(err);
+        }
+
+        Ok(order)
+    }
+}
+
 /// Order status from exchange
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderStatus {
@@ -612,5 +743,93 @@ mod tests {
         // Verify cap works for higher attempts
         let attempt_10 = std::cmp::min(500 * (1u64 << 10), 5000);
         assert_eq!(attempt_10, 5000, "High attempt should cap at 5000ms");
+    }
+
+    // =========================================================================
+    // OrderBuilder Tests (Stage 6 Refactoring)
+    // =========================================================================
+
+    #[test]
+    fn test_order_builder_happy_path() {
+        let order = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
+            .client_order_id("test-123")
+            .limit(42000.0)
+            .build();
+        
+        assert!(order.is_ok());
+        let order = order.unwrap();
+        assert_eq!(order.symbol, "BTC-PERP");
+        assert_eq!(order.side, OrderSide::Buy);
+        assert_eq!(order.quantity, 0.1);
+        assert_eq!(order.client_order_id, "test-123");
+        assert_eq!(order.order_type, OrderType::Limit);
+        assert_eq!(order.price, Some(42000.0));
+        assert_eq!(order.time_in_force, TimeInForce::Ioc);
+        assert!(!order.reduce_only);
+    }
+
+    #[test]
+    fn test_order_builder_missing_client_order_id() {
+        let result = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
+            .limit(42000.0)
+            .build();
+        
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "client_order_id is required");
+    }
+
+    #[test]
+    fn test_order_builder_limit_without_price() {
+        // OrderBuilder defaults to Limit, so if we don't call .limit() or .price(),
+        // the order_type is Limit but price is None - this should fail validation
+        let result = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
+            .client_order_id("test-123")
+            .build();
+        
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Limit orders require a price");
+    }
+
+    #[test]
+    fn test_order_builder_market_order() {
+        let order = OrderBuilder::new("BTC-PERP", OrderSide::Sell, 0.5)
+            .client_order_id("market-456")
+            .market()
+            .build();
+        
+        assert!(order.is_ok());
+        let order = order.unwrap();
+        assert_eq!(order.order_type, OrderType::Market);
+        assert_eq!(order.side, OrderSide::Sell);
+        assert_eq!(order.quantity, 0.5);
+    }
+
+    #[test]
+    fn test_order_builder_reduce_only() {
+        let order = OrderBuilder::new("ETH-PERP", OrderSide::Buy, 1.0)
+            .client_order_id("close-789")
+            .market()
+            .reduce_only()
+            .build();
+        
+        assert!(order.is_ok());
+        let order = order.unwrap();
+        assert!(order.reduce_only);
+        assert_eq!(order.order_type, OrderType::Market);
+    }
+
+    #[test]
+    fn test_order_builder_market_with_price_slippage() {
+        // Test Vest-style: MARKET order with price as slippage protection
+        let order = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
+            .client_order_id("vest-123")
+            .market()
+            .price(42100.0)  // Slippage protection price
+            .build();
+        
+        assert!(order.is_ok());
+        let order = order.unwrap();
+        assert_eq!(order.order_type, OrderType::Market);
+        assert_eq!(order.price, Some(42100.0));
     }
 }

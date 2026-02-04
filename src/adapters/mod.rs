@@ -14,7 +14,7 @@ pub use errors::{ExchangeError, ExchangeResult};
 pub use types::{
     Orderbook, OrderbookLevel, OrderbookUpdate,
     OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderType, TimeInForce,
-    PositionInfo,
+    PositionInfo, OrderBuilder,
 };
 pub use traits::{ExchangeAdapter, OrderbookStream};
 pub use vest::{VestAdapter, VestConfig, SharedOrderbooks};
