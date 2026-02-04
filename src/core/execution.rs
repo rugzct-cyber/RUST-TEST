@@ -19,14 +19,116 @@ use crate::adapters::{
 };
 use crate::core::channels::SpreadOpportunity;
 use crate::core::spread::SpreadDirection;
+use crate::core::events::{TradingEvent, TimingBreakdown, current_timestamp_ms, log_event};
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/// Slippage buffer for aggressive limit orders (0.1% = 10 basis points)
-/// Applied to ensure immediate fills while protecting against adverse price movement
-const SLIPPAGE_BUFFER_PCT: f64 = 0.001;
+/// Slippage buffer for LIMIT IOC and MARKET orders (0.5% = 50 basis points)
+/// Used as price protection on both Vest and Paradex orders
+const SLIPPAGE_BUFFER_PCT: f64 = 0.005;
+
+// =============================================================================
+// Trade Timing Breakdown (Story 8.1 refactoring)
+// =============================================================================
+
+/// Struct to hold timing measurements during trade execution
+/// 
+/// # Call Order (CRITICAL - Red Team F2)
+/// 1. `new()` - At function entry (captures start Instant)
+/// 2. `mark_signal_received()` - AFTER create_orders() returns
+/// 3. `mark_order_sent()` - Before tokio::join! on place_order
+/// 4. `mark_order_confirmed()` - After tokio::join! completes
+/// 5. `total_latency_ms()` - For result struct
+#[derive(Debug)]
+struct TradeTimings {
+    start: Instant,
+    t_signal: u64,
+    t_order_sent: u64,
+    t_order_confirmed: u64,
+}
+
+impl TradeTimings {
+    /// Create new timing tracker. Does NOT capture t_signal (Red Team F1)
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            t_signal: 0,  // Captured explicitly via mark_signal_received()
+            t_order_sent: 0,
+            t_order_confirmed: 0,
+        }
+    }
+    
+    /// Mark when signal is received (after create_orders)
+    fn mark_signal_received(&mut self) {
+        self.t_signal = current_timestamp_ms();
+    }
+    
+    fn mark_order_sent(&mut self) {
+        self.t_order_sent = current_timestamp_ms();
+    }
+    
+    fn mark_order_confirmed(&mut self) {
+        self.t_order_confirmed = current_timestamp_ms();
+    }
+    
+    fn total_latency_ms(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+}
+
+/// Calculate execution spread from fill prices
+/// Returns: (short_fill - long_fill) / long_fill * 100.0
+fn calculate_execution_spread(long_fill_price: f64, short_fill_price: f64) -> f64 {
+    if long_fill_price > 0.0 {
+        ((short_fill_price - long_fill_price) / long_fill_price) * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// Log successful trade with timing and slippage analysis
+fn log_successful_trade(
+    opportunity: &SpreadOpportunity,
+    result: &DeltaNeutralResult,
+    timings: &TradeTimings,
+) {
+    info!(
+        event_type = "TRADE_ENTRY",
+        spread = %format!("{:.4}%", opportunity.spread_percent),
+        long = %result.long_exchange,
+        short = %result.short_exchange,
+        latency_ms = result.execution_latency_ms,
+        pair = %opportunity.pair,
+        "Entry executed"
+    );
+    
+    // Story 8.1: Calculate execution spread and emit SlippageAnalysis event
+    let execution_spread = calculate_execution_spread(
+        result.long_fill_price,
+        result.short_fill_price,
+    );
+    
+    let timing = TimingBreakdown::new(
+        opportunity.detected_at_ms,
+        timings.t_signal,
+        timings.t_order_sent,
+        timings.t_order_confirmed,
+    );
+    
+    let direction_str = format!("{:?}", opportunity.direction);
+    let slippage_event = TradingEvent::slippage_analysis(
+        &opportunity.pair,
+        opportunity.spread_percent,
+        execution_spread,
+        timing,
+        &result.long_exchange,
+        &result.short_exchange,
+        &direction_str,
+    );
+    log_event(&slippage_event);
+}
 
 // =============================================================================
 // Types
@@ -135,9 +237,9 @@ where
         {
             let mut paradex = self.paradex_adapter.lock().await;
             if paradex.is_stale() {
-                info!("[TRADE] Paradex adapter stale - reconnecting...");
+                info!(event_type = "ADAPTER_RECONNECT", exchange = "paradex", "Adapter stale - reconnecting");
                 paradex.reconnect().await?;
-                info!("[TRADE] Paradex adapter reconnected");
+                info!(event_type = "ADAPTER_RECONNECT", exchange = "paradex", "Adapter reconnected");
             }
         }
         
@@ -145,9 +247,9 @@ where
         {
             let mut vest = self.vest_adapter.lock().await;
             if vest.is_stale() {
-                info!("[TRADE] Vest adapter stale - reconnecting...");
+                info!(event_type = "ADAPTER_RECONNECT", exchange = "vest", "Adapter stale - reconnecting");
                 vest.reconnect().await?;
-                info!("[TRADE] Vest adapter reconnected");
+                info!(event_type = "ADAPTER_RECONNECT", exchange = "vest", "Adapter reconnected");
             }
         }
         
@@ -172,12 +274,12 @@ where
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            warn!("[TRADE] Position already open - rejecting trade");
+            warn!(event_type = "TRADE_REJECTED", reason = "position_already_open", "Position already open - rejecting trade");
             return Err(ExchangeError::OrderRejected("Position already open".into()));
         }
         
-        info!("[TRADE] Position lock acquired - executing delta-neutral trade");
-        let start = Instant::now();
+        info!(event_type = "TRADE_STARTED", "Position lock acquired - executing delta-neutral trade");
+        let mut timings = TradeTimings::new();
 
         // Determine which exchange gets long vs short based on direction
         // - AOverB: spread = (bid_B - ask_A)/ask_A → BUY on A, SELL on B
@@ -195,6 +297,8 @@ where
         let long_order_id = format!("dn-long-{}", timestamp);
         let short_order_id = format!("dn-short-{}", timestamp);
 
+
+        
         // Create order requests based on direction
         let (vest_order, paradex_order) = self.create_orders(
             &opportunity,
@@ -202,18 +306,26 @@ where
             &long_order_id,
             &short_order_id,
         );
+        
+        // Story 8.1: Capture t_signal AFTER create_orders (Red Team V1 critical fix)
+        timings.mark_signal_received();
 
         // Execute both orders in parallel (no retry)
         // We lock both adapters and then place orders concurrently
         let vest_guard = self.vest_adapter.lock().await;
         let paradex_guard = self.paradex_adapter.lock().await;
         
+        // Story 8.1: Mark order sent timestamp
+        timings.mark_order_sent();
+        
         let (vest_result, paradex_result) = tokio::join!(
             vest_guard.place_order(vest_order),
             paradex_guard.place_order(paradex_order)
         );
-
-        let execution_latency_ms = start.elapsed().as_millis() as u64;
+        
+        // Story 8.1: Mark order confirmed timestamp
+        timings.mark_order_confirmed();
+        let execution_latency_ms = timings.total_latency_ms();
 
         // Convert results to LegStatus based on which exchange got which side
         let (long_status, short_status) = if long_exchange == "vest" {
@@ -229,36 +341,8 @@ where
         };
 
         let success = long_status.is_success() && short_status.is_success();
-
-        // Log outcome
-        if success {
-            // Store the entry direction for exit spread calculation
-            let dir_value = match opportunity.direction {
-                SpreadDirection::AOverB => 1u8,  // Long Vest, Short Paradex
-                SpreadDirection::BOverA => 2u8,  // Long Paradex, Short Vest
-            };
-            self.entry_direction.store(dir_value, Ordering::SeqCst);
-            
-            info!(
-                spread = %format!("{:.4}%", opportunity.spread_percent),
-                long = %long_exchange,
-                short = %short_exchange,
-                latency_ms = execution_latency_ms,
-                pair = %opportunity.pair,
-                "[TRADE] Entry executed"
-            );
-        } else {
-            // Log partial/total failure - user handles exposed positions manually
-            warn!(
-                spread = %format!("{:.4}%", opportunity.spread_percent),
-                long_success = long_status.is_success(),
-                short_success = short_status.is_success(),
-                latency_ms = execution_latency_ms,
-                "[TRADE] Execution failed - manual intervention may be required"
-            );
-        }
-
-        // Extract fill prices from order responses
+        
+        // Extract fill prices from order responses (Story 8.1: needed for slippage calculation)
         let long_fill_price = match &long_status {
             LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
             _ => 0.0,
@@ -268,9 +352,11 @@ where
             _ => 0.0,
         };
 
-        Ok(DeltaNeutralResult {
-            long_order: long_status,
-            short_order: short_status,
+        // Log outcome
+        // Build partial result for logging (before final return)
+        let partial_result = DeltaNeutralResult {
+            long_order: long_status.clone(),
+            short_order: short_status.clone(),
             execution_latency_ms,
             success,
             spread_percent: opportunity.spread_percent,
@@ -278,7 +364,31 @@ where
             short_exchange: short_exchange.to_string(),
             long_fill_price,
             short_fill_price,
-        })
+        };
+        
+        if success {
+            // Store the entry direction for exit spread calculation
+            let dir_value = match opportunity.direction {
+                SpreadDirection::AOverB => 1u8,  // Long Vest, Short Paradex
+                SpreadDirection::BOverA => 2u8,  // Long Paradex, Short Vest
+            };
+            self.entry_direction.store(dir_value, Ordering::SeqCst);
+            
+            // Delegate logging to helper function (Task 3)
+            log_successful_trade(&opportunity, &partial_result, &timings);
+        } else {
+            // Log partial/total failure - user handles exposed positions manually
+            warn!(
+                event_type = "TRADE_FAILED",
+                spread = %format!("{:.4}%", opportunity.spread_percent),
+                long_success = long_status.is_success(),
+                short_success = short_status.is_success(),
+                latency_ms = execution_latency_ms,
+                "Execution failed - manual intervention may be required"
+            );
+        }
+
+        Ok(partial_result)
     }
     
     /// Verify positions on both exchanges after trade execution
@@ -321,61 +431,43 @@ where
             None => 0.0,
         };
         
-        // Prominent entry summary log
+        // Structured entry verification log (Story 5.3)
         info!(
-            "╔══════════════════════════════════════════════════════════════╗"
-        );
-        info!(
-            "║ 📈 ENTRY EXECUTED                                            ║"
-        );
-        info!(
-            "╠══════════════════════════════════════════════════════════════╣"
-        );
-        info!(
-            "║ Vest Price:     ${:<10.2}                                ║",
-            vest_price
-        );
-        info!(
-            "║ Paradex Price:  ${:<10.2}                                ║",
-            paradex_price
-        );
-        info!(
-            "║ Direction:      {:?}                                   ║",
-            entry_direction.unwrap_or(SpreadDirection::AOverB)
-        );
-        info!(
-            "║ Detected Spread: {:.4}%                                     ║",
-            entry_spread
-        );
-        info!(
-            "║ 🎯 CAPTURED:     {:.4}%                                     ║",
-            captured_spread
-        );
-        info!(
-            "║ Exit Target:    {:.4}%                                      ║",
-            exit_spread_target
-        );
-        info!(
-            "╚══════════════════════════════════════════════════════════════╝"
+            event_type = "POSITION_VERIFIED",
+            vest_price = %format!("${:.2}", vest_price),
+            paradex_price = %format!("${:.2}", paradex_price),
+            direction = ?entry_direction.unwrap_or(SpreadDirection::AOverB),
+            detected_spread = %format!("{:.4}%", entry_spread),
+            captured_spread = %format!("{:.4}%", captured_spread),
+            exit_target = %format!("{:.4}%", exit_spread_target),
+            "Entry positions verified"
         );
         
         // Log individual positions for detail
         match vest_pos {
             Ok(Some(pos)) => info!(
-                "[POSITION] Vest: {} {} @ {}",
-                pos.side, pos.quantity, pos.entry_price
+                event_type = "POSITION_DETAIL",
+                exchange = "vest",
+                side = %pos.side,
+                quantity = %pos.quantity,
+                entry_price = %pos.entry_price,
+                "Position details"
             ),
-            Ok(None) => warn!("[POSITION] Vest: No position"),
-            Err(e) => warn!("[POSITION] Vest check failed: {}", e),
+            Ok(None) => warn!(event_type = "POSITION_DETAIL", exchange = "vest", "No position"),
+            Err(e) => warn!(event_type = "POSITION_DETAIL", exchange = "vest", error = %e, "Position check failed"),
         }
         
         match paradex_pos {
             Ok(Some(pos)) => info!(
-                "[POSITION] Paradex: {} {} @ {}",
-                pos.side, pos.quantity, pos.entry_price
+                event_type = "POSITION_DETAIL",
+                exchange = "paradex",
+                side = %pos.side,
+                quantity = %pos.quantity,
+                entry_price = %pos.entry_price,
+                "Position details"
             ),
-            Ok(None) => warn!("[POSITION] Paradex: No position"),
-            Err(e) => warn!("[POSITION] Paradex check failed: {}", e),
+            Ok(None) => warn!(event_type = "POSITION_DETAIL", exchange = "paradex", "No position"),
+            Err(e) => warn!(event_type = "POSITION_DETAIL", exchange = "paradex", error = %e, "Position check failed"),
         }
     }
     
@@ -459,16 +551,18 @@ where
             self.entry_direction.store(0, Ordering::SeqCst);
             
             info!(
+                event_type = "TRADE_EXIT",
                 exit_spread = %format!("{:.4}%", exit_spread),
                 latency_ms = execution_latency_ms,
-                "[EXIT] Position closed"
+                "Position closed"
             );
         } else {
             warn!(
+                event_type = "TRADE_EXIT_FAILED",
                 vest_success = vest_status.is_success(),
                 paradex_success = paradex_status.is_success(),
                 latency_ms = execution_latency_ms,
-                "[EXIT] Close failed - manual intervention required"
+                "Close failed - manual intervention required"
             );
         }
         
@@ -525,31 +619,33 @@ where
             short_order_id.to_string()
         };
 
-        // Calculate aggressive limit prices with slippage buffer (0.1% for immediate fill)
-        // Vest price: Buy at slightly above ask, Sell at slightly below bid
+        // Vest: Use MARKET orders with limitPrice as slippage protection
+        // Add 0.5% buffer to ensure fill while protecting against extreme slippage
         let vest_price = match vest_side {
             OrderSide::Buy => opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
             OrderSide::Sell => opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
         };
         
-        // Paradex price: Buy at slightly above ask, Sell at slightly below bid
+        // Paradex: Use LIMIT IOC with slippage buffer to ensure fill
+        // Without buffer, IOC orders get cancelled if price moves before arrival
         let paradex_price = match paradex_side {
             OrderSide::Buy => opportunity.dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
             OrderSide::Sell => opportunity.dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
         };
 
-        // Use LIMIT IOC orders with aggressive prices for immediate fill
+        // Vest: MARKET order (limitPrice acts as slippage protection)
         let vest_order = OrderRequest {
             client_order_id: vest_order_id,
             symbol: self.vest_symbol.clone(),
             side: vest_side,
-            order_type: crate::adapters::types::OrderType::Limit,
-            price: Some(vest_price),
+            order_type: crate::adapters::types::OrderType::Market,
+            price: Some(vest_price), // Required by Vest as slippage protection
             quantity,
-            time_in_force: TimeInForce::Ioc,
+            time_in_force: TimeInForce::Ioc, // Ignored for MARKET but required by struct
             reduce_only: false,
         };
 
+        // Paradex: LIMIT IOC for immediate fill with price protection
         let paradex_order = OrderRequest {
             client_order_id: paradex_order_id,
             symbol: self.paradex_symbol.clone(),
@@ -718,6 +814,39 @@ mod tests {
         assert_eq!(executor.default_quantity, 0.01);
         assert_eq!(executor.vest_symbol, "BTC-PERP");
         assert_eq!(executor.paradex_symbol, "BTC-USD-PERP");
+    }
+    
+    /// Test TradeTimings sequence (Red Team F3)
+    /// Validates that t_signal is NOT auto-captured in new() and timestamps are monotonic
+    #[test]
+    fn test_trade_timings_sequence() {
+        let mut timings = TradeTimings::new();
+        
+        // t_signal should be 0 initially (not auto-captured per Red Team F1)
+        assert_eq!(timings.t_signal, 0);
+        assert_eq!(timings.t_order_sent, 0);
+        assert_eq!(timings.t_order_confirmed, 0);
+        
+        // Mark signal received
+        timings.mark_signal_received();
+        assert!(timings.t_signal > 0);
+        
+        // Small delay to ensure monotonic timestamps
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        
+        // Mark order sent
+        timings.mark_order_sent();
+        assert!(timings.t_order_sent >= timings.t_signal);
+        
+        // Small delay
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        
+        // Mark order confirmed
+        timings.mark_order_confirmed();
+        assert!(timings.t_order_confirmed >= timings.t_order_sent);
+        
+        // Latency should be measurable (u64 can hold the value)
+        let _ = timings.total_latency_ms();
     }
 
     #[tokio::test]
