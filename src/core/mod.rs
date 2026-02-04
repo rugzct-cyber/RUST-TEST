@@ -1,6 +1,6 @@
-//! Core module - Spread calculation, VWAP, channels, execution
+//! Core module - Spread calculation, VWAP, channels, execution, events
 //!
-//! # Module Architecture (Story 0.3, Story 7.3, Story 7.4)
+//! # Module Architecture (Story 0.3, Story 7.3, Story 7.4, Story 5.3)
 //!
 //! This module uses **explicit re-exports** instead of glob exports (`pub use module::*`)
 //! to provide better API visibility and prevent accidental public API changes.
@@ -10,7 +10,7 @@
 //! ## Usage
 //! Prefer importing from `crate::core`:
 //! ```ignore
-//! use crate::core::{SpreadCalculator, VwapResult};
+//! use crate::core::{SpreadCalculator, VwapResult, TradingEvent};
 //! ```
 //!
 //! ## Adding New Public Types
@@ -18,6 +18,7 @@
 //! re-exports below to make them part of the public API.
 
 pub mod channels;
+pub mod events;
 pub mod execution;
 pub mod monitoring;
 pub mod runtime;
@@ -37,3 +38,7 @@ pub use runtime::execution_task;
 
 // Explicit re-exports for monitoring module (Story 6.2)
 pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
+
+// Explicit re-exports for events module (Story 5.3)
+pub use events::{TradingEvent, TradingEventType, log_event, log_trading_event, current_timestamp_ms, calculate_latency_ms};
+

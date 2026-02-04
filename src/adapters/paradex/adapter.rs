@@ -680,18 +680,13 @@ impl ParadexAdapter {
             loop {
                 interval.tick().await;
                 
+                // Just trace-level health check, no warning needed
                 let last = last_data.load(Ordering::Relaxed);
                 let now = current_time_ms();
-                const STALE_THRESHOLD_MS: u64 = 30_000;
-                
-                if now.saturating_sub(last) > STALE_THRESHOLD_MS {
-                    tracing::warn!("Paradex heartbeat: No data received for {}ms - connection may be stale", 
-                        now.saturating_sub(last));
-                    // Note: We don't break here - the reconnect logic is triggered externally
-                } else {
-                    tracing::trace!("Paradex heartbeat: Connection healthy (last data: {}ms ago)", 
-                        now.saturating_sub(last));
-                }
+                tracing::trace!(
+                    "Paradex heartbeat: last data was {}ms ago", 
+                    now.saturating_sub(last)
+                );
             }
         });
         
@@ -1082,6 +1077,11 @@ impl ExchangeAdapter for ParadexAdapter {
         // Add client_id if provided
         if !order.client_order_id.is_empty() {
             body["client_id"] = serde_json::json!(order.client_order_id);
+        }
+        
+        // Add REDUCE_ONLY flag if needed - critical for closing positions
+        if order.reduce_only {
+            body["flags"] = serde_json::json!(["REDUCE_ONLY"]);
         }
         
         let json_elapsed = json_start.elapsed();

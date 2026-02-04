@@ -21,6 +21,14 @@ use crate::core::channels::SpreadOpportunity;
 use crate::core::spread::SpreadDirection;
 
 // =============================================================================
+// Constants
+// =============================================================================
+
+/// Slippage buffer for aggressive limit orders (0.1% = 10 basis points)
+/// Applied to ensure immediate fills while protecting against adverse price movement
+const SLIPPAGE_BUFFER_PCT: f64 = 0.001;
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -57,6 +65,10 @@ pub struct DeltaNeutralResult {
     pub long_exchange: String,
     /// Exchange that received the short order
     pub short_exchange: String,
+    /// Fill price from long order (avg_fill_price)
+    pub long_fill_price: f64,
+    /// Fill price from short order (avg_fill_price)
+    pub short_fill_price: f64,
 }
 
 // =============================================================================
@@ -246,6 +258,16 @@ where
             );
         }
 
+        // Extract fill prices from order responses
+        let long_fill_price = match &long_status {
+            LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+            _ => 0.0,
+        };
+        let short_fill_price = match &short_status {
+            LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+            _ => 0.0,
+        };
+
         Ok(DeltaNeutralResult {
             long_order: long_status,
             short_order: short_status,
@@ -254,6 +276,8 @@ where
             spread_percent: opportunity.spread_percent,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
+            long_fill_price,
+            short_fill_price,
         })
     }
     
@@ -279,10 +303,60 @@ where
             _ => 0.0,
         };
         
-        // Log summary line with all entry info
+        // Calculate actual captured spread based on entry direction
+        let entry_direction = self.get_entry_direction();
+        let captured_spread = match entry_direction {
+            Some(SpreadDirection::AOverB) => {
+                // Long Vest (bought at ask), Short Paradex (sold at bid)
+                if vest_price > 0.0 {
+                    ((paradex_price - vest_price) / vest_price) * 100.0
+                } else { 0.0 }
+            }
+            Some(SpreadDirection::BOverA) => {
+                // Long Paradex (bought at ask), Short Vest (sold at bid)
+                if paradex_price > 0.0 {
+                    ((vest_price - paradex_price) / paradex_price) * 100.0
+                } else { 0.0 }
+            }
+            None => 0.0,
+        };
+        
+        // Prominent entry summary log
         info!(
-            "[ENTRY] V={:.2} P={:.2} spread={:.4}% exit_target={:.4}%",
-            vest_price, paradex_price, entry_spread, exit_spread_target
+            "╔══════════════════════════════════════════════════════════════╗"
+        );
+        info!(
+            "║ 📈 ENTRY EXECUTED                                            ║"
+        );
+        info!(
+            "╠══════════════════════════════════════════════════════════════╣"
+        );
+        info!(
+            "║ Vest Price:     ${:<10.2}                                ║",
+            vest_price
+        );
+        info!(
+            "║ Paradex Price:  ${:<10.2}                                ║",
+            paradex_price
+        );
+        info!(
+            "║ Direction:      {:?}                                   ║",
+            entry_direction.unwrap_or(SpreadDirection::AOverB)
+        );
+        info!(
+            "║ Detected Spread: {:.4}%                                     ║",
+            entry_spread
+        );
+        info!(
+            "║ 🎯 CAPTURED:     {:.4}%                                     ║",
+            captured_spread
+        );
+        info!(
+            "║ Exit Target:    {:.4}%                                      ║",
+            exit_spread_target
+        );
+        info!(
+            "╚══════════════════════════════════════════════════════════════╝"
         );
         
         // Log individual positions for detail
@@ -345,7 +419,7 @@ where
         let vest_order = OrderRequest {
             client_order_id: format!("close-vest-{}", timestamp),
             symbol: self.vest_symbol.clone(),
-            side: vest_side.clone(),
+            side: vest_side,
             order_type: OrderType::Market,
             price: None, // Market order
             quantity: self.default_quantity,
@@ -356,7 +430,7 @@ where
         let paradex_order = OrderRequest {
             client_order_id: format!("close-paradex-{}", timestamp),
             symbol: self.paradex_symbol.clone(),
-            side: paradex_side.clone(),
+            side: paradex_side,
             order_type: OrderType::Market,
             price: None,
             quantity: self.default_quantity,
@@ -412,6 +486,8 @@ where
             spread_percent: exit_spread,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
+            long_fill_price: 0.0,  // Not needed for close operations
+            short_fill_price: 0.0, // Not needed for close operations
         })
     }
 
@@ -450,8 +526,6 @@ where
         };
 
         // Calculate aggressive limit prices with slippage buffer (0.1% for immediate fill)
-        const SLIPPAGE_BUFFER_PCT: f64 = 0.001; // 0.1%
-        
         // Vest price: Buy at slightly above ask, Sell at slightly below bid
         let vest_price = match vest_side {
             OrderSide::Buy => opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT),

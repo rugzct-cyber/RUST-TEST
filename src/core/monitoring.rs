@@ -1,4 +1,4 @@
-//! Orderbook monitoring task for automatic spread detection (Story 6.2, 7.3)
+//! Orderbook monitoring task for automatic spread detection (Story 6.2, 7.3, 5.3)
 //!
 //! This module provides the polling-based monitoring task that continuously
 //! reads orderbooks from shared storage (lock-free), calculates spreads, and emits
@@ -10,6 +10,10 @@
 //! - Calculates spreads using `SpreadCalculator`
 //! - Emits `SpreadOpportunity` via mpsc channel to execution_task
 //! - Shutdown-aware via broadcast receiver
+//!
+//! # Logging (Story 5.3)
+//! - Uses structured SPREAD_DETECTED events for opportunity logging
+//! - Events include entry_spread, spread_threshold, direction, pair
 
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -19,6 +23,7 @@ use tracing::{debug, info, warn, error};
 
 use crate::adapters::Orderbook;
 use crate::core::channels::SpreadOpportunity;
+use crate::core::events::{TradingEvent, log_event, current_timestamp_ms};
 use crate::core::spread::SpreadCalculator;
 
 /// Type alias for shared orderbooks (same as adapters::SharedOrderbooks)
@@ -26,6 +31,12 @@ pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 
 /// Polling interval for orderbook monitoring (25ms for V1 HFT)
 pub const POLL_INTERVAL_MS: u64 = 25;
+
+/// Log throttle interval - log every N polls (~1 second at 25ms polling)
+const LOG_THROTTLE_POLLS: u64 = 40;
+
+/// Warning throttle interval - warn every N polls (~10 seconds at 25ms polling)
+const WARN_THROTTLE_POLLS: u32 = 400;
 
 /// Monitoring configuration for the task
 #[derive(Clone, Debug)]
@@ -66,6 +77,7 @@ pub async fn monitoring_task(
     
     let calculator = SpreadCalculator::new("vest", "paradex");
     let mut poll_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
+    let mut poll_count: u64 = 0;
     
     loop {
         tokio::select! {
@@ -76,6 +88,8 @@ pub async fn monitoring_task(
             }
             // Poll orderbooks on interval
             _ = poll_interval.tick() => {
+                poll_count += 1;
+                
                 // Read directly from shared storage - NO Mutex contention!
                 let vest_ob = {
                     let books = vest_orderbooks.read().await;
@@ -90,26 +104,31 @@ pub async fn monitoring_task(
                 // Only calculate spread if both orderbooks are available
                 if let (Some(vest_orderbook), Some(paradex_orderbook)) = (vest_ob, paradex_ob) {
                     if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
-                        info!(
-                            spread = %format!("{:.4}%", spread_result.spread_pct),
-                            direction = ?spread_result.direction,
-                            threshold = %format!("{:.4}%", config.spread_entry),
-                            "Spread calculated"
-                        );
-                        
-                        // Check if spread exceeds entry threshold
-                        if spread_result.spread_pct >= config.spread_entry {
-                            info!(
-                                spread = %format!("{:.4}%", spread_result.spread_pct),
-                                threshold = %format!("{:.4}%", config.spread_entry),
-                                "[TRADE] Spread opportunity detected"
+                        // Log spread status periodically (every ~1 second)
+                        // Uses debug level for non-opportunity monitoring
+                        if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                            debug!(
+                                event_type = "SPREAD_MONITORING",
+                                entry_spread = %format!("{:.4}%", spread_result.spread_pct),
+                                spread_threshold = %format!("{:.4}%", config.spread_entry),
+                                direction = ?spread_result.direction,
+                                "Monitoring spread"
                             );
+                        }
+                        
+                        // Only send opportunity if threshold exceeded
+                        if spread_result.spread_pct >= config.spread_entry {
+                            let now_ms = current_timestamp_ms();
                             
-                            // Create timestamp for opportunity
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0);
+                            // Log SPREAD_DETECTED event (structured)
+                            let direction_str = format!("{:?}", spread_result.direction);
+                            let event = TradingEvent::spread_detected(
+                                &config.pair,
+                                spread_result.spread_pct,
+                                config.spread_entry,
+                                &direction_str,
+                            );
+                            log_event(&event);
                             
                             let opportunity = SpreadOpportunity {
                                 pair: config.pair.clone(),
@@ -145,7 +164,7 @@ pub async fn monitoring_task(
                     static WARN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                     let count = WARN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // Only warn every 400 iterations (~10 seconds at 25ms) to avoid spam
-                    if count % 400 == 0 {
+                    if count.is_multiple_of(WARN_THROTTLE_POLLS) {
                         let vest_has_ob = vest_orderbooks.read().await.contains_key(&vest_symbol);
                         let paradex_has_ob = paradex_orderbooks.read().await.contains_key(&paradex_symbol);
                         warn!(

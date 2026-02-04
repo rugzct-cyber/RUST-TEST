@@ -1,10 +1,14 @@
-//! Runtime execution tasks (Story 2.3, Story 6.2, Story 7.3)
+//! Runtime execution tasks (Story 2.3, Story 6.2, Story 7.3, Story 5.3)
 //!
 //! This module provides the async task loops for the execution pipeline.
 //! The execution task consumes SpreadOpportunity messages and triggers
 //! delta-neutral trades.
 //!
 //! V1 HFT Mode: No persistence (Supabase removed for latency optimization)
+//!
+//! # Logging (Story 5.3)
+//! - Uses structured trading events (TRADE_ENTRY, TRADE_EXIT, POSITION_MONITORING)
+//! - Distinct entry_spread vs exit_spread fields for slippage analysis
 
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -14,11 +18,26 @@ use tracing::{debug, error, info};
 
 use crate::adapters::{ExchangeAdapter, Orderbook};
 use crate::core::channels::SpreadOpportunity;
+use crate::core::events::{TradingEvent, log_event, calculate_latency_ms};
 use crate::core::execution::DeltaNeutralExecutor;
 use crate::core::spread::{SpreadCalculator, SpreadDirection};
 
 /// Type alias for shared orderbooks
 pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Exit monitoring polling interval in milliseconds (25ms for V1 HFT)
+const EXIT_POLL_INTERVAL_MS: u64 = 25;
+
+/// Log throttle interval - log every N polls (~1 second at 25ms polling)
+const LOG_THROTTLE_POLLS: u64 = 40;
+
+// =============================================================================
+// Functions
+// =============================================================================
 
 /// Execution task that processes spread opportunities (Story 6.2, Story 7.3)
 ///
@@ -35,6 +54,7 @@ pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 /// * `paradex_symbol` - Symbol on Paradex exchange
 /// * `shutdown_rx` - Broadcast receiver for shutdown signal
 /// * `exit_spread_target` - Target spread for position exit (from config, e.g. -0.10)
+#[allow(clippy::too_many_arguments)]
 pub async fn execution_task<V, P>(
     mut opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
     executor: DeltaNeutralExecutor<V, P>,
@@ -80,24 +100,24 @@ pub async fn execution_task<V, P>(
                     continue;
                 }
 
-                match executor.execute_delta_neutral(opportunity).await {
+                match executor.execute_delta_neutral(opportunity.clone()).await {
                     Ok(result) => {
                         if result.success {
-                            // Log successful trade
-                            info!(
-                                spread = %format!("{:.4}%", spread_pct),
-                                latency_ms = result.execution_latency_ms,
-                                long = %result.long_exchange,
-                                short = %result.short_exchange,
-                                execution_number = execution_count,
-                                "[TRADE] Auto-executed"
-                            );
+                            // Calculate latency from detection to execution
+                            let latency = calculate_latency_ms(opportunity.detected_at_ms);
+                            let direction_str = format!("{:?}", opportunity.direction);
                             
-                            info!(
-                                pair = %pair,
-                                entry_spread = %format!("{:.4}%", spread_pct),
-                                "[TRADE] Position opened - starting exit monitoring"
+                            // Log TRADE_ENTRY event (Story 5.3)
+                            let event = TradingEvent::trade_entry(
+                                &pair,
+                                spread_pct,
+                                exit_spread_target, // entry threshold
+                                &direction_str,
+                                &result.long_exchange,
+                                &result.short_exchange,
+                                latency,
                             );
+                            log_event(&event);
                             
                             // Verify positions on both exchanges
                             executor.verify_positions(spread_pct, exit_spread_target).await;
@@ -108,20 +128,23 @@ pub async fn execution_task<V, P>(
                             let entry_direction = executor.get_entry_direction();
                             
                             if let Some(direction) = entry_direction {
-                                info!(
+                                debug!(
+                                    event_type = "POSITION_OPENED",
                                     direction = ?direction,
                                     exit_target = %format!("{:.4}%", exit_spread_target),
-                                    "[EXIT-MONITOR] Started"
+                                    "Starting exit monitoring"
                                 );
                                 
-                                let mut exit_interval = interval(Duration::from_millis(25));
+                                let mut exit_interval = interval(Duration::from_millis(EXIT_POLL_INTERVAL_MS));
                                 let mut poll_count: u64 = 0;
                                 
                                 'exit_loop: loop {
                                     tokio::select! {
-                                        // Check shutdown
                                         _ = shutdown_rx.recv() => {
-                                            info!("[EXIT-MONITOR] Shutdown received - exiting without closing");
+                                            info!(
+                                                event_type = "BOT_SHUTDOWN",
+                                                "Exit monitoring interrupted by shutdown"
+                                            );
                                             break 'exit_loop;
                                         }
                                         _ = exit_interval.tick() => {
@@ -152,61 +175,78 @@ pub async fn execution_task<V, P>(
                                                     }
                                                 };
                                                 
-                                                // DEBUG log every poll
-                                                debug!(
-                                                    poll = poll_count,
-                                                    exit_spread = %format!("{:.4}%", exit_spread),
-                                                    target = %format!("{:.4}%", exit_spread_target),
-                                                    vest_bid = vest_bid,
-                                                    paradex_ask = paradex_ask,
-                                                    "[EXIT-MONITOR] Polling"
-                                                );
-                                                
-                                                // Check exit condition: exit_spread >= exit_spread_target
-                                                // e.g. exit_spread = -0.08% >= -0.10% (target) => true
-                                                if exit_spread >= exit_spread_target {
-                                                    info!(
-                                                        exit_spread = %format!("{:.4}%", exit_spread),
-                                                        target = %format!("{:.4}%", exit_spread_target),
-                                                        polls = poll_count,
-                                                        "[EXIT] Condition met - closing position"
+                                                // Log POSITION_MONITORING event (throttled - every ~1 second)
+                                                if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                                                    let event = TradingEvent::position_monitoring(
+                                                        &pair,
+                                                        spread_pct,      // entry_spread (original)
+                                                        exit_spread,     // exit_spread (current)
+                                                        exit_spread_target,
+                                                        poll_count,
                                                     );
+                                                    log_event(&event);
+                                                }
+                                                
+                                                if exit_spread >= exit_spread_target {
+                                                    // Calculate profit
+                                                    let profit = spread_pct + exit_spread;
+                                                    
+                                                    // Log TRADE_EXIT event (Story 5.3)
+                                                    let event = TradingEvent::trade_exit(
+                                                        &pair,
+                                                        spread_pct,      // entry_spread
+                                                        exit_spread,     // exit_spread
+                                                        exit_spread_target,
+                                                        profit,
+                                                        poll_count,
+                                                    );
+                                                    log_event(&event);
                                                     
                                                     // Close the position
                                                     match executor.close_position(exit_spread).await {
                                                         Ok(_) => {
-                                                            let profit = spread_pct + exit_spread;
-                                                            info!(
-                                                                entry = %format!("{:.4}%", spread_pct),
-                                                                exit = %format!("{:.4}%", exit_spread),
-                                                                profit = %format!("{:.4}%", profit),
-                                                                "[EXIT] Position closed successfully"
+                                                            // Log POSITION_CLOSED event
+                                                            let closed_event = TradingEvent::position_closed(
+                                                                &pair,
+                                                                spread_pct,
+                                                                exit_spread,
+                                                                profit,
                                                             );
+                                                            log_event(&closed_event);
                                                         }
                                                         Err(e) => {
-                                                            error!(error = ?e, "[EXIT] Failed to close position");
+                                                            error!(
+                                                                event_type = "ORDER_FAILED",
+                                                                error = ?e,
+                                                                "Failed to close position"
+                                                            );
                                                         }
                                                     }
                                                     
                                                     break 'exit_loop;
                                                 }
                                             } else {
-                                                debug!(poll = poll_count, "[EXIT-MONITOR] Missing orderbook data");
+                                                debug!(
+                                                    event_type = "POSITION_MONITORING",
+                                                    poll = poll_count,
+                                                    "Missing orderbook data"
+                                                );
                                             }
                                         }
                                     }
                                 }
                                 
-                                info!(total_polls = poll_count, "[EXIT-MONITOR] Stopped");
+                                info!(event_type = "POSITION_MONITORING", total_polls = poll_count, "Exit monitoring stopped");
                             } else {
-                                error!("[EXIT-MONITOR] No entry direction found after successful trade!");
+                                error!(event_type = "ORDER_FAILED", "No entry direction found after successful trade");
                             }
                         } else {
                             error!(
+                                event_type = "ORDER_FAILED",
                                 latency_ms = result.execution_latency_ms,
                                 long_success = %result.long_order.is_success(),
                                 short_success = %result.short_order.is_success(),
-                                "[TRADE] Delta-neutral trade partially failed"
+                                "Delta-neutral trade partially failed"
                             );
                         }
                         
@@ -223,10 +263,10 @@ pub async fn execution_task<V, P>(
                         // Check if it's a "position already open" error
                         let err_msg = format!("{:?}", e);
                         if err_msg.contains("Position already open") {
-                            debug!("[TRADE] Position already open - draining queue");
+                            debug!(event_type = "TRADE_SKIPPED", "Position already open - draining queue");
                             while opportunity_rx.try_recv().is_ok() {}
                         } else {
-                            error!(error = ?e, "[TRADE] Delta-neutral execution error");
+                            error!(event_type = "ORDER_FAILED", error = ?e, "Delta-neutral execution error");
                         }
                     }
                 }

@@ -6,8 +6,8 @@ inputDocuments:
 workflowType: 'epics-and-stories'
 project_name: 'bot4'
 workflowStatus: 'complete'
-totalEpics: 8
-totalStories: 33
+totalEpics: 9
+totalStories: 35
 frsCovered: 21
 ---
 
@@ -568,17 +568,22 @@ As a opérateur,
 I want que chaque événement de trading soit loggé avec contexte complet,
 So that je puisse tracer et debugger facilement.
 
+> [!IMPORTANT]
+> **Clean Slate Approach:** Le code de logging actuel a été bricolé (vibecoding) et manque de cohérence. Cette story doit reprendre le logging de A à Z avec un schéma d'événements clair et une structure uniforme.
+
 **Acceptance Criteria:**
 
 **Given** un événement de trading (spread détecté, ordre placé, position ouverte)
 **When** l'événement se produit
 **Then** un log structuré est émis avec:
+- `event_type`: type d'événement (`SPREAD_DETECTED`, `TRADE_ENTRY`, `TRADE_EXIT`, `ORDER_PLACED`, `ORDER_FILLED`)
 - `pair`: la paire de trading
 - `exchange`: l'exchange concerné
 - `spread`: le spread calculé (si applicable)
-- `timestamp`: horodatage précis
-- `event_type`: type d'événement (SPREAD_DETECTED, ORDER_PLACED, etc.)
+- `timestamp`: horodatage ISO-8601 précis
+- `latency_ms`: temps écoulé depuis détection (pour debugging performance)
 **And** les logs permettent de reconstruire la timeline des opérations
+**And** les anciens logs inconsistants sont nettoyés/supprimés
 
 ---
 
@@ -720,3 +725,61 @@ So that la latence soit minimale.
 **And** aucune requête Supabase n'est effectuée après l'exécution
 **And** la latence pré-trade est réduite de ~70ms
 **And** un commentaire TODO V2 est présent pour la réactivation
+
+---
+
+## Epic 8: Execution Quality & Slippage
+
+L'opérateur peut analyser et réduire le slippage entre détection et exécution.
+
+**Outcome utilisateur :** Comprendre pourquoi le spread exécuté (ex: 0.02%) est inférieur au spread détecté (ex: 0.10%), et optimiser pour capturer un maximum du spread target.
+
+**NFRs couverts :** NFR2 (Execution <500ms)
+
+### Story 8.1: Slippage Investigation & Timing Breakdown
+
+As a opérateur,
+I want analyser et comprendre le slippage entre détection et exécution,
+So that je puisse identifier les optimisations possibles.
+
+> [!IMPORTANT]
+> **Problème observé:** Target spread 0.10% → Exécution réelle ~0.02% (ou moins). Gap de ~80% entre détection et exécution.
+
+**Acceptance Criteria:**
+
+1. **Given** une opportunité de spread détectée
+   **When** l'ordre est exécuté
+   **Then** les métriques suivantes sont loguées:
+   - `detection_spread`: spread au moment de la détection
+   - `execution_spread`: spread au moment du fill
+   - `slippage`: différence entre les deux
+   - `total_latency_ms`: temps total détection → confirmation
+
+2. **Given** les logs de timing
+   **When** j'analyse une exécution
+   **Then** je peux voir le timing breakdown:
+   - `t_detection`: timestamp détection spread
+   - `t_signal`: timestamp envoi signal au executor
+   - `t_order_sent`: timestamp envoi ordres aux exchanges
+   - `t_order_confirmed`: timestamp confirmation fills
+   **And** chaque phase est mesurée individuellement
+
+3. **Given** les données de slippage collectées sur N trades
+   **When** j'analyse les patterns
+   **Then** je peux identifier:
+   - La phase qui cause le plus de délai
+   - Les corrélations (heure, volatilité, exchange)
+   - Les pistes d'optimisation prioritaires
+
+### Story 8.2: Execution Speed Optimization
+
+As a opérateur,
+I want optimiser la vitesse d'exécution pour réduire le slippage,
+So that je capture un spread plus proche de la target.
+
+**Acceptance Criteria:**
+
+**Given** les insights de Story 8.1
+**When** les optimisations sont implémentées
+**Then** le slippage moyen est réduit de X%
+**And** les améliorations sont mesurables via les métriques de 8.1

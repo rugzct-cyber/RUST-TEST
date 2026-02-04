@@ -728,7 +728,7 @@ impl VestAdapter {
                             }
                             VestWsMessage::Pong { .. } => {
                                 last_pong.store(current_time_ms(), Ordering::Relaxed);
-                                tracing::trace!("PONG received");
+                                tracing::debug!("Vest PONG received, updating last_pong timestamp");
                             }
                         },
                         Err(parse_err) => {
@@ -876,16 +876,13 @@ impl VestAdapter {
 
                 tokio::time::sleep(Duration::from_secs(5)).await;
 
+                // Just trace-level health check, no warning needed
                 let last = last_pong.load(Ordering::Relaxed);
                 let now = current_time_ms();
-                const PONG_TIMEOUT_MS: u64 = 35_000;
-
-                if now.saturating_sub(last) > PONG_TIMEOUT_MS {
-                    tracing::warn!(
-                        "Vest heartbeat: PONG timeout - connection may be stale (last PONG: {}ms ago)",
-                        now.saturating_sub(last)
-                    );
-                }
+                tracing::trace!(
+                    "Vest heartbeat: last PONG was {}ms ago",
+                    now.saturating_sub(last)
+                );
             }
 
             tracing::debug!("Vest heartbeat task ended");

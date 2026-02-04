@@ -1,4 +1,4 @@
-//! HFT Arbitrage Bot - V1 Entry Point (Story 7.3: Supabase + Mutex removed)
+//! HFT Arbitrage Bot - V1 Entry Point (Story 7.3, Story 5.3)
 //!
 //! This is a lean HFT implementation that:
 //! 1. Loads configuration
@@ -8,16 +8,21 @@
 //! 5. Executes delta-neutral trades
 //!
 //! V1 HFT Mode: No persistence, no Mutex locks for minimum latency
+//!
+//! # Logging (Story 5.3)
+//! - Uses structured BOT_STARTED/BOT_SHUTDOWN events
+//! - Removes legacy [TAG] prefixes, uses event_type fields instead
 
 use std::path::Path;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use hft_bot::config;
 use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::core::channels::SpreadOpportunity;
+use hft_bot::core::events::{TradingEvent, log_event};
 use hft_bot::core::monitoring::{monitoring_task, MonitoringConfig};
 use hft_bot::core::runtime::execution_task;
 use hft_bot::core::execution::DeltaNeutralExecutor;
@@ -33,52 +38,61 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter("info")
         .init();
 
-    info!("🚀 HFT Arbitrage Bot V1 starting (no persistence, lock-free mode)...");
+    // Log BOT_STARTED event (Story 5.3)
+    let started_event = TradingEvent::bot_started();
+    log_event(&started_event);
     
     // Load configuration from YAML
-    info!("📁 Loading configuration from config.yaml...");
+    info!(event_type = "CONFIG", "Loading configuration from config.yaml");
     let config = match config::load_config(Path::new("config.yaml")) {
         Ok(cfg) => {
             let pairs: Vec<String> = cfg.bots.iter()
                 .map(|b| b.pair.to_string())
                 .collect();
-            info!("[CONFIG] Loaded pairs: {:?}", pairs);
-            info!("[INFO] Loaded {} bots from configuration", cfg.bots.len());
+            info!(
+                event_type = "CONFIG",
+                pairs = ?pairs,
+                bot_count = cfg.bots.len(),
+                "Configuration loaded"
+            );
             cfg
         }
         Err(e) => {
-            error!("[ERROR] Configuration failed: {}", e);
+            error!(event_type = "CONFIG", error = %e, "Configuration failed");
             std::process::exit(1);
         }
     };
 
     // Access first bot for MVP single-pair mode
     let bot = &config.bots[0];
-    info!("📊 Active Bot Configuration:");
-    info!("   ID: {}", bot.id);
-    info!("   Pair: {}", bot.pair);
-    info!("   DEX A: {}", bot.dex_a);
-    info!("   DEX B: {}", bot.dex_b);
-    info!("   Entry threshold: {}%", bot.spread_entry);
-    info!("   Exit threshold: {}%", bot.spread_exit);
-    info!("   Leverage: {}x", bot.leverage);
-    info!("   Position Size: {} {}", bot.position_size, bot.pair);
+    info!(
+        event_type = "CONFIG",
+        bot_id = %bot.id,
+        pair = %bot.pair,
+        dex_a = %bot.dex_a,
+        dex_b = %bot.dex_b,
+        spread_entry = %format!("{:.2}%", bot.spread_entry),
+        spread_exit = %format!("{:.2}%", bot.spread_exit),
+        leverage = %format!("{}x", bot.leverage),
+        position_size = %format!("{} {}", bot.position_size, bot.pair),
+        "Active bot configuration"
+    );
     
     
     // Story 6.1 Task 1: Create adapters with real credentials
-    info!("🔐 Initializing exchange adapters...");
+    info!(event_type = "ADAPTER_INIT", "Initializing exchange adapters");
     
     // Subtask 1.1: Create VestAdapter with credentials from .env
     let vest_config = VestConfig::from_env()
         .expect("VEST credentials must be configured in .env (VEST_PRIMARY_ADDR, VEST_PRIMARY_KEY, VEST_SIGNING_KEY)");
     let mut vest_adapter = VestAdapter::new(vest_config);
-    info!("[INFO] Vest adapter initialized");
+    info!(event_type = "ADAPTER_INIT", exchange = "vest", "Adapter initialized");
     
     // Subtask 1.2: Create ParadexAdapter with credentials from .env
     let paradex_config = ParadexConfig::from_env()
         .expect("PARADEX credentials must be configured in .env (PARADEX_PRIVATE_KEY, PARADEX_ACCOUNT_ADDRESS)");
     let mut paradex_adapter = ParadexAdapter::new(paradex_config);
-    info!("[INFO] Paradex adapter initialized");
+    info!(event_type = "ADAPTER_INIT", exchange = "paradex", "Adapter initialized");
 
     
     // Task 2: Create channels for data pipeline
@@ -87,15 +101,15 @@ async fn main() -> anyhow::Result<()> {
     let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(1);
     
     // Task 3: Connect to exchanges
-    info!("🌐 Connecting to exchanges...");
+    info!(event_type = "CONNECTION", "Connecting to exchanges");
     
     vest_adapter.connect().await
         .expect("Failed to connect to Vest");
-    info!("[INFO] Connected to Vest");
+    info!(event_type = "CONNECTION", exchange = "vest", "Connected");
     
     paradex_adapter.connect().await
         .expect("Failed to connect to Paradex");
-    info!("[INFO] Connected to Paradex");
+    info!(event_type = "CONNECTION", exchange = "paradex", "Connected");
 
     
     // Subtask 3.3: Subscribe to orderbooks
@@ -113,33 +127,38 @@ async fn main() -> anyhow::Result<()> {
     paradex_adapter.subscribe_orders(&paradex_symbol).await
         .expect("Failed to subscribe to Paradex order channel");
     
-    info!("[INFO] Subscribed to orderbooks: {}, {}", vest_symbol, paradex_symbol);
-    info!("[INFO] Subscribed to Paradex order confirmations (WS)");
+    info!(
+        event_type = "SUBSCRIPTION",
+        vest_symbol = %vest_symbol,
+        paradex_symbol = %paradex_symbol,
+        "Subscribed to orderbooks"
+    );
+    info!(event_type = "SUBSCRIPTION", channel = "orders", exchange = "paradex", "Subscribed to order confirmations");
 
     // Story 7.3: Get SharedOrderbooks for lock-free monitoring (NO Mutex!)
     let vest_shared_orderbooks = vest_adapter.get_shared_orderbooks();
     let paradex_shared_orderbooks = paradex_adapter.get_shared_orderbooks();
-    info!("[INFO] SharedOrderbooks extracted for lock-free monitoring");
+    info!(event_type = "RUNTIME", "SharedOrderbooks extracted for lock-free monitoring");
 
     // Create shutdown broadcast channel
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
     
     // Initialize execution adapters (separate from monitoring adapters)
-    info!("🔌 Initializing execution adapters...");
+    info!(event_type = "ADAPTER_INIT", "Initializing execution adapters");
     
     let execution_vest_config = VestConfig::from_env()
         .expect("VEST credentials must be configured for execution adapter");
     let mut execution_vest = VestAdapter::new(execution_vest_config);
     execution_vest.connect().await
         .expect("Failed to connect Vest execution adapter");
-    info!("[INFO] Vest execution adapter connected");
+    info!(event_type = "CONNECTION", adapter = "vest_execution", "Connected");
     
     let execution_paradex_config = ParadexConfig::from_env()
         .expect("PARADEX credentials must be configured for execution adapter");
     let mut execution_paradex = ParadexAdapter::new(execution_paradex_config);
     execution_paradex.connect().await
         .expect("Failed to connect Paradex execution adapter");
-    info!("[INFO] Paradex execution adapter connected");
+    info!(event_type = "CONNECTION", adapter = "paradex_execution", "Connected");
     
     let executor = DeltaNeutralExecutor::new(
         execution_vest,
@@ -168,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
             exit_spread_target,
         ).await;
     });
-    info!("[INFO] Execution task spawned (V1 HFT mode with exit monitoring)");
+    info!(event_type = "RUNTIME", task = "execution", "Task spawned (V1 HFT mode with exit monitoring)");
     
     // Spawn monitoring task (using SharedOrderbooks - NO Mutex!)
     let monitoring_tx = opportunity_tx.clone();
@@ -192,29 +211,32 @@ async fn main() -> anyhow::Result<()> {
             monitoring_shutdown,
         ).await;
     });
-    info!("[INFO] Monitoring task spawned (lock-free, 25ms polling)");
+    info!(event_type = "RUNTIME", task = "monitoring", polling_ms = 25, "Task spawned (lock-free)");
     
-    info!("✅ Bot runtime started (V1 HFT - no persistence, no Mutex locks)");
+    info!(event_type = "RUNTIME", "Bot runtime started (V1 HFT - no persistence, no Mutex locks)");
 
     // Spawn SIGINT handler task
     let shutdown_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        info!("[SHUTDOWN] SIGINT handler registered - press Ctrl+C to initiate graceful shutdown");
+        info!(event_type = "BOT_SHUTDOWN", "SIGINT handler registered - press Ctrl+C to initiate graceful shutdown");
         match signal::ctrl_c().await {
             Ok(()) => {
-                info!("[SHUTDOWN] Graceful shutdown initiated");
+                // Log BOT_SHUTDOWN event (Story 5.3)
+                let shutdown_event = TradingEvent::bot_shutdown();
+                log_event(&shutdown_event);
+                
                 match shutdown_signal.send(()) {
                     Ok(n) => {
-                        info!("[SHUTDOWN] Shutdown signal broadcast to {} receiver(s)", n);
+                        info!(event_type = "BOT_SHUTDOWN", receivers = n, "Shutdown signal broadcast");
                     }
                     Err(_) => {
-                        error!("[SHUTDOWN] CRITICAL: Failed to broadcast shutdown - no receivers!");
+                        error!(event_type = "BOT_SHUTDOWN", "CRITICAL: Failed to broadcast shutdown - no receivers!");
                         std::process::exit(1);
                     }
                 }
             }
             Err(err) => {
-                error!("[SHUTDOWN] CRITICAL: Failed to register Ctrl+C handler: {}. Bot cannot be stopped gracefully!", err);
+                error!(event_type = "BOT_SHUTDOWN", error = %err, "CRITICAL: Failed to register Ctrl+C handler");
                 std::process::exit(1);
             }
         }
@@ -223,19 +245,19 @@ async fn main() -> anyhow::Result<()> {
     // Wait for shutdown signal
     tokio::select! {
         _ = shutdown_rx.recv() => {
-            info!("[SHUTDOWN] Shutdown signal received in main task");
+            info!(event_type = "BOT_SHUTDOWN", "Shutdown signal received in main task");
         }
     }
 
     // Graceful shutdown - disconnect from exchanges
-    info!("[SHUTDOWN] Disconnecting from exchanges...");
+    info!(event_type = "BOT_SHUTDOWN", "Disconnecting from exchanges");
     vest_adapter.disconnect().await
-        .unwrap_or_else(|e| error!("[SHUTDOWN] Failed to disconnect from Vest: {}", e));
+        .unwrap_or_else(|e| warn!(event_type = "BOT_SHUTDOWN", error = %e, "Failed to disconnect from Vest"));
     paradex_adapter.disconnect().await
-        .unwrap_or_else(|e| error!("[SHUTDOWN] Failed to disconnect from Paradex: {}", e));
-    info!("[SHUTDOWN] Disconnected from exchanges");
+        .unwrap_or_else(|e| warn!(event_type = "BOT_SHUTDOWN", error = %e, "Failed to disconnect from Paradex"));
+    info!(event_type = "BOT_SHUTDOWN", "Disconnected from exchanges");
 
-    info!("[SHUTDOWN] Clean exit");
+    info!(event_type = "BOT_SHUTDOWN", "Clean exit");
 
     Ok(())
 }

@@ -249,13 +249,14 @@ pub(crate) struct VestSubscriptionResponse {
 pub(crate) enum VestWsMessage {
     /// Depth update message with channel field
     Depth(VestDepthMessage),
+    /// PONG response - must be before Subscription to match first
+    /// Format: {"data": "PONG"}
+    Pong {
+        #[serde(rename = "data")]
+        _data: String,
+    },
     /// Subscription/unsubscription confirmation
     Subscription(VestSubscriptionResponse),
-    /// PONG response
-    Pong {
-        #[allow(dead_code)]
-        data: String,
-    },
 }
 
 #[cfg(test)]
@@ -308,5 +309,19 @@ mod tests {
         assert_eq!(orderbook.asks.len(), 2);
         assert_eq!(orderbook.bids[0].price, 50000.0);
         assert_eq!(orderbook.asks[0].price, 50001.0);
+    }
+
+    #[test]
+    fn test_vest_pong_parsing() {
+        let pong_json = r#"{"data": "PONG"}"#;
+        let result: Result<VestWsMessage, _> = serde_json::from_str(pong_json);
+        
+        match result {
+            Ok(VestWsMessage::Pong { .. }) => {
+                // Success - PONG was parsed correctly
+            }
+            Ok(other) => panic!("Expected Pong variant, got: {:?}", other),
+            Err(e) => panic!("Failed to parse PONG message: {}", e),
+        }
     }
 }
