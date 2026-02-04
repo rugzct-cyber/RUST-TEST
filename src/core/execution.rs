@@ -132,6 +132,66 @@ fn log_successful_trade(
 }
 
 // =============================================================================
+// Position Verification (Task 1-3: Red Team V1 hardened)
+// =============================================================================
+
+/// Position verification data for entry confirmation
+/// 
+/// Created via `from_positions()` which extracts prices from
+/// already-fetched position results (no lock acquisition).
+/// 
+/// Note: Intentionally private to this module - fields accessed only
+/// within module scope (including tests).
+struct PositionVerification {
+    vest_price: f64,
+    paradex_price: f64,
+    captured_spread: f64,
+}
+
+impl PositionVerification {
+    /// Create from already-fetched position results
+    /// 
+    /// # Red Team V1 Fix
+    /// This method is pure and takes results that were already fetched.
+    /// It does NOT acquire any locks, preventing deadlock risk.
+    fn from_positions(
+        vest_pos: &ExchangeResult<Option<crate::adapters::types::PositionInfo>>,
+        paradex_pos: &ExchangeResult<Option<crate::adapters::types::PositionInfo>>,
+        direction: Option<SpreadDirection>,
+    ) -> Self {
+        let vest_price = vest_pos.as_ref().ok()
+            .and_then(|p| p.as_ref())
+            .map(|p| p.entry_price)
+            .unwrap_or(0.0);
+        
+        let paradex_price = paradex_pos.as_ref().ok()
+            .and_then(|p| p.as_ref())
+            .map(|p| p.entry_price)
+            .unwrap_or(0.0);
+        
+        let captured_spread = direction
+            .map(|dir| dir.calculate_captured_spread(vest_price, paradex_price))
+            .unwrap_or(0.0);
+        
+        Self { vest_price, paradex_price, captured_spread }
+    }
+    
+    /// Log structured entry verification summary
+    fn log_summary(&self, entry_spread: f64, exit_target: f64, direction: Option<SpreadDirection>) {
+        info!(
+            event_type = "POSITION_VERIFIED",
+            vest_price = %fmt_price(self.vest_price),
+            paradex_price = %fmt_price(self.paradex_price),
+            direction = ?direction.unwrap_or(SpreadDirection::AOverB),
+            detected_spread = %format_pct(entry_spread),
+            captured_spread = %format_pct(self.captured_spread),
+            exit_target = %format_pct(exit_target),
+            "Entry positions verified"
+        );
+    }
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -283,12 +343,7 @@ where
         let mut timings = TradeTimings::new();
 
         // Determine which exchange gets long vs short based on direction
-        // - AOverB: spread = (bid_B - ask_A)/ask_A → BUY on A, SELL on B
-        // - BOverA: spread = (bid_A - ask_B)/ask_B → BUY on B, SELL on A
-        let (long_exchange, short_exchange) = match opportunity.direction {
-            SpreadDirection::AOverB => ("vest", "paradex"),
-            SpreadDirection::BOverA => ("paradex", "vest"),
-        };
+        let (long_exchange, short_exchange) = opportunity.direction.to_exchanges();
 
         // Create unique client order IDs
         let timestamp = std::time::SystemTime::now()
@@ -369,11 +424,7 @@ where
         
         if success {
             // Store the entry direction for exit spread calculation
-            let dir_value = match opportunity.direction {
-                SpreadDirection::AOverB => 1u8,  // Long Vest, Short Paradex
-                SpreadDirection::BOverA => 2u8,  // Long Paradex, Short Vest
-            };
-            self.entry_direction.store(dir_value, Ordering::SeqCst);
+            self.entry_direction.store(opportunity.direction.to_u8(), Ordering::SeqCst);
             
             // Delegate logging to helper function (Task 3)
             log_successful_trade(&opportunity, &partial_result, &timings);
@@ -404,47 +455,16 @@ where
             paradex.get_position(&self.paradex_symbol)
         );
         
-        let vest_price = match &vest_pos {
-            Ok(Some(pos)) => pos.entry_price,
-            _ => 0.0,
-        };
-        
-        let paradex_price = match &paradex_pos {
-            Ok(Some(pos)) => pos.entry_price,
-            _ => 0.0,
-        };
-        
-        // Calculate actual captured spread based on entry direction
+        // Use PositionVerification struct for extraction and logging (Task 4)
         let entry_direction = self.get_entry_direction();
-        let captured_spread = match entry_direction {
-            Some(SpreadDirection::AOverB) => {
-                // Long Vest (bought at ask), Short Paradex (sold at bid)
-                if vest_price > 0.0 {
-                    ((paradex_price - vest_price) / vest_price) * 100.0
-                } else { 0.0 }
-            }
-            Some(SpreadDirection::BOverA) => {
-                // Long Paradex (bought at ask), Short Vest (sold at bid)
-                if paradex_price > 0.0 {
-                    ((vest_price - paradex_price) / paradex_price) * 100.0
-                } else { 0.0 }
-            }
-            None => 0.0,
-        };
-        
-        // Structured entry verification log (Story 5.3)
-        info!(
-            event_type = "POSITION_VERIFIED",
-            vest_price = %fmt_price(vest_price),
-            paradex_price = %fmt_price(paradex_price),
-            direction = ?entry_direction.unwrap_or(SpreadDirection::AOverB),
-            detected_spread = %format_pct(entry_spread),
-            captured_spread = %format_pct(captured_spread),
-            exit_target = %format_pct(exit_spread_target),
-            "Entry positions verified"
+        let verification = PositionVerification::from_positions(
+            &vest_pos,
+            &paradex_pos,
+            entry_direction,
         );
+        verification.log_summary(entry_spread, exit_spread_target, entry_direction);
         
-        // Log individual positions for detail
+        // Individual position logging stays inline (different event_type)
         match vest_pos {
             Ok(Some(pos)) => info!(
                 event_type = "POSITION_DETAIL",
@@ -474,11 +494,7 @@ where
     
     /// Get the entry direction (0=none, 1=AOverB, 2=BOverA)
     pub fn get_entry_direction(&self) -> Option<SpreadDirection> {
-        match self.entry_direction.load(Ordering::SeqCst) {
-            1 => Some(SpreadDirection::AOverB),
-            2 => Some(SpreadDirection::BOverA),
-            _ => None,
-        }
+        SpreadDirection::from_u8(self.entry_direction.load(Ordering::SeqCst))
     }
     
     /// Close the current position by executing inverse trades
@@ -497,12 +513,7 @@ where
         };
         
         // Determine close direction (inverse of entry)
-        // Entry AOverB = Long Vest, Short Paradex
-        // Close AOverB = Sell Vest (reduce_only), Buy Paradex (reduce_only)
-        let (vest_side, paradex_side) = match entry_dir {
-            SpreadDirection::AOverB => (OrderSide::Sell, OrderSide::Buy),
-            SpreadDirection::BOverA => (OrderSide::Buy, OrderSide::Sell),
-        };
+        let (vest_side, paradex_side) = entry_dir.to_close_sides();
         
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -559,10 +570,12 @@ where
             );
         }
         
-        // Determine which leg was long/short based on entry direction  
-        let (long_status, short_status, long_exchange, short_exchange) = match entry_dir {
-            SpreadDirection::AOverB => (vest_status, paradex_status, "vest", "paradex"),
-            SpreadDirection::BOverA => (paradex_status.clone(), vest_status.clone(), "paradex", "vest"),
+        // Determine which leg was long/short based on entry direction
+        let (long_exchange, short_exchange) = entry_dir.to_exchanges();
+        let (long_status, short_status) = if matches!(entry_dir, SpreadDirection::AOverB) {
+            (vest_status, paradex_status)
+        } else {
+            (paradex_status.clone(), vest_status.clone())
         };
         
         Ok(DeltaNeutralResult {
@@ -1008,5 +1021,112 @@ mod tests {
         assert!(!result.success);
         assert!(!result.long_order.is_success());
         assert!(!result.short_order.is_success());
+    }
+    
+    // =========================================================================
+    // PositionVerification Tests (Task 5-6)
+    // =========================================================================
+    
+    #[test]
+    fn test_position_verification_calculates_spread_correctly() {
+        // Tech-spec: tech-spec-code-quality-phase-1.md Task 5
+        use crate::adapters::{ExchangeResult, types::PositionInfo};
+        use crate::core::spread::SpreadDirection;
+        
+        // Mock position results
+        let vest_pos: ExchangeResult<Option<PositionInfo>> = Ok(Some(PositionInfo {
+            symbol: "BTC-PERP".to_string(),
+            quantity: 0.01,
+            side: "long".to_string(),
+            entry_price: 42000.0,
+            unrealized_pnl: 0.0,
+        }));
+        
+        let paradex_pos: ExchangeResult<Option<PositionInfo>> = Ok(Some(PositionInfo {
+            symbol: "BTC-USD-PERP".to_string(),
+            quantity: 0.01,
+            side: "short".to_string(),
+            entry_price: 42100.0,
+            unrealized_pnl: 0.0,
+        }));
+        
+        let verification = PositionVerification::from_positions(
+            &vest_pos,
+            &paradex_pos,
+            Some(SpreadDirection::AOverB),
+        );
+        
+        assert_eq!(verification.vest_price, 42000.0);
+        assert_eq!(verification.paradex_price, 42100.0);
+        // AOverB: (paradex - vest) / vest * 100 = (42100 - 42000) / 42000 * 100
+        // Exact: 100.0 / 42000.0 = 0.00238095... (as percentage)
+        let expected = (100.0 / 42000.0) * 100.0;
+        assert!((verification.captured_spread - expected).abs() < 0.0001);
+    }
+    
+    #[test]
+    fn test_position_verification_handles_missing_positions() {
+        // Tech-spec: tech-spec-code-quality-phase-1.md Task 6
+        use crate::adapters::{ExchangeResult, types::PositionInfo};
+        use crate::core::spread::SpreadDirection;
+        
+        // Division by zero handled in calculate_captured_spread()
+        // See spread.rs: `if vest_price > 0.0 { ... } else { 0.0 }`
+        
+        // Missing vest position
+        let vest_pos: ExchangeResult<Option<PositionInfo>> = Ok(None);
+        let paradex_pos: ExchangeResult<Option<PositionInfo>> = Ok(Some(PositionInfo {
+            symbol: "BTC-USD-PERP".to_string(),
+            quantity: 0.01,
+            side: "short".to_string(),
+            entry_price: 42100.0,
+            unrealized_pnl: 0.0,
+        }));
+        
+        let verification = PositionVerification::from_positions(
+            &vest_pos,
+            &paradex_pos,
+            Some(SpreadDirection::AOverB),
+        );
+        
+        // Missing position defaults to 0.0
+        assert_eq!(verification.vest_price, 0.0);
+        assert_eq!(verification.paradex_price, 42100.0);
+        // Spread calculation handles gracefully (no panic)
+        assert!(verification.captured_spread.is_finite());
+    }
+    
+    #[test]
+    fn test_position_verification_b_over_a_direction() {
+        // F7 Fix: Symmetry test for BOverA direction
+        use crate::adapters::{ExchangeResult, types::PositionInfo};
+        use crate::core::spread::SpreadDirection;
+        
+        // BOverA: Long Paradex, Short Vest
+        let vest_pos: ExchangeResult<Option<PositionInfo>> = Ok(Some(PositionInfo {
+            symbol: "BTC-PERP".to_string(),
+            quantity: 0.01,
+            side: "short".to_string(),
+            entry_price: 42100.0,
+            unrealized_pnl: 0.0,
+        }));
+        
+        let paradex_pos: ExchangeResult<Option<PositionInfo>> = Ok(Some(PositionInfo {
+            symbol: "BTC-USD-PERP".to_string(),
+            quantity: 0.01,
+            side: "long".to_string(),
+            entry_price: 42000.0,
+            unrealized_pnl: 0.0,
+        }));
+        
+        let verification = PositionVerification::from_positions(
+            &vest_pos,
+            &paradex_pos,
+            Some(SpreadDirection::BOverA),
+        );
+        
+        // BOverA: (vest - paradex) / paradex * 100
+        let expected = (100.0 / 42000.0) * 100.0;
+        assert!((verification.captured_spread - expected).abs() < 0.0001);
     }
 }
