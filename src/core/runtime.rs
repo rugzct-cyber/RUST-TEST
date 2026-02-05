@@ -50,6 +50,130 @@ fn drain_channel<T>(rx: &mut mpsc::Receiver<T>, context: &str) {
     }
 }
 
+/// Exit monitoring loop - polls orderbooks until exit condition or shutdown
+/// 
+/// Returns: poll_count for final logging
+#[allow(clippy::too_many_arguments)]
+async fn exit_monitoring_loop<V, P>(
+    executor: &DeltaNeutralExecutor<V, P>,
+    vest_orderbooks: SharedOrderbooks,
+    paradex_orderbooks: SharedOrderbooks,
+    vest_symbol: &str,
+    paradex_symbol: &str,
+    pair: &str,
+    entry_spread: f64,
+    exit_spread_target: f64,
+    direction: SpreadDirection,
+    shutdown_rx: &mut broadcast::Receiver<()>,
+) -> u64
+where
+    V: ExchangeAdapter + Send + Sync,
+    P: ExchangeAdapter + Send + Sync,
+{
+    let mut exit_interval = interval(Duration::from_millis(EXIT_POLL_INTERVAL_MS));
+    let mut poll_count: u64 = 0;
+    
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                info!(
+                    event_type = "BOT_SHUTDOWN",
+                    "Exit monitoring interrupted by shutdown"
+                );
+                break;
+            }
+            _ = exit_interval.tick() => {
+                poll_count += 1;
+                
+                // Read orderbooks
+                let vest_ob = vest_orderbooks.read().await.get(vest_symbol).cloned();
+                let paradex_ob = paradex_orderbooks.read().await.get(paradex_symbol).cloned();
+                
+                if let (Some(v_ob), Some(p_ob)) = (vest_ob, paradex_ob) {
+                    // Get best prices
+                    let vest_bid = v_ob.best_bid().unwrap_or(0.0);
+                    let vest_ask = v_ob.best_ask().unwrap_or(0.0);
+                    let paradex_bid = p_ob.best_bid().unwrap_or(0.0);
+                    let paradex_ask = p_ob.best_ask().unwrap_or(0.0);
+                    
+                    // Calculate exit spread based on entry direction
+                    let exit_spread = match direction {
+                        SpreadDirection::AOverB => {
+                            // Entry: Long Vest, Short Paradex
+                            // Exit: Sell Vest (bid), Buy Paradex (ask)
+                            SpreadCalculator::calculate_exit_spread(vest_bid, paradex_ask)
+                        }
+                        SpreadDirection::BOverA => {
+                            // Entry: Long Paradex, Short Vest
+                            // Exit: Sell Paradex (bid), Buy Vest (ask)
+                            SpreadCalculator::calculate_exit_spread(paradex_bid, vest_ask)
+                        }
+                    };
+                    
+                    // Log POSITION_MONITORING event (throttled - every ~1 second)
+                    if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                        let event = TradingEvent::position_monitoring(
+                            pair,
+                            entry_spread,    // entry_spread (original)
+                            exit_spread,     // exit_spread (current)
+                            exit_spread_target,
+                            poll_count,
+                        );
+                        log_event(&event);
+                    }
+                    
+                    if exit_spread >= exit_spread_target {
+                        // Calculate profit
+                        let profit = entry_spread + exit_spread;
+                        
+                        // Log TRADE_EXIT event (Story 5.3)
+                        let event = TradingEvent::trade_exit(
+                            pair,
+                            entry_spread,    // entry_spread
+                            exit_spread,     // exit_spread
+                            exit_spread_target,
+                            profit,
+                            poll_count,
+                        );
+                        log_event(&event);
+                        
+                        // Close the position
+                        match executor.close_position(exit_spread).await {
+                            Ok(_) => {
+                                // Log POSITION_CLOSED event
+                                let closed_event = TradingEvent::position_closed(
+                                    pair,
+                                    entry_spread,
+                                    exit_spread,
+                                    profit,
+                                );
+                                log_event(&closed_event);
+                            }
+                            Err(e) => {
+                                error!(
+                                    event_type = "ORDER_FAILED",
+                                    error = ?e,
+                                    "Failed to close position"
+                                );
+                            }
+                        }
+                        
+                        break;
+                    }
+                } else {
+                    debug!(
+                        event_type = "POSITION_MONITORING",
+                        poll = poll_count,
+                        "Missing orderbook data"
+                    );
+                }
+            }
+        }
+    }
+    
+    poll_count
+}
+
 // =============================================================================
 // Functions
 // =============================================================================
@@ -137,9 +261,7 @@ pub async fn execution_task<V, P>(
                             // Verify positions on both exchanges
                             executor.verify_positions(spread_pct, exit_spread_target).await;
                             
-                            // ============================================================
-                            // EXIT MONITORING LOOP (Option A: polling in execution_task)
-                            // ============================================================
+                            // Start exit monitoring via extracted function
                             let entry_direction = executor.get_entry_direction();
                             
                             if let Some(direction) = entry_direction {
@@ -150,106 +272,18 @@ pub async fn execution_task<V, P>(
                                     "Starting exit monitoring"
                                 );
                                 
-                                let mut exit_interval = interval(Duration::from_millis(EXIT_POLL_INTERVAL_MS));
-                                let mut poll_count: u64 = 0;
-                                
-                                'exit_loop: loop {
-                                    tokio::select! {
-                                        _ = shutdown_rx.recv() => {
-                                            info!(
-                                                event_type = "BOT_SHUTDOWN",
-                                                "Exit monitoring interrupted by shutdown"
-                                            );
-                                            break 'exit_loop;
-                                        }
-                                        _ = exit_interval.tick() => {
-                                            poll_count += 1;
-                                            
-                                            // Read orderbooks
-                                            let vest_ob = vest_orderbooks.read().await.get(&vest_symbol).cloned();
-                                            let paradex_ob = paradex_orderbooks.read().await.get(&paradex_symbol).cloned();
-                                            
-                                            if let (Some(v_ob), Some(p_ob)) = (vest_ob, paradex_ob) {
-                                                // Get best prices
-                                                let vest_bid = v_ob.best_bid().unwrap_or(0.0);
-                                                let vest_ask = v_ob.best_ask().unwrap_or(0.0);
-                                                let paradex_bid = p_ob.best_bid().unwrap_or(0.0);
-                                                let paradex_ask = p_ob.best_ask().unwrap_or(0.0);
-                                                
-                                                // Calculate exit spread based on entry direction
-                                                let exit_spread = match direction {
-                                                    SpreadDirection::AOverB => {
-                                                        // Entry: Long Vest, Short Paradex
-                                                        // Exit: Sell Vest (bid), Buy Paradex (ask)
-                                                        SpreadCalculator::calculate_exit_spread(vest_bid, paradex_ask)
-                                                    }
-                                                    SpreadDirection::BOverA => {
-                                                        // Entry: Long Paradex, Short Vest
-                                                        // Exit: Sell Paradex (bid), Buy Vest (ask)
-                                                        SpreadCalculator::calculate_exit_spread(paradex_bid, vest_ask)
-                                                    }
-                                                };
-                                                
-                                                // Log POSITION_MONITORING event (throttled - every ~1 second)
-                                                if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
-                                                    let event = TradingEvent::position_monitoring(
-                                                        &pair,
-                                                        spread_pct,      // entry_spread (original)
-                                                        exit_spread,     // exit_spread (current)
-                                                        exit_spread_target,
-                                                        poll_count,
-                                                    );
-                                                    log_event(&event);
-                                                }
-                                                
-                                                if exit_spread >= exit_spread_target {
-                                                    // Calculate profit
-                                                    let profit = spread_pct + exit_spread;
-                                                    
-                                                    // Log TRADE_EXIT event (Story 5.3)
-                                                    let event = TradingEvent::trade_exit(
-                                                        &pair,
-                                                        spread_pct,      // entry_spread
-                                                        exit_spread,     // exit_spread
-                                                        exit_spread_target,
-                                                        profit,
-                                                        poll_count,
-                                                    );
-                                                    log_event(&event);
-                                                    
-                                                    // Close the position
-                                                    match executor.close_position(exit_spread).await {
-                                                        Ok(_) => {
-                                                            // Log POSITION_CLOSED event
-                                                            let closed_event = TradingEvent::position_closed(
-                                                                &pair,
-                                                                spread_pct,
-                                                                exit_spread,
-                                                                profit,
-                                                            );
-                                                            log_event(&closed_event);
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                event_type = "ORDER_FAILED",
-                                                                error = ?e,
-                                                                "Failed to close position"
-                                                            );
-                                                        }
-                                                    }
-                                                    
-                                                    break 'exit_loop;
-                                                }
-                                            } else {
-                                                debug!(
-                                                    event_type = "POSITION_MONITORING",
-                                                    poll = poll_count,
-                                                    "Missing orderbook data"
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
+                                let poll_count = exit_monitoring_loop(
+                                    &executor,
+                                    vest_orderbooks.clone(),
+                                    paradex_orderbooks.clone(),
+                                    &vest_symbol,
+                                    &paradex_symbol,
+                                    &pair,
+                                    spread_pct,
+                                    exit_spread_target,
+                                    direction,
+                                    &mut shutdown_rx,
+                                ).await;
                                 
                                 info!(event_type = "POSITION_MONITORING", total_polls = poll_count, "Exit monitoring stopped");
                             } else {
@@ -443,5 +477,168 @@ mod tests {
         // Task should terminate quickly
         let result = timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "Task should shutdown gracefully");
+    }
+
+    #[tokio::test]
+    async fn test_exit_monitoring_loop_exits_on_spread_condition() {
+        // Create mock executor
+        let vest = RuntimeMockAdapter::new("vest");
+        let paradex = RuntimeMockAdapter::new("paradex");
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+        
+        // Create SharedOrderbooks with prices that produce exit_spread >= target
+        // For AOverB: exit_spread = (vest_bid - paradex_ask) / paradex_ask * 100
+        // vest_bid = 42000, paradex_ask = 42000 => spread = 0%
+        // Target = -0.05%, so 0% >= -0.05% triggers exit
+        let mut vest_books = HashMap::new();
+        vest_books.insert("BTC-PERP".to_string(), Orderbook {
+            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
+            timestamp: 1706000000000,
+        });
+        let mut paradex_books = HashMap::new();
+        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
+            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)], // Same as vest_bid
+            timestamp: 1706000000000,
+        });
+        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
+        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+        
+        // Call the extracted function directly
+        let poll_count = timeout(Duration::from_secs(2), exit_monitoring_loop(
+            &executor,
+            vest_orderbooks,
+            paradex_orderbooks,
+            "BTC-PERP",
+            "BTC-USD-PERP",
+            "BTC-PERP",
+            0.35,       // entry_spread
+            -0.05,      // exit_spread_target
+            SpreadDirection::AOverB,
+            &mut shutdown_rx,
+        )).await;
+        
+        // Should complete (not timeout) and return poll_count >= 1
+        assert!(poll_count.is_ok(), "Exit monitoring should complete on exit condition");
+        assert!(poll_count.unwrap() >= 1, "Should have polled at least once");
+    }
+
+    #[tokio::test]
+    async fn test_exit_monitoring_loop_responds_to_shutdown() {
+        // Create mock executor
+        let vest = RuntimeMockAdapter::new("vest");
+        let paradex = RuntimeMockAdapter::new("paradex");
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+        
+        // Create orderbooks with prices that will NEVER trigger exit
+        // vest_bid = 40000, paradex_ask = 42000 => spread = -4.76% (never >= -0.05%)
+        let mut vest_books = HashMap::new();
+        vest_books.insert("BTC-PERP".to_string(), Orderbook {
+            bids: vec![crate::adapters::types::OrderbookLevel::new(40000.0, 1.0)],
+            asks: vec![crate::adapters::types::OrderbookLevel::new(40001.0, 1.0)],
+            timestamp: 1706000000000,
+        });
+        let mut paradex_books = HashMap::new();
+        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
+            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            timestamp: 1706000000000,
+        });
+        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
+        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+        
+        // Spawn the monitoring loop in background
+        let handle = tokio::spawn(async move {
+            exit_monitoring_loop(
+                &executor,
+                vest_orderbooks,
+                paradex_orderbooks,
+                "BTC-PERP",
+                "BTC-USD-PERP",
+                "BTC-PERP",
+                0.35,
+                -0.05,
+                SpreadDirection::AOverB,
+                &mut shutdown_rx,
+            ).await
+        });
+        
+        // Give it a moment to start polling
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        
+        // Send shutdown
+        let _ = shutdown_tx.send(());
+        
+        // Should complete quickly
+        let result = timeout(Duration::from_secs(1), handle).await;
+        assert!(result.is_ok(), "Exit monitoring should respond to shutdown");
+    }
+
+    #[tokio::test]
+    async fn test_exit_monitoring_loop_b_over_a_direction() {
+        // Create mock executor
+        let vest = RuntimeMockAdapter::new("vest");
+        let paradex = RuntimeMockAdapter::new("paradex");
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+        
+        // For BOverA: exit_spread = (paradex_bid - vest_ask) / vest_ask * 100
+        // paradex_bid = 42000, vest_ask = 42000 => spread = 0%
+        // Target = -0.05%, so 0% >= -0.05% triggers exit
+        let mut vest_books = HashMap::new();
+        vest_books.insert("BTC-PERP".to_string(), Orderbook {
+            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            timestamp: 1706000000000,
+        });
+        let mut paradex_books = HashMap::new();
+        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
+            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+            asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
+            timestamp: 1706000000000,
+        });
+        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
+        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        
+        let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+        
+        // Call with BOverA direction
+        let poll_count = timeout(Duration::from_secs(2), exit_monitoring_loop(
+            &executor,
+            vest_orderbooks,
+            paradex_orderbooks,
+            "BTC-PERP",
+            "BTC-USD-PERP",
+            "BTC-PERP",
+            0.35,
+            -0.05,
+            SpreadDirection::BOverA,  // <-- Testing BOverA
+            &mut shutdown_rx,
+        )).await;
+        
+        assert!(poll_count.is_ok(), "Exit monitoring should complete on exit condition");
+        assert!(poll_count.unwrap() >= 1, "Should have polled at least once");
     }
 }
