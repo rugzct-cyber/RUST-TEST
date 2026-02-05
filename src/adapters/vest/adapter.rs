@@ -22,7 +22,7 @@ use tokio_tungstenite::{connect_async_tls_with_config, Connector};
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
 use crate::adapters::types::{
-    ConnectionState, Orderbook, OrderRequest, OrderResponse, OrderStatus,
+    ConnectionHealth, ConnectionState, create_http_client, next_subscription_id, Orderbook, OrderRequest, OrderResponse, OrderStatus,
     PositionInfo,
 };
 
@@ -60,39 +60,9 @@ pub(crate) type WsReader = SplitStream<WsStream>;
 /// Thread-safe shared orderbooks storage for lock-free monitoring (Story 7.3)
 pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 
-// =============================================================================
-// Subscription ID Generation
-// =============================================================================
+// next_subscription_id() imported from crate::adapters::types (shared counter)
 
-static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-pub(crate) fn next_subscription_id() -> u64 {
-    SUBSCRIPTION_COUNTER.fetch_add(1, Ordering::SeqCst)
-}
-
-// =============================================================================
-// Connection Health Tracking (Story 2.6)
-// =============================================================================
-
-/// Tracks connection health for detecting stale connections
-pub(crate) struct ConnectionHealth {
-    /// Last PONG received timestamp (Unix ms)
-    pub last_pong: Arc<AtomicU64>,
-    /// Last data message received timestamp (Unix ms)
-    pub last_data: Arc<AtomicU64>,
-    /// Connection state enum for FSM
-    pub state: Arc<RwLock<ConnectionState>>,
-}
-
-impl Default for ConnectionHealth {
-    fn default() -> Self {
-        Self {
-            last_pong: Arc::new(AtomicU64::new(0)),
-            last_data: Arc::new(AtomicU64::new(0)),
-            state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
-        }
-    }
-}
+// ConnectionHealth imported from crate::adapters::types (Story 2.6)
 
 // =============================================================================
 // VestAdapter Implementation
@@ -128,18 +98,7 @@ impl VestAdapter {
     pub fn new(config: VestConfig) -> Self {
         Self {
             config,
-            http_client: {
-                let client = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(10))
-                    .pool_max_idle_per_host(2)           // Keep 2 idle connections per host
-                    .pool_idle_timeout(Duration::from_secs(60))  // Keep connections for 60s
-                    .tcp_keepalive(Duration::from_secs(30))      // TCP keepalive every 30s
-                    .connect_timeout(Duration::from_secs(10))    // Connection timeout
-                    .build()
-                    .unwrap_or_else(|_| reqwest::Client::new());
-                tracing::info!("[INIT] Vest HTTP client configured: pool_max_idle=2, pool_idle_timeout=60s, tcp_keepalive=30s");
-                client
-            },
+            http_client: create_http_client("Vest"),
             ws_stream: None,
             ws_sender: None,
             reader_handle: None,

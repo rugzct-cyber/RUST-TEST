@@ -5,8 +5,50 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
+
+// =============================================================================
+// Shared Subscription ID Counter (Refactoring)
+// =============================================================================
+
+/// Global atomic counter for unique subscription IDs across all adapters
+static GLOBAL_SUBSCRIPTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Get next unique subscription ID (shared across all adapters)
+pub fn next_subscription_id() -> u64 {
+    GLOBAL_SUBSCRIPTION_ID.fetch_add(1, Ordering::SeqCst)
+}
+
+// =============================================================================
+// Shared HTTP Client Builder (Refactoring)
+// =============================================================================
+
+use std::time::Duration;
+
+/// Create an optimized HTTP client for HFT operations
+/// 
+/// Connection pooling configured for latency optimization (Story 7.2):
+/// - `pool_max_idle_per_host(2)`: Keep 2 idle connections per host
+/// - `pool_idle_timeout(60s)`: Keep connections warm for 60 seconds
+/// - `tcp_keepalive(30s)`: TCP keepalive every 30 seconds
+/// - `connect_timeout(10s)`: Connection timeout
+/// - `timeout(10s)`: Request timeout
+pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .pool_max_idle_per_host(2)
+        .pool_idle_timeout(Duration::from_secs(60))
+        .tcp_keepalive(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    tracing::info!(
+        "[INIT] {} HTTP client configured: pool_max_idle=2, pool_idle_timeout=60s, tcp_keepalive=30s",
+        exchange_name
+    );
+    client
+}
 
 // =============================================================================
 // Connection Health Types (Story 2.6)

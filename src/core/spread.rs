@@ -8,7 +8,7 @@
 //! - `SpreadResult`: Result of spread calculation with direction and prices
 //! - `SpreadDirection`: Direction of the arbitrage opportunity
 
-use crate::adapters::types::Orderbook;
+use crate::adapters::types::{Orderbook, OrderSide};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -22,6 +22,62 @@ pub enum SpreadDirection {
     AOverB,
     /// ASK on DEX B > BID on DEX A (buy on B, sell on A)
     BOverA,
+}
+
+impl SpreadDirection {
+    /// Returns (long_exchange, short_exchange) for Vest/Paradex setup
+    #[inline]
+    pub fn to_exchanges(&self) -> (&'static str, &'static str) {
+        match self {
+            SpreadDirection::AOverB => ("vest", "paradex"),
+            SpreadDirection::BOverA => ("paradex", "vest"),
+        }
+    }
+    
+    /// Convert to atomic storage value (1=AOverB, 2=BOverA)
+    #[inline]
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            SpreadDirection::AOverB => 1,
+            SpreadDirection::BOverA => 2,
+        }
+    }
+    
+    /// Create from atomic storage value
+    #[inline]
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(SpreadDirection::AOverB),
+            2 => Some(SpreadDirection::BOverA),
+            _ => None,
+        }
+    }
+    
+    /// Get close order sides (to reverse the position)
+    #[inline]
+    pub fn to_close_sides(&self) -> (OrderSide, OrderSide) {
+        match self {
+            SpreadDirection::AOverB => (OrderSide::Sell, OrderSide::Buy),
+            SpreadDirection::BOverA => (OrderSide::Buy, OrderSide::Sell),
+        }
+    }
+    
+    /// Calculate captured spread from entry prices
+    #[inline]
+    pub fn calculate_captured_spread(&self, vest_price: f64, paradex_price: f64) -> f64 {
+        match self {
+            SpreadDirection::AOverB => {
+                if vest_price > 0.0 {
+                    ((paradex_price - vest_price) / vest_price) * 100.0
+                } else { 0.0 }
+            }
+            SpreadDirection::BOverA => {
+                if paradex_price > 0.0 {
+                    ((vest_price - paradex_price) / paradex_price) * 100.0
+                } else { 0.0 }
+            }
+        }
+    }
 }
 
 /// Result of spread calculation between two orderbooks
@@ -587,6 +643,66 @@ mod tests {
         assert!(entry > 0.0, "Entry should be positive (arb opportunity): {}", entry);
         assert!(exit < 0.0, "Exit should be negative (cost to close): {}", exit);
         assert!((entry - exit).abs() > 0.01, "Entry/Exit must differ: {} vs {}", entry, exit);
+    }
+
+    // =========================================================================
+    // SpreadDirection Helper Tests
+    // =========================================================================
+
+    #[test]
+    fn test_spread_direction_to_exchanges() {
+        assert_eq!(SpreadDirection::AOverB.to_exchanges(), ("vest", "paradex"));
+        assert_eq!(SpreadDirection::BOverA.to_exchanges(), ("paradex", "vest"));
+    }
+
+    #[test]
+    fn test_spread_direction_to_u8() {
+        assert_eq!(SpreadDirection::AOverB.to_u8(), 1);
+        assert_eq!(SpreadDirection::BOverA.to_u8(), 2);
+    }
+
+    #[test]
+    fn test_spread_direction_from_u8() {
+        assert_eq!(SpreadDirection::from_u8(1), Some(SpreadDirection::AOverB));
+        assert_eq!(SpreadDirection::from_u8(2), Some(SpreadDirection::BOverA));
+        assert_eq!(SpreadDirection::from_u8(0), None);
+        assert_eq!(SpreadDirection::from_u8(3), None);
+    }
+
+    #[test]
+    fn test_spread_direction_to_close_sides() {
+        assert_eq!(SpreadDirection::AOverB.to_close_sides(), (OrderSide::Sell, OrderSide::Buy));
+        assert_eq!(SpreadDirection::BOverA.to_close_sides(), (OrderSide::Buy, OrderSide::Sell));
+    }
+
+    #[test]
+    fn test_spread_direction_calculate_captured_spread_a_over_b() {
+        // Long Vest at 42000, Short Paradex at 42100
+        // Spread = (42100 - 42000) / 42000 * 100 = 0.238%
+        let spread = SpreadDirection::AOverB.calculate_captured_spread(42000.0, 42100.0);
+        assert!((spread - 0.238).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_spread_direction_calculate_captured_spread_b_over_a() {
+        // Long Paradex at 42000, Short Vest at 42100
+        // Spread = (42100 - 42000) / 42000 * 100 = 0.238%
+        let spread = SpreadDirection::BOverA.calculate_captured_spread(42100.0, 42000.0);
+        assert!((spread - 0.238).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_spread_direction_calculate_captured_spread_zero_price() {
+        assert_eq!(SpreadDirection::AOverB.calculate_captured_spread(0.0, 42100.0), 0.0);
+        assert_eq!(SpreadDirection::BOverA.calculate_captured_spread(42100.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn test_spread_direction_roundtrip() {
+        // Verify to_u8 and from_u8 are inverses
+        for dir in [SpreadDirection::AOverB, SpreadDirection::BOverA] {
+            assert_eq!(SpreadDirection::from_u8(dir.to_u8()), Some(dir));
+        }
     }
 
 }

@@ -24,7 +24,7 @@ use tokio_tungstenite::{
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
 use crate::adapters::types::{
-    Orderbook, OrderRequest, OrderResponse, OrderType, OrderSide, OrderStatus, PositionInfo,
+    create_http_client, next_subscription_id, Orderbook, OrderRequest, OrderResponse, OrderType, OrderSide, OrderStatus, PositionInfo,
     TimeInForce,
 };
 
@@ -46,26 +46,13 @@ type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 /// Timeout for WebSocket authentication (5 seconds)
 const AUTH_TIMEOUT_SECS: u64 = 5;
 
-/// Timeout for REST API calls (10 seconds)
-const REST_TIMEOUT_SECS: u64 = 10;
-
 /// JWT token lifetime in milliseconds (5 minutes = 300,000 ms)
 const JWT_LIFETIME_MS: u64 = 300_000;
 
 /// JWT refresh buffer in milliseconds (refresh 2 minutes before expiry)
 const JWT_REFRESH_BUFFER_MS: u64 = 120_000;
 
-// =============================================================================
-// Subscription ID Management
-// =============================================================================
-
-/// Global atomic counter for subscription IDs
-static PARADEX_SUBSCRIPTION_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Get next unique subscription ID
-fn next_subscription_id() -> u64 {
-    PARADEX_SUBSCRIPTION_ID.fetch_add(1, Ordering::Relaxed)
-}
+// next_subscription_id() imported from crate::adapters::types (shared counter)
 
 // =============================================================================
 // WebSocket Stream Types
@@ -126,18 +113,7 @@ impl ParadexAdapter {
     pub fn new(config: ParadexConfig) -> Self {
         Self {
             config,
-            http_client: {
-                let client = reqwest::Client::builder()
-                    .timeout(Duration::from_secs(REST_TIMEOUT_SECS))
-                    .pool_max_idle_per_host(2)           // Keep 2 idle connections per host
-                    .pool_idle_timeout(Duration::from_secs(60))  // Keep connections for 60s
-                    .tcp_keepalive(Duration::from_secs(30))      // TCP keepalive every 30s
-                    .connect_timeout(Duration::from_secs(10))    // Connection timeout
-                    .build()
-                    .unwrap_or_else(|_| reqwest::Client::new());
-                tracing::info!("[INIT] Paradex HTTP client configured: pool_max_idle=2, pool_idle_timeout=60s, tcp_keepalive=30s");
-                client
-            },
+            http_client: create_http_client("Paradex"),
             jwt_token: None,
             jwt_expiry: None,
             ws_stream: None,
