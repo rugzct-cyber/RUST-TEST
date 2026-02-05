@@ -19,11 +19,11 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{interval, Duration};
-use tracing::{debug, info, warn, error};
+use tracing::{debug, warn, error};
 
 use crate::adapters::Orderbook;
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, log_event, current_timestamp_ms, format_pct};
+use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, current_timestamp_ms, format_pct};
 use crate::core::spread::SpreadCalculator;
 
 /// Type alias for shared orderbooks (same as adapters::SharedOrderbooks)
@@ -73,7 +73,7 @@ pub async fn monitoring_task(
     config: MonitoringConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
-    info!("Monitoring task started (V1 HFT: lock-free, {}ms polling)", POLL_INTERVAL_MS);
+    log_system_event(&SystemEvent::task_started("monitoring"));
     
     let calculator = SpreadCalculator::new("vest", "paradex");
     let mut poll_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
@@ -83,7 +83,7 @@ pub async fn monitoring_task(
         tokio::select! {
             // Shutdown takes priority
             _ = shutdown_rx.recv() => {
-                info!("Monitoring task shutting down");
+                log_system_event(&SystemEvent::task_shutdown("monitoring", "shutdown_signal"));
                 break;
             }
             // Poll orderbooks on interval
@@ -182,7 +182,7 @@ pub async fn monitoring_task(
         }
     }
     
-    info!("Monitoring task stopped");
+    log_system_event(&SystemEvent::task_stopped("monitoring"));
 }
 
 #[cfg(test)]

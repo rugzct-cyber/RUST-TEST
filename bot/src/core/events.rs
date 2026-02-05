@@ -155,6 +155,10 @@ pub struct TradingEvent {
     pub timing: Option<TimingBreakdown>, // Timing breakdown for latency analysis
     pub long_exchange: Option<String>,  // Exchange that received long order
     pub short_exchange: Option<String>, // Exchange that received short order
+    
+    // F1 Fix: Fill prices for compact [ENTRY] format
+    pub long_fill_price: Option<f64>,   // Fill price from long order
+    pub short_fill_price: Option<f64>,  // Fill price from short order
 }
 
 impl TradingEvent {
@@ -181,6 +185,8 @@ impl TradingEvent {
             timing: None,
             long_exchange: None,
             short_exchange: None,
+            long_fill_price: None,
+            short_fill_price: None,
         }
     }
     
@@ -215,6 +221,8 @@ impl TradingEvent {
         long_exchange: &str,
         short_exchange: &str,
         latency_ms: u64,
+        long_fill_price: f64,
+        short_fill_price: f64,
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::TradeEntry, pair);
         event.exchange = Some(format!("long:{},short:{}", long_exchange, short_exchange));
@@ -224,6 +232,8 @@ impl TradingEvent {
         event.direction = Some(direction.to_string());
         event.long_exchange = Some(long_exchange.to_string());
         event.short_exchange = Some(short_exchange.to_string());
+        event.long_fill_price = Some(long_fill_price);
+        event.short_fill_price = Some(short_fill_price);
         event
     }
     
@@ -372,6 +382,16 @@ pub fn format_pct(value: f64) -> String {
     format!("{:.4}%", value)
 }
 
+/// Format a percentage value with 2 decimal places (compact display)
+/// 
+/// # Examples
+/// - `0.35` → "0.35%"
+/// - `-0.08` → "-0.08%"
+#[inline]
+pub fn format_pct_compact(value: f64) -> String {
+    format!("{:.2}%", value)
+}
+
 /// Format price with 2 decimals and $ prefix
 /// 
 /// # Examples
@@ -383,31 +403,113 @@ pub fn fmt_price(value: f64) -> String {
     format!("${:.2}", value)
 }
 
+/// Format compact log message for terminal display (T2)
+/// 
+/// Produces a single-line format: `[TAG] key=value key=value`
+/// 
+/// # Examples
+/// - `log_compact("SCAN", &[("LES", "0.35%".to_string())])` → `[SCAN] LES=0.35%`
+#[inline]
+pub fn log_compact(tag: &str, fields: &[(&str, String)]) -> String {
+    let fields_str: String = fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("[{}] {}", tag, fields_str)
+}
+
 /// Log a trading event using structured tracing fields
 ///
-/// Events are logged at INFO level (trading events) or DEBUG level (monitoring ticks).
+/// Trading events use compact format: [TAG] key=value key=value
+/// - SCAN: Pre-entry monitoring (LES = Live Entry Spread)
+/// - ENTRY: Fill executed (ES = Entry Spread, PEL/PES = Prix Entrée Long/Short)
+/// - HOLD: Post-entry monitoring (LXS = Live Exit Spread)
+/// - EXIT: Position closed (XS = Exit Spread, CAP = Captured profit)
 pub fn log_event(event: &TradingEvent) {
     let event_type = event.event_type.to_string();
     let timestamp = event.timestamp_ms;
     
-    // Format spreads using helper
-    let entry_spread_str = event.entry_spread.map(format_pct);
-    let exit_spread_str = event.exit_spread.map(format_pct);
-    let threshold_str = event.spread_threshold.map(format_pct);
-    let profit_str = event.profit.map(format_pct);
-    
     match event.event_type {
-        // DEBUG level for high-frequency monitoring
+        // T3: [SCAN] LES=X% - Pre-entry spread detection
+        TradingEventType::SpreadDetected => {
+            let les = event.entry_spread.map(format_pct_compact).unwrap_or_default();
+            let msg = log_compact("SCAN", &[("LES", les)]);
+            info!(
+                event_type = %event_type,
+                timestamp = timestamp,
+                pair = ?event.pair,
+                direction = ?event.direction,
+                "{}", msg
+            );
+        }
+        // T4: [ENTRY] ES=X% PEL:P=Y PES:V=Z LAT=Nms
+        TradingEventType::TradeEntry => {
+            let es = event.entry_spread.map(format_pct_compact).unwrap_or_default();
+            let lat = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
+            
+            // Determine exchange mapping from long/short_exchange fields
+            let long_ex = event.long_exchange.as_deref().unwrap_or("?");
+            let short_ex = event.short_exchange.as_deref().unwrap_or("?");
+            
+            // Format: PEL:P=X means "Prix Entrée Long at Paradex=X"
+            // We use first letter of exchange: P=Paradex, V=Vest
+            let pel_ex = long_ex.chars().next().unwrap_or('?').to_ascii_uppercase();
+            let pes_ex = short_ex.chars().next().unwrap_or('?').to_ascii_uppercase();
+            
+            // F1 Fix: Use actual fill prices instead of placeholder
+            let pel_price = event.long_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
+            let pes_price = event.short_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
+            
+            let msg = log_compact("ENTRY", &[
+                ("ES", es),
+                (&format!("PEL:{}", pel_ex), pel_price),
+                (&format!("PES:{}", pes_ex), pes_price),
+                ("LAT", lat),
+            ]);
+            info!(
+                event_type = %event_type,
+                timestamp = timestamp,
+                pair = ?event.pair,
+                long_exchange = ?event.long_exchange,
+                short_exchange = ?event.short_exchange,
+                "{}", msg
+            );
+        }
+        // T5: [HOLD] LXS=X% - Position monitoring (DEBUG level, throttled)
         TradingEventType::PositionMonitoring => {
+            let lxs = event.exit_spread.map(format_pct_compact).unwrap_or_default();
+            let msg = log_compact("HOLD", &[("LXS", lxs)]);
             debug!(
                 event_type = %event_type,
                 timestamp = timestamp,
                 pair = ?event.pair,
-                entry_spread = ?entry_spread_str,
-                exit_spread = ?exit_spread_str,
-                spread_threshold = ?threshold_str,
                 polls = ?event.polls,
-                ""
+                "{}", msg
+            );
+        }
+        // T6: [EXIT] XS=X% CAP=Y% LAT=Nms
+        TradingEventType::TradeExit => {
+            let xs = event.exit_spread.map(format_pct_compact).unwrap_or_default();
+            // CAP = entry_spread + exit_spread (total captured profit)
+            // F2 Fix: Renamed shadowed variable from `xs` to `exit_spread_val`
+            let cap = match (event.entry_spread, event.exit_spread) {
+                (Some(es), Some(exit_spread_val)) => format_pct_compact(es + exit_spread_val),
+                _ => "?".to_string(),
+            };
+            let lat = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
+            let msg = log_compact("EXIT", &[
+                ("XS", xs),
+                ("CAP", cap),
+                ("LAT", lat),
+            ]);
+            info!(
+                event_type = %event_type,
+                timestamp = timestamp,
+                pair = ?event.pair,
+                polls = ?event.polls,
+                profit = ?event.profit.map(format_pct),
+                "{}", msg
             );
         }
         // Story 8.1: SLIPPAGE_ANALYSIS with timing breakdown for easy grep
@@ -430,8 +532,12 @@ pub fn log_event(event: &TradingEvent) {
                 "[SLIPPAGE] Trade analysis"
             );
         }
-        // INFO level for all business events
+        // INFO level for other business events (ORDER_*, POSITION_*, BOT_*)
         _ => {
+            let entry_spread_str = event.entry_spread.map(format_pct);
+            let exit_spread_str = event.exit_spread.map(format_pct);
+            let threshold_str = event.spread_threshold.map(format_pct);
+            let profit_str = event.profit.map(format_pct);
             info!(
                 event_type = %event_type,
                 timestamp = timestamp,
@@ -455,6 +561,185 @@ pub fn log_event(event: &TradingEvent) {
 /// Log a trading event at INFO level (for important events)
 pub fn log_trading_event(event: &TradingEvent) {
     log_event(event);
+}
+
+// =============================================================================
+// SystemEvent (Log Centralization - Tech-Spec: log-centralization)
+// =============================================================================
+
+/// System event types for structured logging
+/// 
+/// These events are distinct from TradingEvents - they cover system lifecycle
+/// and operational concerns rather than trading execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemEventType {
+    /// Task started (DEBUG)
+    TaskStarted,
+    /// Task stopped cleanly (INFO)
+    TaskStopped,
+    /// Task shutting down with reason (INFO)
+    TaskShutdown,
+    /// Adapter reconnecting (DEBUG)
+    AdapterReconnect,
+    /// Entry positions verified (DEBUG)
+    PositionVerified,
+    /// Individual position detail (DEBUG)
+    PositionDetail,
+    /// Trade execution started (DEBUG)
+    TradeStarted,
+}
+
+/// System event for centralized logging
+/// 
+/// All system-level logs should be created via factory methods and
+/// logged via `log_system_event()` for consistent formatting and levels.
+pub struct SystemEvent {
+    pub event_type: SystemEventType,
+    pub task_name: Option<String>,
+    pub exchange: Option<String>,
+    pub message: String,
+    pub details: Option<String>,
+}
+
+impl SystemEvent {
+    /// Task started event (DEBUG level)
+    pub fn task_started(task_name: &str) -> Self {
+        Self {
+            event_type: SystemEventType::TaskStarted,
+            task_name: Some(task_name.to_string()),
+            exchange: None,
+            message: format!("{} task started", task_name),
+            details: None,
+        }
+    }
+
+    /// Task stopped cleanly (INFO level)
+    pub fn task_stopped(task_name: &str) -> Self {
+        Self {
+            event_type: SystemEventType::TaskStopped,
+            task_name: Some(task_name.to_string()),
+            exchange: None,
+            message: format!("{} task stopped", task_name),
+            details: None,
+        }
+    }
+
+    /// Task shutting down with reason (INFO level)
+    pub fn task_shutdown(task_name: &str, reason: &str) -> Self {
+        Self {
+            event_type: SystemEventType::TaskShutdown,
+            task_name: Some(task_name.to_string()),
+            exchange: None,
+            message: format!("{} shutting down", task_name),
+            details: Some(reason.to_string()),
+        }
+    }
+
+    /// Adapter reconnect event (DEBUG level)
+    pub fn adapter_reconnect(exchange: &str, status: &str) -> Self {
+        Self {
+            event_type: SystemEventType::AdapterReconnect,
+            task_name: None,
+            exchange: Some(exchange.to_string()),
+            message: format!("Adapter {}", status),
+            details: None,
+        }
+    }
+
+    /// Position verified event (DEBUG level)
+    pub fn position_verified(
+        vest_price: f64,
+        paradex_price: f64,
+        captured_spread: f64,
+    ) -> Self {
+        Self {
+            event_type: SystemEventType::PositionVerified,
+            task_name: None,
+            exchange: None,
+            message: "Entry positions verified".to_string(),
+            details: Some(format!(
+                "vest={:.2} paradex={:.2} spread={:.4}%",
+                vest_price, paradex_price, captured_spread
+            )),
+        }
+    }
+
+    /// Position detail event (DEBUG level)
+    pub fn position_detail(
+        exchange: &str,
+        side: &str,
+        quantity: f64,
+        entry_price: f64,
+    ) -> Self {
+        Self {
+            event_type: SystemEventType::PositionDetail,
+            task_name: None,
+            exchange: Some(exchange.to_string()),
+            message: "Position details".to_string(),
+            details: Some(format!(
+                "side={} qty={:.4} price={:.2}",
+                side, quantity, entry_price
+            )),
+        }
+    }
+
+    /// Trade started event (DEBUG level)
+    pub fn trade_started() -> Self {
+        Self {
+            event_type: SystemEventType::TradeStarted,
+            task_name: None,
+            exchange: None,
+            message: "Position lock acquired - executing delta-neutral trade".to_string(),
+            details: None,
+        }
+    }
+}
+
+/// Log a system event with appropriate level (DEBUG or INFO)
+/// 
+/// Level mapping:
+/// - TaskStopped, TaskShutdown → INFO
+/// - All others → DEBUG
+pub fn log_system_event(event: &SystemEvent) {
+    let event_type_str = format!("{:?}", event.event_type).to_uppercase();
+    
+    match event.event_type {
+        // INFO level events (lifecycle endpoints)
+        SystemEventType::TaskStopped | SystemEventType::TaskShutdown => {
+            if let Some(ref details) = event.details {
+                info!(
+                    event_type = %event_type_str,
+                    task = ?event.task_name,
+                    details = %details,
+                    "{}", event.message
+                );
+            } else {
+                info!(
+                    event_type = %event_type_str,
+                    task = ?event.task_name,
+                    "{}", event.message
+                );
+            }
+        }
+        // DEBUG level events (operational noise)
+        _ => {
+            if let Some(ref exchange) = event.exchange {
+                debug!(
+                    event_type = %event_type_str,
+                    exchange = %exchange,
+                    details = ?event.details,
+                    "{}", event.message
+                );
+            } else {
+                debug!(
+                    event_type = %event_type_str,
+                    task = ?event.task_name,
+                    details = ?event.details,
+                    "{}", event.message
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -491,12 +776,16 @@ mod tests {
             "vest",
             "paradex",
             150,
+            42000.0,  // long_fill_price
+            42100.0,  // short_fill_price
         );
         
         assert_eq!(event.event_type, TradingEventType::TradeEntry);
         assert_eq!(event.entry_spread, Some(0.35));
         assert_eq!(event.latency_ms, Some(150));
         assert!(event.exchange.unwrap().contains("vest"));
+        assert_eq!(event.long_fill_price, Some(42000.0));
+        assert_eq!(event.short_fill_price, Some(42100.0));
     }
     
     #[test]

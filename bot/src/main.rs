@@ -13,11 +13,17 @@
 //! - Uses structured JSON output (configurable via LOG_FORMAT env var)
 //! - Uses structured BOT_STARTED/BOT_SHUTDOWN events
 //! - Removes legacy [TAG] prefixes, uses event_type fields instead
+//!
+//! # TUI Mode
+//! - Set LOG_FORMAT=tui to enable terminal UI
+//! - Press 'q' or Ctrl+C to quit
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, error, warn};
+// Note: tracing_subscriber will be used for TuiLayer composition in future release
 use hft_bot::config;
 use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
@@ -27,14 +33,30 @@ use hft_bot::core::events::{TradingEvent, log_event, format_pct};
 use hft_bot::core::monitoring::{monitoring_task, MonitoringConfig};
 use hft_bot::core::runtime::execution_task;
 use hft_bot::core::execution::DeltaNeutralExecutor;
-
+use hft_bot::tui::AppState;
+// Note: TuiLayer will be used for TUI rendering in future release
+#[allow(unused_imports)]
+use hft_bot::tui::TuiLayer;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load environment variables from .env file (if it exists)
     dotenvy::dotenv().ok();
     
-    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    // Check if TUI mode is requested (V1: detection only, full TUI spawn in future release)
+    let _tui_mode = config::is_tui_mode();
+    
+    // AppState for TUI (wrapped in Option for conditional use)
+    // V1: Infrastructure in place, TUI render loop to be added
+    let _app_state: Option<Arc<Mutex<AppState>>> = if _tui_mode {
+        // Will be initialized after config is loaded
+        None
+    } else {
+        None
+    };
+    
+    // Initialize logging (Story 5.1: JSON/Pretty/TUI configurable via LOG_FORMAT)
+    // Note: TUI mode skips this, initialized later with TuiLayer
     config::init_logging();
 
     // Log BOT_STARTED event (Story 5.3)
@@ -87,11 +109,20 @@ async fn main() -> anyhow::Result<()> {
     let mut vest_adapter = VestAdapter::new(vest_config);
     info!(event_type = "ADAPTER_INIT", exchange = "vest", "Adapter initialized");
     
+    // Initialize Pyth USDC rate cache for USD→USDC price conversion
+    let usdc_rate_cache = std::sync::Arc::new(hft_bot::core::UsdcRateCache::new());
+    hft_bot::core::spawn_rate_refresh_task(
+        std::sync::Arc::clone(&usdc_rate_cache),
+        reqwest::Client::new(),
+    );
+    info!(event_type = "PYTH_INIT", "USDC rate cache initialized with 15-minute refresh");
+    
     // Subtask 1.2: Create ParadexAdapter with credentials from .env
     let paradex_config = ParadexConfig::from_env()
         .expect("PARADEX credentials must be configured in .env (PARADEX_PRIVATE_KEY, PARADEX_ACCOUNT_ADDRESS)");
     let mut paradex_adapter = ParadexAdapter::new(paradex_config);
-    info!(event_type = "ADAPTER_INIT", exchange = "paradex", "Adapter initialized");
+    paradex_adapter.set_usdc_rate_cache(std::sync::Arc::clone(&usdc_rate_cache));
+    info!(event_type = "ADAPTER_INIT", exchange = "paradex", "Adapter initialized with USDC conversion");
 
     
     // Task 2: Create channels for data pipeline

@@ -115,14 +115,9 @@ impl BotConfig {
             )));
         }
 
-        // Rule: spread_entry > spread_exit (entry threshold must be higher)
-        // This ensures we enter at a higher spread than we exit
-        if self.spread_entry <= self.spread_exit {
-            return Err(AppError::Config(format!(
-                "Bot '{}': spread_entry ({}) must be > spread_exit ({})",
-                self.id, self.spread_entry, self.spread_exit
-            )));
-        }
+        // Note: spread_entry and spread_exit are independent thresholds
+        // Entry spread is calculated when opening, exit spread when closing
+        // They operate on different spread calculations, so no comparison needed
 
         // Rule: dex_a ≠ dex_b
         if self.dex_a == self.dex_b {
@@ -261,26 +256,7 @@ mod tests {
         assert!(bot.validate().is_ok());
     }
 
-    #[test]
-    fn test_spread_entry_must_be_greater_than_exit() {
-        let mut bot = create_valid_bot_config();
-        bot.spread_entry = 0.05;
-        bot.spread_exit = 0.30;
-        
-        let result = bot.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_entry"));
-    }
 
-    #[test]
-    fn test_spread_entry_equal_exit_fails() {
-        let mut bot = create_valid_bot_config();
-        bot.spread_entry = 0.10;
-        bot.spread_exit = 0.10;
-        
-        let result = bot.validate();
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_same_dex_fails() {

@@ -11,7 +11,7 @@
 use std::time::Instant;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{debug, info, warn, error};
 
 use crate::adapters::{
     ExchangeAdapter, ExchangeResult, ExchangeError,
@@ -20,7 +20,7 @@ use crate::adapters::{
 };
 use crate::core::channels::SpreadOpportunity;
 use crate::core::spread::SpreadDirection;
-use crate::core::events::{TradingEvent, TimingBreakdown, current_timestamp_ms, log_event, format_pct, fmt_price};
+use crate::core::events::{TradingEvent, TimingBreakdown, SystemEvent, current_timestamp_ms, log_event, log_system_event, format_pct};
 
 // =============================================================================
 // Constants
@@ -95,15 +95,21 @@ fn log_successful_trade(
     result: &DeltaNeutralResult,
     timings: &TradeTimings,
 ) {
-    info!(
-        event_type = "TRADE_ENTRY",
-        spread = %format_pct(opportunity.spread_percent),
-        long = %result.long_exchange,
-        short = %result.short_exchange,
-        latency_ms = result.execution_latency_ms,
-        pair = %opportunity.pair,
-        "Entry executed"
+    // T7: Use centralized TradingEvent for compact [ENTRY] format
+    // F1 Fix: Pass fill prices to trade_entry()
+    let direction_str = format!("{:?}", opportunity.direction);
+    let entry_event = TradingEvent::trade_entry(
+        &opportunity.pair,
+        opportunity.spread_percent,
+        0.0, // spread_threshold not needed for entry log
+        &direction_str,
+        &result.long_exchange,
+        &result.short_exchange,
+        result.execution_latency_ms,
+        result.long_fill_price,
+        result.short_fill_price,
     );
+    log_event(&entry_event);
     
     // Story 8.1: Calculate execution spread and emit SlippageAnalysis event
     let execution_spread = calculate_execution_spread(
@@ -118,7 +124,6 @@ fn log_successful_trade(
         timings.t_order_confirmed,
     );
     
-    let direction_str = format!("{:?}", opportunity.direction);
     let slippage_event = TradingEvent::slippage_analysis(
         &opportunity.pair,
         opportunity.spread_percent,
@@ -178,15 +183,16 @@ impl PositionVerification {
     
     /// Log structured entry verification summary
     fn log_summary(&self, entry_spread: f64, exit_target: f64, direction: Option<SpreadDirection>) {
-        info!(
-            event_type = "POSITION_VERIFIED",
-            vest_price = %fmt_price(self.vest_price),
-            paradex_price = %fmt_price(self.paradex_price),
+        log_system_event(&SystemEvent::position_verified(
+            self.vest_price,
+            self.paradex_price,
+            self.captured_spread,
+        ));
+        debug!(
             direction = ?direction.unwrap_or(SpreadDirection::AOverB),
             detected_spread = %format_pct(entry_spread),
-            captured_spread = %format_pct(self.captured_spread),
             exit_target = %format_pct(exit_target),
-            "Entry positions verified"
+            "Entry spread details"
         );
     }
 }
@@ -298,9 +304,8 @@ where
         {
             let mut paradex = self.paradex_adapter.lock().await;
             if paradex.is_stale() {
-                info!(event_type = "ADAPTER_RECONNECT", exchange = "paradex", "Adapter stale - reconnecting");
+                log_system_event(&SystemEvent::adapter_reconnect("paradex", "stale - reconnecting"));
                 paradex.reconnect().await?;
-                info!(event_type = "ADAPTER_RECONNECT", exchange = "paradex", "Adapter reconnected");
             }
         }
         
@@ -308,9 +313,8 @@ where
         {
             let mut vest = self.vest_adapter.lock().await;
             if vest.is_stale() {
-                info!(event_type = "ADAPTER_RECONNECT", exchange = "vest", "Adapter stale - reconnecting");
+                log_system_event(&SystemEvent::adapter_reconnect("vest", "stale - reconnecting"));
                 vest.reconnect().await?;
-                info!(event_type = "ADAPTER_RECONNECT", exchange = "vest", "Adapter reconnected");
             }
         }
         
@@ -339,7 +343,7 @@ where
             return Err(ExchangeError::OrderRejected("Position already open".into()));
         }
         
-        info!(event_type = "TRADE_STARTED", "Position lock acquired - executing delta-neutral trade");
+        log_system_event(&SystemEvent::trade_started());
         let mut timings = TradeTimings::new();
 
         // Determine which exchange gets long vs short based on direction
@@ -466,27 +470,23 @@ where
         
         // Individual position logging stays inline (different event_type)
         match vest_pos {
-            Ok(Some(pos)) => info!(
-                event_type = "POSITION_DETAIL",
-                exchange = "vest",
-                side = %pos.side,
-                quantity = %pos.quantity,
-                entry_price = %pos.entry_price,
-                "Position details"
-            ),
+            Ok(Some(pos)) => log_system_event(&SystemEvent::position_detail(
+                "vest",
+                &pos.side,
+                pos.quantity,
+                pos.entry_price,
+            )),
             Ok(None) => warn!(event_type = "POSITION_DETAIL", exchange = "vest", "No position"),
             Err(e) => warn!(event_type = "POSITION_DETAIL", exchange = "vest", error = %e, "Position check failed"),
         }
         
         match paradex_pos {
-            Ok(Some(pos)) => info!(
-                event_type = "POSITION_DETAIL",
-                exchange = "paradex",
-                side = %pos.side,
-                quantity = %pos.quantity,
-                entry_price = %pos.entry_price,
-                "Position details"
-            ),
+            Ok(Some(pos)) => log_system_event(&SystemEvent::position_detail(
+                "paradex",
+                &pos.side,
+                pos.quantity,
+                pos.entry_price,
+            )),
             Ok(None) => warn!(event_type = "POSITION_DETAIL", exchange = "paradex", "No position"),
             Err(e) => warn!(event_type = "POSITION_DETAIL", exchange = "paradex", error = %e, "Position check failed"),
         }

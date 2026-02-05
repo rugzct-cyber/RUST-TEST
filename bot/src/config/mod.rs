@@ -19,5 +19,5 @@ pub use types::{ApiConfig, AppConfig, BotConfig, Dex, RiskConfig, SharedConfig, 
 pub use loader::{load_config, load_config_from_str};
 
 // Re-export logging functions  
-pub use logging::init_logging;
+pub use logging::{init_logging, is_tui_mode};
 

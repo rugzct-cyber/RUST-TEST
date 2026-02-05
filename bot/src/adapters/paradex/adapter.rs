@@ -105,6 +105,8 @@ pub struct ParadexAdapter {
     heartbeat_handle: Option<tokio::task::JoinHandle<()>>,
     /// Starknet chain ID from system config (cached for order signing)
     starknet_chain_id: Option<String>,
+    /// USD/USDC rate cache for price conversion (Pyth integration)
+    usdc_rate_cache: Option<Arc<crate::core::UsdcRateCache>>,
 }
 
 impl ParadexAdapter {
@@ -127,7 +129,21 @@ impl ParadexAdapter {
             connection_health: crate::adapters::types::ConnectionHealth::new(),
             heartbeat_handle: None,
             starknet_chain_id: None,
+            usdc_rate_cache: None,
         }
+    }
+
+    /// Set the USDC rate cache for USD→USDC price conversion
+    /// 
+    /// This enables automatic conversion of orderbook prices from USD to USDC.
+    /// Call this after creating the adapter and before connecting.
+    pub fn set_usdc_rate_cache(&mut self, cache: Arc<crate::core::UsdcRateCache>) {
+        self.usdc_rate_cache = Some(cache);
+    }
+
+    /// Get the current USDC rate (if cache is set)
+    fn get_usdc_rate(&self) -> Option<f64> {
+        self.usdc_rate_cache.as_ref().map(|c| c.get_rate())
     }
 
     /// Get shared orderbooks for lock-free monitoring (Story 7.3)
@@ -375,13 +391,14 @@ impl ParadexAdapter {
         // Clone Arc references for background tasks
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
         let last_data = Arc::clone(&self.connection_health.last_data);
+        let usdc_rate_cache = self.usdc_rate_cache.clone();
         
         // Initialize last_data to now so we don't immediately appear stale
         last_data.store(current_time_ms(), Ordering::Relaxed);
         
-        // Spawn background reader with shared orderbooks and health tracking
+        // Spawn background reader with shared orderbooks, health tracking, and USDC rate
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_data).await;
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_data, usdc_rate_cache).await;
         });
         
         self.reader_handle = Some(handle);
@@ -391,10 +408,13 @@ impl ParadexAdapter {
     /// Background message reader loop
     /// Processes incoming WebSocket messages and updates orderbooks
     /// Also updates connection health timestamps
+    /// 
+    /// If `usdc_rate_cache` is provided, orderbook prices are converted from USD to USDC
     async fn message_reader_loop(
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
         last_data: Arc<AtomicU64>,
+        usdc_rate_cache: Option<Arc<crate::core::UsdcRateCache>>,
     ) {
         tracing::info!("Paradex message_reader_loop started");
         while let Some(msg_result) = ws_receiver.next().await {
@@ -454,8 +474,9 @@ impl ParadexAdapter {
                                         "Paradex subscription orderbook update received"
                                     );
                                     
-                                    // Convert to orderbook
-                                    match notif.params.data.to_orderbook() {
+                                    // Convert to orderbook (with USD→USDC conversion if rate available)
+                                    let usdc_rate = usdc_rate_cache.as_ref().map(|c| c.get_rate());
+                                    match notif.params.data.to_orderbook(usdc_rate) {
                                         Ok(orderbook) => {
                                             // Update shared orderbook (acquire lock briefly)
                                             let mut books = shared_orderbooks.write().await;
@@ -477,8 +498,9 @@ impl ParadexAdapter {
                                         "Paradex orderbook update received (direct format)"
                                     );
                                     
-                                    // Convert to orderbook
-                                    match orderbook_msg.data.to_orderbook() {
+                                    // Convert to orderbook (with USD→USDC conversion if rate available)
+                                    let usdc_rate = usdc_rate_cache.as_ref().map(|c| c.get_rate());
+                                    match orderbook_msg.data.to_orderbook(usdc_rate) {
                                         Ok(orderbook) => {
                                             // Update shared orderbook (acquire lock briefly)
                                             let mut books = shared_orderbooks.write().await;

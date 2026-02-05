@@ -114,13 +114,24 @@ pub struct ParadexOrderbookLevel {
 
 impl ParadexOrderbookData {
     /// Convert to Orderbook type, taking only top 10 levels per side
-    pub fn to_orderbook(&self) -> ExchangeResult<Orderbook> {
+    /// 
+    /// If `usdc_rate` is provided, prices are converted from USD to USDC:
+    /// `usdc_price = usd_price / usdc_rate`
+    /// 
+    /// Example: If USDC rate is 0.9997, then 42000 USD = 42012.60 USDC
+    pub fn to_orderbook(&self, usdc_rate: Option<f64>) -> ExchangeResult<Orderbook> {
         let mut bids: Vec<OrderbookLevel> = Vec::new();
         let mut asks: Vec<OrderbookLevel> = Vec::new();
         
         for level in &self.inserts {
-            let price = level.price.parse::<f64>().map_err(|e| 
+            let mut price = level.price.parse::<f64>().map_err(|e| 
                 ExchangeError::InvalidResponse(format!("Invalid price: {}", e)))?;
+            
+            // Convert USD → USDC if rate provided
+            if let Some(rate) = usdc_rate {
+                price = price / rate;
+            }
+            
             let quantity = level.size.parse::<f64>().map_err(|e| 
                 ExchangeError::InvalidResponse(format!("Invalid quantity: {}", e)))?;
             
@@ -156,6 +167,7 @@ impl ParadexOrderbookData {
             asks_count = orderbook.asks.len(),
             best_bid = ?orderbook.best_bid(),
             best_ask = ?orderbook.best_ask(),
+            usdc_conversion = usdc_rate.is_some(),
             "Orderbook updated"
         );
 
@@ -318,7 +330,8 @@ mod tests {
             seq_no: 12345,
         };
 
-        let orderbook = data.to_orderbook().unwrap();
+        // Pass None for usdc_rate (no conversion)
+        let orderbook = data.to_orderbook(None).unwrap();
         assert_eq!(orderbook.bids.len(), 1);
         assert_eq!(orderbook.asks.len(), 1);
         assert_eq!(orderbook.bids[0].price, 2500.50);
@@ -355,7 +368,8 @@ mod tests {
             seq_no: 12346,
         };
 
-        let orderbook = data.to_orderbook().unwrap();
+        // Pass None for usdc_rate (no conversion)
+        let orderbook = data.to_orderbook(None).unwrap();
         // Bids should be sorted descending (best bid first)
         assert_eq!(orderbook.bids[0].price, 40100.00);
         assert_eq!(orderbook.bids[1].price, 40000.00);
@@ -363,4 +377,40 @@ mod tests {
         assert_eq!(orderbook.asks[0].price, 40150.00);
         assert_eq!(orderbook.asks[1].price, 40200.00);
     }
+
+    #[test]
+    fn test_to_orderbook_with_usdc_conversion() {
+        // Given: Orderbook with USD price of 42000
+        let data = ParadexOrderbookData {
+            market: "BTC-USD-PERP".to_string(),
+            inserts: vec![
+                ParadexOrderbookLevel {
+                    price: "42000.00".to_string(),
+                    size: "1.0".to_string(),
+                    side: "BID".to_string(),
+                },
+                ParadexOrderbookLevel {
+                    price: "42010.00".to_string(),
+                    size: "1.0".to_string(),
+                    side: "ASK".to_string(),
+                },
+            ],
+            last_updated_at: 1700000000000,
+            seq_no: 12347,
+        };
+
+        // When: Convert with USDC rate of 0.9997
+        // Expected: 42000 / 0.9997 = 42012.6037811...
+        let orderbook = data.to_orderbook(Some(0.9997)).unwrap();
+        
+        // Then: Prices should be converted
+        let expected_bid = 42000.0 / 0.9997;
+        let expected_ask = 42010.0 / 0.9997;
+        
+        assert!((orderbook.bids[0].price - expected_bid).abs() < 0.01,
+            "Bid should be ~{:.2}, got {:.2}", expected_bid, orderbook.bids[0].price);
+        assert!((orderbook.asks[0].price - expected_ask).abs() < 0.01,
+            "Ask should be ~{:.2}, got {:.2}", expected_ask, orderbook.asks[0].price);
+    }
 }
+

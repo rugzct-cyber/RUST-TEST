@@ -14,11 +14,11 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{interval, Duration};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::adapters::{ExchangeAdapter, Orderbook};
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, log_event, calculate_latency_ms, format_pct};
+use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, calculate_latency_ms, format_pct};
 use crate::core::execution::DeltaNeutralExecutor;
 use crate::core::spread::{SpreadCalculator, SpreadDirection};
 
@@ -76,10 +76,7 @@ where
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
-                info!(
-                    event_type = "BOT_SHUTDOWN",
-                    "Exit monitoring interrupted by shutdown"
-                );
+                log_system_event(&SystemEvent::task_shutdown("exit_monitoring", "shutdown_signal"));
                 break;
             }
             _ = exit_interval.tick() => {
@@ -207,7 +204,7 @@ pub async fn execution_task<V, P>(
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
 {
-    info!("Execution task started (V1 HFT Mode with exit monitoring)");
+    log_system_event(&SystemEvent::task_started("execution"));
     
     // Track execution statistics
     let mut execution_count: u64 = 0;
@@ -216,7 +213,7 @@ pub async fn execution_task<V, P>(
         tokio::select! {
             // Shutdown takes priority
             _ = shutdown_rx.recv() => {
-                info!(total_executions = execution_count, "Execution task shutting down");
+                log_system_event(&SystemEvent::task_shutdown("execution", "shutdown_signal"));
                 break;
             }
             // Process incoming opportunities (AtomicBool guard prevents duplicates)
@@ -225,7 +222,7 @@ pub async fn execution_task<V, P>(
                 let pair = opportunity.pair.clone();
                 
                 execution_count += 1;
-                info!(
+                debug!(
                     pair = %pair,
                     spread = %format_pct(spread_pct),
                     direction = ?opportunity.direction,
@@ -255,6 +252,8 @@ pub async fn execution_task<V, P>(
                                 &result.long_exchange,
                                 &result.short_exchange,
                                 latency,
+                                result.long_fill_price,
+                                result.short_fill_price,
                             );
                             log_event(&event);
                             
@@ -272,7 +271,7 @@ pub async fn execution_task<V, P>(
                                     "Starting exit monitoring"
                                 );
                                 
-                                let poll_count = exit_monitoring_loop(
+                                let _poll_count = exit_monitoring_loop(
                                     &executor,
                                     vest_orderbooks.clone(),
                                     paradex_orderbooks.clone(),
@@ -285,7 +284,7 @@ pub async fn execution_task<V, P>(
                                     &mut shutdown_rx,
                                 ).await;
                                 
-                                info!(event_type = "POSITION_MONITORING", total_polls = poll_count, "Exit monitoring stopped");
+                                log_system_event(&SystemEvent::task_stopped("exit_monitoring"));
                             } else {
                                 error!(event_type = "ORDER_FAILED", "No entry direction found after successful trade");
                             }
@@ -317,7 +316,7 @@ pub async fn execution_task<V, P>(
         }
     }
 
-    info!("Execution task stopped");
+    log_system_event(&SystemEvent::task_stopped("execution"));
 }
 
 #[cfg(test)]

@@ -394,7 +394,11 @@ impl VestAdapter {
             .map(|_| 0.0)
             .unwrap_or(0.0);
 
-        let avg_price: Option<f64> = None;
+        // Parse avg_price from avgFilledPrice (preferred) or lastFilledPrice (fallback)
+        let avg_price: Option<f64> = result.avg_filled_price
+            .as_ref()
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| result.last_filled_price.as_ref().and_then(|s| s.parse::<f64>().ok()));
 
         let order_id = match result.id {
             Some(id) => id,
@@ -1343,6 +1347,14 @@ impl ExchangeAdapter for VestAdapter {
         for pos in positions {
             let pos_symbol = pos.symbol.as_deref().unwrap_or("");
             if pos_symbol == symbol {
+                // DEBUG: Log raw size value from API for diagnosing side issues
+                let raw_size_str = pos.size.as_deref().unwrap_or("null");
+                tracing::debug!(
+                    symbol = symbol,
+                    raw_size = raw_size_str,
+                    "Vest raw position size from API"
+                );
+                
                 // Parse size - negative = short, positive = long
                 let size = pos.size.as_ref()
                     .and_then(|s| s.parse::<f64>().ok())
@@ -1353,7 +1365,23 @@ impl ExchangeAdapter for VestAdapter {
                     continue;
                 }
                 
-                let side = if size >= 0.0 { "long" } else { "short" };
+                // Use isLong field from API (size is always positive)
+                // Debug: Log raw values from API to diagnose
+                tracing::debug!(
+                    symbol = symbol,
+                    is_long = ?pos.is_long,
+                    raw_size = %pos.size.as_deref().unwrap_or("null"),
+                    "Vest position raw data"
+                );
+                
+                let side = match pos.is_long {
+                    Some(true) => "long",
+                    Some(false) => "short",
+                    None => {
+                        tracing::warn!(symbol = symbol, "Vest position missing isLong field");
+                        "unknown"
+                    }
+                };
                 let quantity = size.abs();
                 
                 let entry_price = pos.entry_price.as_ref()

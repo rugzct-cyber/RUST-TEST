@@ -50,6 +50,12 @@ pub(crate) struct VestOrderResponse {
     #[serde(rename = "postTime")]
     #[allow(dead_code)]
     pub post_time: Option<u64>,
+    /// Average fill price (only present when status is FILLED)
+    #[serde(rename = "avgFilledPrice")]
+    pub avg_filled_price: Option<String>,
+    /// Last filled price (only present when status is FILLED)
+    #[serde(rename = "lastFilledPrice")]
+    pub last_filled_price: Option<String>,
     /// Error code if any
     pub code: Option<i32>,
     /// Error message
@@ -76,7 +82,10 @@ pub struct VestAccountResponse {
 pub struct VestPositionData {
     /// Trading symbol (e.g., "BTC-PERP")
     pub symbol: Option<String>,
-    /// Position size (can be negative for short)
+    /// Position side: true = long, false = short
+    #[serde(rename = "isLong")]
+    pub is_long: Option<bool>,
+    /// Position size (always positive, use isLong for direction)
     pub size: Option<String>,
     /// Entry price
     #[serde(rename = "entryPrice")]

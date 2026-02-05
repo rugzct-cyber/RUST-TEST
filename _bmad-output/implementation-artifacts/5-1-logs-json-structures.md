@@ -1,6 +1,6 @@
 # Story 5.1: Logs JSON Structurés
 
-Status: complete
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -198,3 +198,31 @@ Anthropic Claude Sonnet 4
 - [MODIFY] `src/bin/close_positions.rs` - Use shared logging
 - [MODIFY] `src/bin/get_paradex_address.rs` - Use shared logging
 - [MODIFY] `src/adapters/paradex/adapter.rs` - Clippy fix (unrelated)
+
+## Senior Developer Review (AI)
+
+**Reviewer:** Antigravity (Claude Sonnet 4)
+**Date:** 2026-02-05
+**Verdict:** ✅ APPROVED
+
+### Findings Summary
+- **2 HIGH** → 1 fixed (H2: placeholder tests), 1 acknowledged (H1: scope mixing - git org only)
+- **2 MEDIUM** → Acknowledged (documentation details)
+- **2 LOW** → Deferred (style preferences in test binaries)
+
+### H2 Fix Applied
+- Replaced placeholder tests in `src/config/logging.rs` with:
+  - `test_log_format_default_is_json()` - Validates default logic
+  - `test_pretty_format_detection()` - Table-driven test for format detection
+  - `test_env_filter_fallback()` - Validates RUST_LOG fallback
+- Added documentation explaining unit test limitations for tracing subscriber
+
+### AC Validation
+| AC | Status | Evidence |
+|----|--------|----------|
+| JSON format | ✅ | `logging.rs:39` uses `.json()` |
+| Timestamp+level+message | ✅ | tracing-subscriber JSON layer |
+| stdout output | ✅ | Default behavior |
+| jq compatible | ✅ | Standard JSON |
+| LOG_FORMAT configurable | ✅ | `logging.rs:25` |
+| All binaries updated | ✅ | 7/7 use `config::init_logging()` |

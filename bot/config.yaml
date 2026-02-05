@@ -4,7 +4,7 @@ bots:
     dex_a: vest
     dex_b: paradex
     spread_entry: 0.06
-    spread_exit: -0.02
+    spread_exit: 0.08
     leverage: 5
     position_size: 0.0002  # Size in base asset (e.g., 0.001 BTC)
 risk:
