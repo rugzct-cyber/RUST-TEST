@@ -18,12 +18,20 @@
 //! - Set LOG_FORMAT=tui to enable terminal UI
 //! - Press 'q' or Ctrl+C to quit
 
+use std::io::stdout;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, error, warn};
-// Note: tracing_subscriber will be used for TuiLayer composition in future release
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::EnvFilter;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+// ratatui accessed via full path in spawn block for Terminal
 use hft_bot::config;
 use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
@@ -33,35 +41,39 @@ use hft_bot::core::events::{TradingEvent, log_event, format_pct};
 use hft_bot::core::monitoring::{monitoring_task, MonitoringConfig};
 use hft_bot::core::runtime::execution_task;
 use hft_bot::core::execution::DeltaNeutralExecutor;
-use hft_bot::tui::AppState;
-// Note: TuiLayer will be used for TUI rendering in future release
-#[allow(unused_imports)]
-use hft_bot::tui::TuiLayer;
+use hft_bot::tui::{AppState, TuiLayer};
+
+/// Restore terminal to normal state
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(stdout(), LeaveAlternateScreen);
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load environment variables from .env file (if it exists)
     dotenvy::dotenv().ok();
     
-    // Check if TUI mode is requested (V1: detection only, full TUI spawn in future release)
-    let _tui_mode = config::is_tui_mode();
+    // Check if TUI mode is requested
+    let tui_mode = config::is_tui_mode();
     
-    // AppState for TUI (wrapped in Option for conditional use)
-    // V1: Infrastructure in place, TUI render loop to be added
-    let _app_state: Option<Arc<Mutex<AppState>>> = if _tui_mode {
-        // Will be initialized after config is loaded
-        None
-    } else {
-        None
-    };
+    // Set up panic hook to restore terminal on crash (for TUI mode)
+    if tui_mode {
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            restore_terminal();
+            original_hook(panic_info);
+        }));
+    }
     
-    // Initialize logging (Story 5.1: JSON/Pretty/TUI configurable via LOG_FORMAT)
-    // Note: TUI mode skips this, initialized later with TuiLayer
-    config::init_logging();
-
-    // Log BOT_STARTED event (Story 5.3)
-    let started_event = TradingEvent::bot_started();
-    log_event(&started_event);
+    // Initialize logging - TUI mode uses TuiLayer, others use normal logging
+    // AppState will be created after config is loaded
+    if !tui_mode {
+        config::init_logging();
+        // Log BOT_STARTED event (Story 5.3)
+        let started_event = TradingEvent::bot_started();
+        log_event(&started_event);
+    }
     
     // Load configuration from YAML
     info!(event_type = "CONFIG", "Loading configuration from config.yaml");
@@ -99,6 +111,36 @@ async fn main() -> anyhow::Result<()> {
         "Active bot configuration"
     );
     
+    // TUI Mode: Initialize AppState, terminal, and tracing subscriber
+    let app_state: Option<Arc<Mutex<AppState>>> = if tui_mode {
+        // Create AppState with config values
+        let state = Arc::new(Mutex::new(AppState::new(
+            bot.pair.to_string(),
+            bot.spread_entry,
+            bot.spread_exit,
+            bot.position_size,
+            bot.leverage as u32,
+        )));
+        
+        // Initialize terminal in raw mode with alternate screen
+        enable_raw_mode().expect("Failed to enable raw mode");
+        execute!(stdout(), EnterAlternateScreen).expect("Failed to enter alternate screen");
+        
+        // Set up tracing subscriber with TuiLayer
+        let tui_layer = TuiLayer::new(Arc::clone(&state));
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(tui_layer)
+            .init();
+        
+        info!(event_type = "TUI", "Terminal UI initialized");
+        
+        Some(state)
+    } else {
+        None
+    };
     
     // Story 6.1 Task 1: Create adapters with real credentials
     info!(event_type = "ADAPTER_INIT", "Initializing exchange adapters");
@@ -243,6 +285,81 @@ async fn main() -> anyhow::Result<()> {
     });
     info!(event_type = "RUNTIME", task = "monitoring", polling_ms = 25, "Task spawned (lock-free)");
     
+    // Spawn TUI render task (if TUI mode enabled)
+    if let Some(ref state) = app_state {
+        let tui_state = Arc::clone(state);
+        let tui_shutdown = shutdown_tx.subscribe();
+        let tui_shutdown_tx = shutdown_tx.clone();
+        // Clone SharedOrderbooks for TUI data feed
+        let tui_vest_orderbooks = vest_adapter.get_shared_orderbooks();
+        let tui_paradex_orderbooks = paradex_adapter.get_shared_orderbooks();
+        let tui_vest_symbol = vest_symbol.clone();
+        let tui_paradex_symbol = paradex_symbol.clone();
+        
+        tokio::spawn(async move {
+            let mut terminal = ratatui::Terminal::new(
+                ratatui::backend::CrosstermBackend::new(stdout())
+            ).expect("Failed to create terminal");
+            
+            let mut shutdown_rx = tui_shutdown;
+            
+            loop {
+                // Check for shutdown
+                if shutdown_rx.try_recv().is_ok() {
+                    break;
+                }
+                
+                // Update AppState with latest orderbook data
+                {
+                    let vest_orderbooks = tui_vest_orderbooks.read().await;
+                    let paradex_orderbooks = tui_paradex_orderbooks.read().await;
+                    
+                    if let (Some(vest_ob), Some(paradex_ob)) = (
+                        vest_orderbooks.get(&tui_vest_symbol),
+                        paradex_orderbooks.get(&tui_paradex_symbol),
+                    ) {
+                        if let Ok(mut state) = tui_state.try_lock() {
+                            // Update prices
+                            state.update_prices(
+                                vest_ob.best_bid().unwrap_or(0.0),
+                                vest_ob.best_ask().unwrap_or(0.0),
+                                paradex_ob.best_bid().unwrap_or(0.0),
+                                paradex_ob.best_ask().unwrap_or(0.0),
+                            );
+                            
+                            // Calculate spread
+                            let vest_mid = (state.vest_best_bid + state.vest_best_ask) / 2.0;
+                            let paradex_mid = (state.paradex_best_bid + state.paradex_best_ask) / 2.0;
+                            if vest_mid > 0.0 && paradex_mid > 0.0 {
+                                let spread = (paradex_mid - vest_mid) / vest_mid;
+                                state.update_spread(spread, None);
+                            }
+                        }
+                    }
+                }
+                
+                // Handle keyboard events
+                if !hft_bot::tui::event::handle_events(&tui_state, &tui_shutdown_tx) {
+                    break;
+                }
+                
+                // Render UI
+                if let Ok(state) = tui_state.lock() {
+                    let _ = terminal.draw(|frame| {
+                        hft_bot::tui::ui::draw(frame, &state);
+                    });
+                }
+                
+                // 100ms tick rate
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            
+            // Restore terminal on exit
+            restore_terminal();
+        });
+        info!(event_type = "RUNTIME", task = "tui", tick_ms = 100, "TUI render task spawned");
+    }
+    
     info!(event_type = "RUNTIME", "Bot runtime started (V1 HFT - no persistence, no Mutex locks)");
 
     // Spawn SIGINT handler task
@@ -286,6 +403,12 @@ async fn main() -> anyhow::Result<()> {
     paradex_adapter.disconnect().await
         .unwrap_or_else(|e| warn!(event_type = "BOT_SHUTDOWN", error = %e, "Failed to disconnect from Paradex"));
     info!(event_type = "BOT_SHUTDOWN", "Disconnected from exchanges");
+    
+    // Restore terminal if TUI was active
+    if tui_mode {
+        restore_terminal();
+        info!(event_type = "BOT_SHUTDOWN", "Terminal restored");
+    }
 
     info!(event_type = "BOT_SHUTDOWN", "Clean exit");
 
