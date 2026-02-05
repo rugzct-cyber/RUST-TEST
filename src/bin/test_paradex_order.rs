@@ -1,9 +1,13 @@
 //! Paradex Position Test
 //! Tests: open position -> check position -> close with reduce_only
+//!
+//! # Logging (Story 5.1)
+//! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::adapters::traits::ExchangeAdapter;
 use hft_bot::adapters::types::{OrderRequest, OrderSide, OrderType, TimeInForce};
+use hft_bot::config;
 use uuid::Uuid;
 
 const PARADEX_PAIR: &str = "BTC-USD-PERP";
@@ -12,11 +16,8 @@ const BTC_QTY: f64 = 0.0002;  // ~$15 at $77k (may be below $100 min notional)
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    // Enable tracing to see API responses
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_target(false)
-        .init();
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
     
     let log = |msg: &str| println!("{}", msg);
     

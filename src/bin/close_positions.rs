@@ -1,10 +1,14 @@
 //! Close Delta-Neutral Positions
 //! Closes both Vest and Paradex positions simultaneously with reduce_only orders
+//!
+//! # Logging (Story 5.1)
+//! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::traits::ExchangeAdapter;
 use hft_bot::adapters::types::{OrderRequest, OrderSide, OrderType, TimeInForce};
+use hft_bot::config;
 use uuid::Uuid;
 
 const VEST_PAIR: &str = "BTC-PERP";
@@ -13,10 +17,8 @@ const PARADEX_PAIR: &str = "BTC-USD-PERP";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_target(false)
-        .init();
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
     
     let log = |msg: &str| println!("{}", msg);
     

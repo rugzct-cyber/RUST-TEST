@@ -12,6 +12,9 @@
 //! Requires environment variables:
 //! - VEST_PRIMARY_ADDR, VEST_PRIMARY_KEY, VEST_SIGNING_KEY, VEST_ACCOUNT_GROUP
 //! - VEST_PRODUCTION=true (for mainnet)
+//!
+//! # Logging (Story 5.1)
+//! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
 use std::env;
 use tracing::{info, error};
@@ -22,6 +25,7 @@ use hft_bot::adapters::{
     traits::ExchangeAdapter,
     types::{OrderRequest, OrderSide, OrderType, TimeInForce},
 };
+use hft_bot::config;
 
 /// Trading pair for Vest
 const VEST_PAIR: &str = "BTC-PERP";
@@ -31,13 +35,11 @@ const ORDER_USD_SIZE: f64 = 10.0;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter("debug")
-        .init();
-
     // Load environment variables
     dotenvy::dotenv().ok();
+    
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
 
     info!("═══════════════════════════════════════════════════════════");
     info!("⚠️  HFT Bot - ORDER PLACEMENT TEST (MAINNET)");

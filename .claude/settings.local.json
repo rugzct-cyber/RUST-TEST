@@ -5,7 +5,10 @@
       "Bash(cargo build:*)",
       "Bash(cargo test:*)",
       "Bash(find:*)",
-      "Bash(cargo clippy:*)"
+      "Bash(cargo clippy:*)",
+      "Bash(tree:*)",
+      "Bash(git -C /c/Users/jules/Documents/bot4 log --oneline)",
+      "Bash(cargo tree:*)"
     ]
   }
 }

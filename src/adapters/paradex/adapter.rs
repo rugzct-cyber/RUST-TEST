@@ -16,9 +16,8 @@ use starknet_crypto::FieldElement;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tokio_tungstenite::{
-    connect_async_tls_with_config,
     tungstenite::protocol::Message,
-    Connector, MaybeTlsStream, WebSocketStream,
+    MaybeTlsStream, WebSocketStream,
 };
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
@@ -299,22 +298,7 @@ impl ParadexAdapter {
     /// Connect to WebSocket endpoint
     async fn connect_websocket(&mut self) -> ExchangeResult<()> {
         let url = self.config.ws_base_url();
-
-        // Build TLS connector
-        let tls = native_tls::TlsConnector::builder()
-            .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
-            .build()
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("TLS error: {}", e)))?;
-
-        let (ws_stream, _response) = connect_async_tls_with_config(
-            url,
-            None,
-            false,
-            Some(Connector::NativeTls(tls))
-        )
-        .await
-        .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
-
+        let ws_stream = crate::adapters::shared::connect_tls(url).await?;
         self.ws_stream = Some(Mutex::new(ws_stream));
         Ok(())
     }

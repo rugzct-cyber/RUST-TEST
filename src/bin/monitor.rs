@@ -11,6 +11,10 @@
 //! Requires environment variables:
 //! - VEST_API_KEY, VEST_API_SECRET, VEST_SIGNER_KEY, VEST_SIGNER_ADDRESS
 //! - PARADEX_PRIVATE_KEY, PARADEX_ACCOUNT_ADDRESS (optional for public channels)
+//!
+//! # Logging (Story 5.1)
+//! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
+//! - For human-readable output, set LOG_FORMAT=pretty
 
 use std::time::Duration;
 use tokio::signal;
@@ -21,6 +25,7 @@ use hft_bot::adapters::{
     paradex::{ParadexAdapter, ParadexConfig},
     traits::ExchangeAdapter,
 };
+use hft_bot::config;
 use hft_bot::core::spread::SpreadCalculator;
 
 /// Trading pair for Vest (format: SYMBOL-PERP)
@@ -34,13 +39,11 @@ const POLL_INTERVAL_MS: u64 = 100;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize logging (INFO level for clean output)
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
-
     // Load environment variables
     dotenvy::dotenv().ok();
+    
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
 
     info!("═══════════════════════════════════════════════════════════");
     info!("🔍 HFT Arbitrage Bot - LIVE MONITOR MODE");

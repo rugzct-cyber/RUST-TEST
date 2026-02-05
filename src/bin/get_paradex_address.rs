@@ -1,21 +1,19 @@
 //! Simple script to display Paradex wallet address
 //! Derives the Starknet account address from private key
+//!
+//! # Logging (Story 5.1)
+//! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::adapters::traits::ExchangeAdapter;
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
+use hft_bot::config;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     
-    // Initialize logging with DEBUG level to see hash values
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
-        .with_target(false)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
     
     println!("🔐 Paradex Wallet Address Derivation");
     println!("════════════════════════════════════════════");

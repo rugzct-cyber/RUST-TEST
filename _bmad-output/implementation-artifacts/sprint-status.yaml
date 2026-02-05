@@ -129,7 +129,7 @@ development_status:
   # Epic 5: Observability & Logging
   # Note: Starting with 5.3 (trading events) as priority per Epic 7 retro - clean-slate logging overhaul
   epic-5: in-progress
-  5-1-logs-json-structures: backlog
+  5-1-logs-json-structures: in-progress
   5-2-redaction-automatique-credentials: backlog
   5-3-logging-evenements-trading-contexte: review  # Story 5.3 implementation complete - awaiting /code-review
   epic-5-retrospective: optional

@@ -59,6 +59,7 @@ alloy-sol-types = "0.8"
 # Utilities
 rust_decimal = "1.36"
 chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -17,7 +17,6 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async_tls_with_config, Connector};
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
@@ -550,17 +549,7 @@ impl VestAdapter {
     async fn connect_websocket(&mut self) -> ExchangeResult<()> {
         let url = self.build_public_ws_url();
         tracing::info!("Connecting to Vest public WebSocket: {}", url);
-
-        let tls = native_tls::TlsConnector::builder()
-            .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
-            .build()
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("TLS error: {}", e)))?;
-
-        let (ws_stream, _response) =
-            connect_async_tls_with_config(url, None, false, Some(Connector::NativeTls(tls)))
-                .await
-                .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
-
+        let ws_stream = crate::adapters::shared::connect_tls(&url).await?;
         self.ws_stream = Some(Mutex::new(ws_stream));
         Ok(())
     }

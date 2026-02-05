@@ -8,6 +8,7 @@ pub mod types;
 pub mod traits;
 pub mod vest;
 pub mod paradex;
+pub mod shared;
 
 // Re-export commonly used types for convenience
 pub use errors::{ExchangeError, ExchangeResult};

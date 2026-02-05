@@ -1,4 +1,4 @@
-//! HFT Arbitrage Bot - V1 Entry Point (Story 7.3, Story 5.3)
+//! HFT Arbitrage Bot - V1 Entry Point (Story 7.3, Story 5.3, Story 5.1)
 //!
 //! This is a lean HFT implementation that:
 //! 1. Loads configuration
@@ -9,7 +9,8 @@
 //!
 //! V1 HFT Mode: No persistence, no Mutex locks for minimum latency
 //!
-//! # Logging (Story 5.3)
+//! # Logging (Story 5.1, 5.3)
+//! - Uses structured JSON output (configurable via LOG_FORMAT env var)
 //! - Uses structured BOT_STARTED/BOT_SHUTDOWN events
 //! - Removes legacy [TAG] prefixes, uses event_type fields instead
 
@@ -33,10 +34,8 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables from .env file (if it exists)
     dotenvy::dotenv().ok();
     
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
 
     // Log BOT_STARTED event (Story 5.3)
     let started_event = TradingEvent::bot_started();
