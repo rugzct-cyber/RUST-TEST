@@ -1,12 +1,13 @@
 bots:
-  - id: btc_vest_paradex
-    pair: BTC-PERP
+  - id: main_bot
+    pair: ETH-PERP      # Options: BTC-PERP, ETH-PERP, SOL-PERP
     dex_a: vest
     dex_b: paradex
-    spread_entry: 0.05
-    spread_exit: 0.08
-    leverage: 5
-    position_size: 0.0005  # Size in base asset (e.g., 0.001 BTC)
+    spread_entry: 0.34
+    spread_exit: -0.25
+    leverage: 50
+    position_size: 0.5  # BTC: 0.02 | ETH: 0.1 | SOL: 1.0
+
 api:
   port: 8080
   ws_heartbeat_sec: 30

@@ -18,12 +18,13 @@ use super::app::AppState;
 
 /// Main draw function - renders the entire UI
 pub fn draw(frame: &mut Frame, state: &AppState) {
-    // Create main layout: header, content, logs
+    // Create main layout: header, orderbooks, trade history, stats, logs
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Header
             Constraint::Length(6),  // Orderbooks
+            Constraint::Length(5),  // Trade History
             Constraint::Length(4),  // Stats
             Constraint::Min(8),     // Logs
         ])
@@ -31,8 +32,9 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
 
     draw_header(frame, chunks[0], state);
     draw_orderbooks(frame, chunks[1], state);
-    draw_stats(frame, chunks[2], state);
-    draw_logs(frame, chunks[3], state);
+    draw_trade_history(frame, chunks[2], state);
+    draw_stats(frame, chunks[3], state);
+    draw_logs(frame, chunks[4], state);
 }
 
 /// Draw header with pair, spread, and position status
@@ -118,15 +120,50 @@ fn draw_orderbooks(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(paradex_block, chunks[1]);
 }
 
+/// Draw trade history panel
+fn draw_trade_history(frame: &mut Frame, area: Rect, state: &AppState) {
+    let items: Vec<ListItem> = state.trade_history
+        .iter()
+        .rev()  // Most recent first
+        .enumerate()
+        .take(area.height.saturating_sub(2) as usize)  // Fit in area minus borders
+        .map(|(idx, record)| {
+            let trade_num = state.trade_history.len() - idx;
+            let dir_str = match record.direction {
+                crate::core::spread::SpreadDirection::AOverB => "AOverB",
+                crate::core::spread::SpreadDirection::BOverA => "BOverA",
+            };
+            let pnl_color = if record.pnl_usd >= 0.0 { Color::Green } else { Color::Red };
+            
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("#{:<2}", trade_num), Style::default().fg(Color::DarkGray)),
+                Span::raw(" "),
+                Span::styled(format!("{:6}", dir_str), Style::default().fg(Color::Cyan)),
+                Span::raw(" │ E:"),
+                Span::styled(format!("{:+.2}%", record.entry_spread), Style::default().fg(Color::Yellow)),
+                Span::raw(" X:"),
+                Span::styled(format!("{:+.2}%", record.exit_spread), Style::default().fg(Color::Yellow)),
+                Span::raw(" │ "),
+                Span::styled(format!("${:+.2}", record.pnl_usd), Style::default().fg(pnl_color)),
+            ]))
+        })
+        .collect();
+    
+    let history = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Trade History (last 10)"));
+    
+    frame.render_widget(history, area);
+}
+
 /// Draw stats panel
 fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
     // Live spreads with color coding
-    let entry_color = if state.live_entry_spread >= state.spread_entry_threshold * 100.0 {
+    let entry_color = if state.live_entry_spread >= state.spread_entry_threshold {
         Color::Green  // Above threshold = entry opportunity!
     } else {
         Color::White
     };
-    let exit_color = if state.live_exit_spread >= state.spread_exit_threshold * 100.0 {
+    let exit_color = if state.live_exit_spread >= state.spread_exit_threshold {
         Color::Green  // Above threshold = exit opportunity!
     } else {
         Color::White
@@ -136,14 +173,14 @@ fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
     let line1 = Line::from(vec![
         Span::raw("Entry Spread: "),
         Span::styled(format!("{:+.3}%", state.live_entry_spread), Style::default().fg(entry_color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" (>{})", format!("{:.2}%", state.spread_entry_threshold * 100.0)), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" (>{:.2}%)", state.spread_entry_threshold), Style::default().fg(Color::DarkGray)),
         Span::raw("  │  Exit Spread: "),
         Span::styled(format!("{:+.3}%", state.live_exit_spread), Style::default().fg(exit_color).add_modifier(Modifier::BOLD)),
-        Span::styled(format!(" (>{})", format!("{:.2}%", state.spread_exit_threshold * 100.0)), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" (>{:.2}%)", state.spread_exit_threshold), Style::default().fg(Color::DarkGray)),
     ]);
     
     // Line 2: Position info + runtime stats
-    let pnl_color = if state.total_profit_pct >= 0.0 { Color::Green } else { Color::Red };
+    let pnl_color = if state.total_profit_usd >= 0.0 { Color::Green } else { Color::Red };
     let latency_text = state.last_latency_ms
         .map(|l| format!("{}ms", l))
         .unwrap_or_else(|| "-".to_string());
@@ -164,14 +201,14 @@ fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
             Span::raw("  │  Trades: "),
             Span::styled(format!("{}", state.trades_count), Style::default().fg(Color::White)),
             Span::raw("  │  PnL: "),
-            Span::styled(format!("{:+.2}%", state.total_profit_pct * 100.0), Style::default().fg(pnl_color)),
+            Span::styled(format!("${:+.2}", state.total_profit_usd), Style::default().fg(pnl_color)),
         ])
     } else {
         Line::from(vec![
             Span::raw("Trades: "),
             Span::styled(format!("{}", state.trades_count), Style::default().fg(Color::White)),
             Span::raw("  │  PnL: "),
-            Span::styled(format!("{:+.2}%", state.total_profit_pct * 100.0), Style::default().fg(pnl_color)),
+            Span::styled(format!("${:+.2}", state.total_profit_usd), Style::default().fg(pnl_color)),
             Span::raw("  │  Latency: "),
             Span::styled(latency_text, Style::default().fg(Color::Yellow)),
             Span::raw("  │  Uptime: "),

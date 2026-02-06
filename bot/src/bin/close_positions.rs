@@ -60,17 +60,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(pos) = vest_pos {
             // Opposite side to close: LONG -> SELL, SHORT -> BUY
             let close_side = if pos.side.to_lowercase() == "long" { OrderSide::Sell } else { OrderSide::Buy };
+            
+            // Vest REQUIRES a limit price even for MARKET orders (slippage protection)
+            // Use entry_price with 1% slippage tolerance
+            let limit_price = if close_side == OrderSide::Buy {
+                pos.entry_price * 1.01  // Buying to close short: allow 1% above
+            } else {
+                pos.entry_price * 0.99  // Selling to close long: allow 1% below
+            };
+            
             let order = OrderRequest {
                 client_order_id: format!("close-vest-{}", &Uuid::new_v4().to_string()[..6]),
                 symbol: VEST_PAIR.to_string(),
                 side: close_side,
                 order_type: OrderType::Market,
-                price: None,
+                price: Some(limit_price),  // Vest requires this!
                 quantity: pos.quantity,
                 time_in_force: TimeInForce::Ioc,
                 reduce_only: true,
             };
-            log(&format!("   Vest: Closing {} {} BTC (reduce_only=true)", pos.side, pos.quantity));
+            log(&format!("   Vest: Closing {} {} BTC (reduce_only=true, limit=${:.2})", pos.side, pos.quantity, limit_price));
             vest_adapter.place_order(order).await
         } else {
             log("   Vest: No position to close");

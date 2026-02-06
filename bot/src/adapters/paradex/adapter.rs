@@ -141,11 +141,6 @@ impl ParadexAdapter {
         self.usdc_rate_cache = Some(cache);
     }
 
-    /// Get the current USDC rate (if cache is set)
-    fn get_usdc_rate(&self) -> Option<f64> {
-        self.usdc_rate_cache.as_ref().map(|c| c.get_rate())
-    }
-
     /// Get shared orderbooks for lock-free monitoring (Story 7.3)
     /// 
     /// Returns Arc<RwLock<...>> that can be read directly without acquiring

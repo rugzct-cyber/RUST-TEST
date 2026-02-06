@@ -259,6 +259,20 @@ async fn main() -> anyhow::Result<()> {
         .expect("Failed to connect Paradex execution adapter");
     info!(event_type = "CONNECTION", adapter = "paradex_execution", "Connected");
     
+    // Set leverage on both execution adapters (from config)
+    let target_leverage = bot.leverage as u32;
+    info!(event_type = "LEVERAGE_SETUP", leverage = %format!("{}x", target_leverage), "Setting leverage on execution adapters");
+    
+    match execution_vest.set_leverage(&vest_symbol, target_leverage).await {
+        Ok(lev) => info!(event_type = "LEVERAGE_SETUP", exchange = "vest", leverage = lev, "Leverage configured"),
+        Err(e) => warn!(event_type = "LEVERAGE_SETUP", exchange = "vest", error = %e, "Failed to set leverage (continuing)"),
+    }
+    
+    match execution_paradex.set_leverage(&paradex_symbol, target_leverage).await {
+        Ok(lev) => info!(event_type = "LEVERAGE_SETUP", exchange = "paradex", leverage = lev, "Leverage configured"),
+        Err(e) => warn!(event_type = "LEVERAGE_SETUP", exchange = "paradex", error = %e, "Failed to set leverage (continuing)"),
+    }
+    
     let executor = DeltaNeutralExecutor::new(
         execution_vest,
         execution_paradex,

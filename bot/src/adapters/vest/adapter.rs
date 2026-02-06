@@ -244,11 +244,11 @@ impl VestAdapter {
         };
 
         let is_buy = matches!(order.side, crate::adapters::types::OrderSide::Buy);
-        let size_str = format!("{:.4}", order.quantity);
+        let size_str = format!("{:.3}", order.quantity);  // Vest requires exactly 3 decimal places
         let price_str = order
             .price
-            .map(|p| format!("{:.2}", p))
-            .unwrap_or_else(|| "0.00".to_string());
+            .map(|p| format!("{:.3}", p))  // Vest requires exactly 3 decimal places
+            .unwrap_or_else(|| "0.000".to_string());
         let reduce_only = order.reduce_only;
 
         let encoded = encode(&[
@@ -1121,12 +1121,12 @@ impl ExchangeAdapter for VestAdapter {
             },
             "symbol": order.symbol,
             "isBuy": is_buy,
-            "size": format!("{:.4}", order.quantity),
+            "size": format!("{:.3}", order.quantity),  // Vest requires exactly 3 decimal places
             // Vest requires limitPrice for ALL orders (including MARKET) as a slippage protection
             // If price is None, this will fail - caller must provide a price
-            "limitPrice": order.price.map(|p| format!("{:.2}", p)).unwrap_or_else(|| {
+            "limitPrice": order.price.map(|p| format!("{:.3}", p)).unwrap_or_else(|| {  // Vest requires exactly 3 decimal places
                 tracing::error!("Vest requires limitPrice for all orders! Order rejected due to missing price.");
-                "0.00".to_string() // Will be rejected by Vest with "Limit price must be positive"
+                "0.000".to_string() // Will be rejected by Vest with "Limit price must be positive"
             }),
             "reduceOnly": order.reduce_only,
         });

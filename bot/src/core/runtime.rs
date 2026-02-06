@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{interval, Duration};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::adapters::{ExchangeAdapter, Orderbook};
 use crate::core::channels::SpreadOpportunity;
@@ -54,9 +54,16 @@ fn drain_channel<T>(rx: &mut mpsc::Receiver<T>, context: &str) {
     }
 }
 
+/// Exit monitoring result with exit fill prices for PnL calculation
+struct ExitResult {
+    exit_spread: f64,
+    vest_exit_price: f64,
+    paradex_exit_price: f64,
+}
+
 /// Exit monitoring loop - polls orderbooks until exit condition or shutdown
 /// 
-/// Returns: poll_count for final logging
+/// Returns: (poll_count, Option<ExitResult>) - None for shutdown, Some for normal exit
 #[allow(clippy::too_many_arguments)]
 async fn exit_monitoring_loop<V, P>(
     executor: &DeltaNeutralExecutor<V, P>,
@@ -69,7 +76,7 @@ async fn exit_monitoring_loop<V, P>(
     exit_spread_target: f64,
     direction: SpreadDirection,
     shutdown_rx: &mut broadcast::Receiver<()>,
-) -> u64
+) -> (u64, Option<ExitResult>)
 where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
@@ -81,7 +88,7 @@ where
         tokio::select! {
             _ = shutdown_rx.recv() => {
                 log_system_event(&SystemEvent::task_shutdown("exit_monitoring", "shutdown_signal"));
-                break;
+                return (poll_count, None);
             }
             _ = exit_interval.tick() => {
                 poll_count += 1;
@@ -123,6 +130,17 @@ where
                         log_event(&event);
                     }
                     
+                    // DEBUG: Log near-exit conditions at INFO level
+                    if exit_spread >= exit_spread_target - 0.02 {
+                        info!(
+                            event_type = "EXIT_CHECK",
+                            exit_spread = %format!("{:.4}", exit_spread),
+                            target = %format!("{:.4}", exit_spread_target),
+                            condition = %format!("{} >= {} = {}", exit_spread, exit_spread_target, exit_spread >= exit_spread_target),
+                            "Near exit threshold"
+                        );
+                    }
+                    
                     if exit_spread >= exit_spread_target {
                         // Calculate profit
                         let profit = entry_spread + exit_spread;
@@ -140,7 +158,7 @@ where
                         
                         // Close the position
                         match executor.close_position(exit_spread).await {
-                            Ok(_) => {
+                            Ok(close_result) => {
                                 // Log POSITION_CLOSED event
                                 let closed_event = TradingEvent::position_closed(
                                     pair,
@@ -149,6 +167,13 @@ where
                                     profit,
                                 );
                                 log_event(&closed_event);
+                                
+                                // Return exit fill prices for real-price PnL calculation
+                                return (poll_count, Some(ExitResult {
+                                    exit_spread,
+                                    vest_exit_price: close_result.long_fill_price,
+                                    paradex_exit_price: close_result.short_fill_price,
+                                }));
                             }
                             Err(e) => {
                                 error!(
@@ -159,7 +184,11 @@ where
                             }
                         }
                         
-                        break;
+                        return (poll_count, Some(ExitResult {
+                            exit_spread,
+                            vest_exit_price: 0.0,
+                            paradex_exit_price: 0.0,
+                        }));
                     }
                 } else {
                     debug!(
@@ -171,8 +200,6 @@ where
             }
         }
     }
-    
-    poll_count
 }
 
 // =============================================================================
@@ -298,7 +325,7 @@ pub async fn execution_task<V, P>(
                                     "Starting exit monitoring"
                                 );
                                 
-                                let _poll_count = exit_monitoring_loop(
+                                let (poll_count, maybe_exit_result) = exit_monitoring_loop(
                                     &executor,
                                     vest_orderbooks.clone(),
                                     paradex_orderbooks.clone(),
@@ -312,6 +339,40 @@ pub async fn execution_task<V, P>(
                                 ).await;
                                 
                                 log_system_event(&SystemEvent::task_stopped("exit_monitoring"));
+                                
+                                // Update TUI trade history (AC1: record_exit after close_position)
+                                if let (Some(exit_result), Some(ref tui)) = (maybe_exit_result, &tui_state) {
+                                    if let Ok(mut state) = tui.try_lock() {
+                                        let position_size = executor.get_default_quantity();
+                                        
+                                        // PnL from real prices: profit on each leg
+                                        // Vest leg PnL: depends on whether vest was long or short
+                                        // Paradex leg PnL: depends on whether paradex was long or short
+                                        let pnl_usd = match direction {
+                                            SpreadDirection::AOverB => {
+                                                // Vest=Long, Paradex=Short
+                                                // Long PnL = (exit - entry) * qty
+                                                // Short PnL = (entry - exit) * qty
+                                                let vest_entry = state.entry_vest_price.unwrap_or(0.0);
+                                                let paradex_entry = state.entry_paradex_price.unwrap_or(0.0);
+                                                let long_pnl = (exit_result.vest_exit_price - vest_entry) * position_size;
+                                                let short_pnl = (paradex_entry - exit_result.paradex_exit_price) * position_size;
+                                                long_pnl + short_pnl
+                                            }
+                                            SpreadDirection::BOverA => {
+                                                // Vest=Short, Paradex=Long
+                                                let vest_entry = state.entry_vest_price.unwrap_or(0.0);
+                                                let paradex_entry = state.entry_paradex_price.unwrap_or(0.0);
+                                                let short_pnl = (vest_entry - exit_result.vest_exit_price) * position_size;
+                                                let long_pnl = (exit_result.paradex_exit_price - paradex_entry) * position_size;
+                                                long_pnl + short_pnl
+                                            }
+                                        };
+                                        
+                                        let latency_ms = poll_count * EXIT_POLL_INTERVAL_MS;
+                                        state.record_exit(exit_result.exit_spread, pnl_usd, latency_ms);
+                                    }
+                                }
                             } else {
                                 error!(event_type = "ORDER_FAILED", "No entry direction found after successful trade");
                             }
@@ -454,14 +515,14 @@ mod tests {
         };
         opportunity_tx.send(opportunity).await.unwrap();
 
-        // Give time for entry + exit monitoring to process
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Give time for entry (including 500ms API delay) + exit monitoring to process
+        tokio::time::sleep(Duration::from_millis(800)).await;
 
         // Shutdown
         let _ = shutdown_tx.send(());
 
         // Wait for task to complete (longer timeout for exit processing)
-        let result = timeout(Duration::from_secs(2), handle).await;
+        let result = timeout(Duration::from_secs(5), handle).await;
         assert!(result.is_ok(), "Task should complete on shutdown");
     }
 
@@ -542,7 +603,7 @@ mod tests {
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         
         // Call the extracted function directly
-        let poll_count = timeout(Duration::from_secs(2), exit_monitoring_loop(
+        let result = timeout(Duration::from_secs(2), exit_monitoring_loop(
             &executor,
             vest_orderbooks,
             paradex_orderbooks,
@@ -555,9 +616,11 @@ mod tests {
             &mut shutdown_rx,
         )).await;
         
-        // Should complete (not timeout) and return poll_count >= 1
-        assert!(poll_count.is_ok(), "Exit monitoring should complete on exit condition");
-        assert!(poll_count.unwrap() >= 1, "Should have polled at least once");
+        // Should complete (not timeout) and return poll_count >= 1 with Some(exit_spread)
+        assert!(result.is_ok(), "Exit monitoring should complete on exit condition");
+        let (poll_count, exit_spread) = result.unwrap();
+        assert!(poll_count >= 1, "Should have polled at least once");
+        assert!(exit_spread.is_some(), "Should return Some(exit_spread) on normal exit");
     }
 
     #[tokio::test]
@@ -617,6 +680,8 @@ mod tests {
         // Should complete quickly
         let result = timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "Exit monitoring should respond to shutdown");
+        let (_, exit_spread) = result.unwrap().unwrap();
+        assert!(exit_spread.is_none(), "Should return None exit_spread on shutdown (AC3)");
     }
 
     #[tokio::test]
@@ -653,7 +718,7 @@ mod tests {
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         
         // Call with BOverA direction
-        let poll_count = timeout(Duration::from_secs(2), exit_monitoring_loop(
+        let result = timeout(Duration::from_secs(2), exit_monitoring_loop(
             &executor,
             vest_orderbooks,
             paradex_orderbooks,
@@ -666,7 +731,9 @@ mod tests {
             &mut shutdown_rx,
         )).await;
         
-        assert!(poll_count.is_ok(), "Exit monitoring should complete on exit condition");
-        assert!(poll_count.unwrap() >= 1, "Should have polled at least once");
+        assert!(result.is_ok(), "Exit monitoring should complete on exit condition");
+        let (poll_count, exit_spread) = result.unwrap();
+        assert!(poll_count >= 1, "Should have polled at least once");
+        assert!(exit_spread.is_some(), "Should return Some(exit_spread) on normal exit");
     }
 }

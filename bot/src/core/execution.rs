@@ -339,7 +339,7 @@ where
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            warn!(event_type = "TRADE_REJECTED", reason = "position_already_open", "Position already open - rejecting trade");
+            debug!(event_type = "TRADE_SKIPPED", reason = "position_already_open", "Position already open - skipping entry");
             return Err(ExchangeError::OrderRejected("Position already open".into()));
         }
         
@@ -533,9 +533,32 @@ where
             .map(|d| d.as_millis())
             .unwrap_or(0);
         
+        // Vest requires a limit price even for MARKET orders (slippage protection)
+        // Fetch current Vest position to get entry_price as basis for limit price
+        let vest_guard = self.vest_adapter.lock().await;
+        let vest_limit_price = match vest_guard.get_position(&self.vest_symbol).await {
+            Ok(Some(pos)) => {
+                // Apply 1% slippage tolerance based on close direction
+                if vest_side == OrderSide::Buy {
+                    pos.entry_price * 1.01  // Buying to close short: allow 1% above
+                } else {
+                    pos.entry_price * 0.99  // Selling to close long: allow 1% below
+                }
+            }
+            _ => {
+                // Fallback: use a high/low price that should always fill
+                // This is a safety net - should not happen in normal operation
+                tracing::warn!(event_type = "CLOSE_POSITION", "No Vest position found for limit price, using fallback");
+                if vest_side == OrderSide::Buy { 1_000_000.0 } else { 1.0 }
+            }
+        };
+        // Release lock before placing orders (we'll re-acquire it below)
+        drop(vest_guard);
+        
         let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, self.default_quantity)
             .client_order_id(format!("close-vest-{}", timestamp))
             .market()
+            .price(vest_limit_price)  // Vest requires limit price for all orders
             .reduce_only()
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
@@ -584,11 +607,22 @@ where
         }
         
         // Determine which leg was long/short based on entry direction
+        // For close: the "long" side is closing the long (i.e. selling), "short" is closing the short (buying)
         let (long_exchange, short_exchange) = entry_dir.to_exchanges();
         let (long_status, short_status) = if matches!(entry_dir, SpreadDirection::AOverB) {
             (vest_status, paradex_status)
         } else {
             (paradex_status.clone(), vest_status.clone())
+        };
+        
+        // Extract fill prices from close order responses for PnL calculation
+        let vest_fill = match if matches!(entry_dir, SpreadDirection::AOverB) { &long_status } else { &short_status } {
+            LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+            _ => 0.0,
+        };
+        let paradex_fill = match if matches!(entry_dir, SpreadDirection::AOverB) { &short_status } else { &long_status } {
+            LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+            _ => 0.0,
         };
         
         Ok(DeltaNeutralResult {
@@ -599,8 +633,8 @@ where
             spread_percent: exit_spread,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            long_fill_price: 0.0,  // Not needed for close operations
-            short_fill_price: 0.0, // Not needed for close operations
+            long_fill_price: vest_fill,
+            short_fill_price: paradex_fill,
         })
     }
 

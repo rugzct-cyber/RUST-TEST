@@ -10,12 +10,25 @@ use crate::core::spread::SpreadDirection;
 /// Maximum number of log entries to keep in memory
 pub const MAX_LOG_ENTRIES: usize = 100;
 
+/// Maximum number of trade records to keep in history
+pub const MAX_TRADE_HISTORY: usize = 10;
+
 /// Single log entry for display
 #[derive(Clone, Debug)]
 pub struct LogEntry {
     pub timestamp: String,
     pub level: String,
     pub message: String,
+}
+
+/// Trade history record
+#[derive(Clone, Debug)]
+pub struct TradeRecord {
+    pub direction: SpreadDirection,
+    pub entry_spread: f64,
+    pub exit_spread: f64,
+    pub pnl_usd: f64,
+    pub timestamp: String,
 }
 
 /// Central application state shared between TUI and bot tasks
@@ -50,12 +63,15 @@ pub struct AppState {
     
     // Stats
     pub trades_count: u32,
-    pub total_profit_pct: f64,
+    pub total_profit_usd: f64,
     pub last_latency_ms: Option<u64>,
     pub uptime_start: Instant,
     
     // Logs (ring buffer)
     pub recent_logs: VecDeque<LogEntry>,
+    
+    // Trade history (ring buffer)
+    pub trade_history: VecDeque<TradeRecord>,
     
     // Control
     pub should_quit: bool,
@@ -93,10 +109,11 @@ impl AppState {
             position_size,
             leverage,
             trades_count: 0,
-            total_profit_pct: 0.0,
+            total_profit_usd: 0.0,
             last_latency_ms: None,
             uptime_start: Instant::now(),
             recent_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            trade_history: VecDeque::with_capacity(MAX_TRADE_HISTORY),
             should_quit: false,
             log_scroll_offset: 0,
             show_debug_logs: false,
@@ -202,14 +219,31 @@ impl AppState {
     }
     
     /// Record trade exit
-    pub fn record_exit(&mut self, profit_pct: f64, latency_ms: u64) {
+    pub fn record_exit(&mut self, exit_spread: f64, pnl_usd: f64, latency_ms: u64) {
+        // Save trade to history BEFORE resetting position fields
+        if let (Some(direction), Some(entry_spread)) = (self.entry_direction.clone(), self.entry_spread) {
+            let record = TradeRecord {
+                direction,
+                entry_spread,
+                exit_spread,
+                pnl_usd,
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            };
+            
+            // Ring buffer: remove oldest if at capacity
+            if self.trade_history.len() >= MAX_TRADE_HISTORY {
+                self.trade_history.pop_front();
+            }
+            self.trade_history.push_back(record);
+        }
+        
         self.position_open = false;
         self.entry_spread = None;
         self.entry_direction = None;
         self.entry_vest_price = None;
         self.entry_paradex_price = None;
         self.trades_count += 1;
-        self.total_profit_pct += profit_pct;
+        self.total_profit_usd += pnl_usd;
         self.last_latency_ms = Some(latency_ms);
     }
 }
@@ -263,13 +297,19 @@ mod tests {
         assert_eq!(state.entry_vest_price, Some(97000.0));
         assert_eq!(state.entry_paradex_price, Some(97100.0));
         
-        state.record_exit(0.08, 45);
+        state.record_exit(-0.04, 0.08, 45);  // exit_spread, profit_pct, latency_ms
         assert!(!state.position_open);
         assert_eq!(state.trades_count, 1);
-        assert_eq!(state.total_profit_pct, 0.08);
+        assert_eq!(state.total_profit_usd, 0.08);
         assert_eq!(state.last_latency_ms, Some(45));
         assert_eq!(state.entry_vest_price, None);
         assert_eq!(state.entry_paradex_price, None);
+        
+        // Verify trade was added to history
+        assert_eq!(state.trade_history.len(), 1);
+        let trade = state.trade_history.front().unwrap();
+        assert_eq!(trade.entry_spread, 0.12);
+        assert_eq!(trade.exit_spread, -0.04);
     }
     
     #[test]
@@ -290,5 +330,29 @@ mod tests {
         assert_eq!(state.vest_best_ask, 97010.0);
         assert_eq!(state.paradex_best_bid, 97100.0);
         assert_eq!(state.paradex_best_ask, 97110.0);
+    }
+    
+    #[test]
+    fn test_trade_history_ring_buffer() {
+        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10);
+        
+        // Simulate 11 trades to test ring buffer behavior (AC2)
+        for i in 0..11 {
+            let spread = 0.10 + (i as f64 * 0.01);  // Varying entry spreads
+            state.record_entry(spread, SpreadDirection::AOverB, 97000.0, 97100.0);
+            state.record_exit(-0.02, 0.05, 30);  // exit_spread, pnl_usd, latency
+        }
+        
+        // Should be capped at MAX_TRADE_HISTORY (10)
+        assert_eq!(state.trade_history.len(), MAX_TRADE_HISTORY);
+        
+        // Oldest trade (i=0, spread 0.10) should have been rotated out
+        // First trade should now be i=1, spread 0.11
+        let first_trade = state.trade_history.front().unwrap();
+        assert!((first_trade.entry_spread - 0.11).abs() < 0.001);
+        
+        // Most recent trade should be i=10, spread 0.20
+        let last_trade = state.trade_history.back().unwrap();
+        assert!((last_trade.entry_spread - 0.20).abs() < 0.001);
     }
 }
