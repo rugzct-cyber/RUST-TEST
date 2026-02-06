@@ -106,7 +106,7 @@ pub async fn monitoring_task(
                     if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
                         // Log spread status periodically (every ~1 second)
                         // Uses debug level for non-opportunity monitoring
-                        if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                        if poll_count % LOG_THROTTLE_POLLS == 0 {
                             debug!(
                                 event_type = "SPREAD_MONITORING",
                                 entry_spread = %format_pct(spread_result.spread_pct),
@@ -122,7 +122,7 @@ pub async fn monitoring_task(
                             
                             // Log SPREAD_DETECTED event (structured, throttled to reduce noise)
                             // Only log once per ~2 seconds to avoid flooding
-                            if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                            if poll_count % LOG_THROTTLE_POLLS == 0 {
                                 let direction_str = format!("{:?}", spread_result.direction);
                                 let event = TradingEvent::spread_detected(
                                     &config.pair,
@@ -168,7 +168,7 @@ pub async fn monitoring_task(
                     static WARN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                     let count = WARN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // Only warn every 400 iterations (~10 seconds at 25ms) to avoid spam
-                    if count.is_multiple_of(WARN_THROTTLE_POLLS) {
+                    if count % WARN_THROTTLE_POLLS == 0 {
                         let vest_has_ob = vest_orderbooks.read().await.contains_key(&vest_symbol);
                         let paradex_has_ob = paradex_orderbooks.read().await.contains_key(&paradex_symbol);
                         warn!(

@@ -119,7 +119,7 @@ where
                     };
                     
                     // Log POSITION_MONITORING event (throttled - every ~1 second)
-                    if poll_count.is_multiple_of(LOG_THROTTLE_POLLS) {
+                    if poll_count % LOG_THROTTLE_POLLS == 0 {
                         let event = TradingEvent::position_monitoring(
                             pair,
                             entry_spread,    // entry_spread (original)
