@@ -120,38 +120,64 @@ fn draw_orderbooks(frame: &mut Frame, area: Rect, state: &AppState) {
 
 /// Draw stats panel
 fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
-    let entry_text = if let Some(entry) = state.entry_spread {
-        format!("{:.2}%", entry * 100.0)
+    // Live spreads with color coding
+    let entry_color = if state.live_entry_spread >= state.spread_entry_threshold * 100.0 {
+        Color::Green  // Above threshold = entry opportunity!
     } else {
-        "-".to_string()
+        Color::White
+    };
+    let exit_color = if state.live_exit_spread >= state.spread_exit_threshold * 100.0 {
+        Color::Green  // Above threshold = exit opportunity!
+    } else {
+        Color::White
     };
     
-    let pnl_color = if state.total_profit_pct >= 0.0 { Color::Green } else { Color::Red };
-    let pnl_text = format!("{:+.2}%", state.total_profit_pct * 100.0);
+    // Line 1: Live spreads (always visible)
+    let line1 = Line::from(vec![
+        Span::raw("Entry Spread: "),
+        Span::styled(format!("{:+.3}%", state.live_entry_spread), Style::default().fg(entry_color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" (>{})", format!("{:.2}%", state.spread_entry_threshold * 100.0)), Style::default().fg(Color::DarkGray)),
+        Span::raw("  │  Exit Spread: "),
+        Span::styled(format!("{:+.3}%", state.live_exit_spread), Style::default().fg(exit_color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" (>{})", format!("{:.2}%", state.spread_exit_threshold * 100.0)), Style::default().fg(Color::DarkGray)),
+    ]);
     
+    // Line 2: Position info + runtime stats
+    let pnl_color = if state.total_profit_pct >= 0.0 { Color::Green } else { Color::Red };
     let latency_text = state.last_latency_ms
         .map(|l| format!("{}ms", l))
         .unwrap_or_else(|| "-".to_string());
     
-    let line1 = Line::from(vec![
-        Span::raw("Entry: "),
-        Span::styled(entry_text, Style::default().fg(Color::Cyan)),
-        Span::raw("  │  PnL: "),
-        Span::styled(pnl_text, Style::default().fg(pnl_color)),
-        Span::raw("  │  Latency: "),
-        Span::styled(latency_text, Style::default().fg(Color::Yellow)),
-        Span::raw("  │  Trades: "),
-        Span::styled(format!("{}", state.trades_count), Style::default().fg(Color::White)),
-    ]);
-    
-    let line2 = Line::from(vec![
-        Span::raw("Uptime: "),
-        Span::styled(state.uptime_str(), Style::default().fg(Color::Cyan)),
-        Span::raw("  │  Size: "),
-        Span::styled(format!("{} {}", state.position_size, state.pair), Style::default().fg(Color::White)),
-        Span::raw("  │  Leverage: "),
-        Span::styled(format!("{}x", state.leverage), Style::default().fg(Color::Yellow)),
-    ]);
+    let line2 = if state.position_open {
+        // Show position entry prices when open
+        let entry_vest = state.entry_vest_price.map(|p| format!("${:.2}", p)).unwrap_or_else(|| "-".to_string());
+        let entry_paradex = state.entry_paradex_price.map(|p| format!("${:.2}", p)).unwrap_or_else(|| "-".to_string());
+        let entry_spread = state.entry_spread.map(|s| format!("{:.2}%", s)).unwrap_or_else(|| "-".to_string());
+        Line::from(vec![
+            Span::styled("● POS ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::raw("Entry@"),
+            Span::styled(entry_spread, Style::default().fg(Color::Cyan)),
+            Span::raw(" V:"),
+            Span::styled(entry_vest, Style::default().fg(Color::Yellow)),
+            Span::raw(" P:"),
+            Span::styled(entry_paradex, Style::default().fg(Color::Yellow)),
+            Span::raw("  │  Trades: "),
+            Span::styled(format!("{}", state.trades_count), Style::default().fg(Color::White)),
+            Span::raw("  │  PnL: "),
+            Span::styled(format!("{:+.2}%", state.total_profit_pct * 100.0), Style::default().fg(pnl_color)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw("Trades: "),
+            Span::styled(format!("{}", state.trades_count), Style::default().fg(Color::White)),
+            Span::raw("  │  PnL: "),
+            Span::styled(format!("{:+.2}%", state.total_profit_pct * 100.0), Style::default().fg(pnl_color)),
+            Span::raw("  │  Latency: "),
+            Span::styled(latency_text, Style::default().fg(Color::Yellow)),
+            Span::raw("  │  Uptime: "),
+            Span::styled(state.uptime_str(), Style::default().fg(Color::Cyan)),
+        ])
+    };
     
     let stats = Paragraph::new(vec![line1, line2])
         .block(Block::default().borders(Borders::ALL).title("Stats"));

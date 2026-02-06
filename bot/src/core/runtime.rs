@@ -22,6 +22,10 @@ use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event
 use crate::core::execution::DeltaNeutralExecutor;
 use crate::core::spread::{SpreadCalculator, SpreadDirection};
 
+// TUI State type for optional TUI updates
+use crate::tui::app::AppState as TuiState;
+use std::sync::Mutex as StdMutex;
+
 /// Type alias for shared orderbooks
 pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 
@@ -200,6 +204,7 @@ pub async fn execution_task<V, P>(
     paradex_symbol: String,
     mut shutdown_rx: broadcast::Receiver<()>,
     exit_spread_target: f64,
+    tui_state: Option<Arc<StdMutex<TuiState>>>,
 ) where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
@@ -257,8 +262,30 @@ pub async fn execution_task<V, P>(
                             );
                             log_event(&event);
                             
-                            // Verify positions on both exchanges
-                            executor.verify_positions(spread_pct, exit_spread_target).await;
+                            // Verify positions on both exchanges and get entry prices
+                            // Add small delay to let Vest API update entry price
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                            let (vest_entry, paradex_entry) = executor.verify_positions(spread_pct, exit_spread_target).await;
+                            
+                            // Update TUI state with entry prices from position data
+                            if let Some(ref tui) = tui_state {
+                                if let Ok(mut state) = tui.try_lock() {
+                                    // Calculate actual entry spread from real entry prices
+                                    let actual_spread = match (vest_entry, paradex_entry) {
+                                        (Some(v), Some(p)) if v > 0.0 && p > 0.0 => {
+                                            ((v - p).abs() / v.max(p)) * 100.0
+                                        }
+                                        _ => spread_pct, // fallback to detected spread
+                                    };
+                                    
+                                    state.record_entry(
+                                        actual_spread,
+                                        opportunity.direction,
+                                        vest_entry.unwrap_or(0.0),
+                                        paradex_entry.unwrap_or(0.0),
+                                    );
+                                }
+                            }
                             
                             // Start exit monitoring via extracted function
                             let entry_direction = executor.get_entry_direction();
@@ -408,6 +435,7 @@ mod tests {
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
                 -0.05,  // exit_spread_target: exit when spread >= -0.05%
+                None,   // No TUI state in tests
             ).await;
         });
 
@@ -467,6 +495,7 @@ mod tests {
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
                 -0.05,  // exit_spread_target
+                None,   // No TUI state in tests
             ).await;
         });
 

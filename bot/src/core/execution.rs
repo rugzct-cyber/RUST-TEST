@@ -450,7 +450,8 @@ where
     /// Verify positions on both exchanges after trade execution
     /// 
     /// Logs entry prices, entry spread, and exit target to confirm trade placement.
-    pub async fn verify_positions(&self, entry_spread: f64, exit_spread_target: f64) {
+    /// Returns (vest_entry_price, paradex_entry_price) for TUI display.
+    pub async fn verify_positions(&self, entry_spread: f64, exit_spread_target: f64) -> (Option<f64>, Option<f64>) {
         let vest = self.vest_adapter.lock().await;
         let paradex = self.paradex_adapter.lock().await;
         
@@ -467,6 +468,16 @@ where
             entry_direction,
         );
         verification.log_summary(entry_spread, exit_spread_target, entry_direction);
+        
+        // Extract entry prices for TUI
+        let vest_entry = match &vest_pos {
+            Ok(Some(pos)) => Some(pos.entry_price),
+            _ => None,
+        };
+        let paradex_entry = match &paradex_pos {
+            Ok(Some(pos)) => Some(pos.entry_price),
+            _ => None,
+        };
         
         // Individual position logging stays inline (different event_type)
         match vest_pos {
@@ -490,6 +501,8 @@ where
             Ok(None) => warn!(event_type = "POSITION_DETAIL", exchange = "paradex", "No position"),
             Err(e) => warn!(event_type = "POSITION_DETAIL", exchange = "paradex", error = %e, "Position check failed"),
         }
+        
+        (vest_entry, paradex_entry)
     }
     
     /// Get the entry direction (0=none, 1=AOverB, 2=BOverA)

@@ -422,19 +422,19 @@ pub fn log_compact(tag: &str, fields: &[(&str, String)]) -> String {
 /// Log a trading event using structured tracing fields
 ///
 /// Trading events use compact format: [TAG] key=value key=value
-/// - SCAN: Pre-entry monitoring (LES = Live Entry Spread)
-/// - ENTRY: Fill executed (ES = Entry Spread, PEL/PES = Prix Entrée Long/Short)
-/// - HOLD: Post-entry monitoring (LXS = Live Exit Spread)
-/// - EXIT: Position closed (XS = Exit Spread, CAP = Captured profit)
+/// - SCAN: Pre-entry monitoring (LiveEntrySpread = current detected spread)
+/// - ENTRY: Fill executed (EntrySpread, LongPrice, ShortPrice, Latency)
+/// - HOLD: Post-entry monitoring (LiveExitSpread = current exit spread)
+/// - EXIT: Position closed (ExitSpread, Captured = total profit)
 pub fn log_event(event: &TradingEvent) {
     let event_type = event.event_type.to_string();
     let timestamp = event.timestamp_ms;
     
     match event.event_type {
-        // T3: [SCAN] LES=X% - Pre-entry spread detection
+        // T3: [SCAN] LiveEntrySpread=X% - Pre-entry spread detection
         TradingEventType::SpreadDetected => {
-            let les = event.entry_spread.map(format_pct_compact).unwrap_or_default();
-            let msg = log_compact("SCAN", &[("LES", les)]);
+            let live_entry_spread = event.entry_spread.map(format_pct_compact).unwrap_or_default();
+            let msg = log_compact("SCAN", &[("LiveEntrySpread", live_entry_spread)]);
             info!(
                 event_type = %event_type,
                 timestamp = timestamp,
@@ -443,29 +443,28 @@ pub fn log_event(event: &TradingEvent) {
                 "{}", msg
             );
         }
-        // T4: [ENTRY] ES=X% PEL:P=Y PES:V=Z LAT=Nms
+        // T4: [ENTRY] EntrySpread=X% LongPrice:Exchange=Y ShortPrice:Exchange=Z Latency=Nms
         TradingEventType::TradeEntry => {
-            let es = event.entry_spread.map(format_pct_compact).unwrap_or_default();
-            let lat = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
+            let entry_spread = event.entry_spread.map(format_pct_compact).unwrap_or_default();
+            let latency = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
             
             // Determine exchange mapping from long/short_exchange fields
             let long_ex = event.long_exchange.as_deref().unwrap_or("?");
             let short_ex = event.short_exchange.as_deref().unwrap_or("?");
             
-            // Format: PEL:P=X means "Prix Entrée Long at Paradex=X"
-            // We use first letter of exchange: P=Paradex, V=Vest
-            let pel_ex = long_ex.chars().next().unwrap_or('?').to_ascii_uppercase();
-            let pes_ex = short_ex.chars().next().unwrap_or('?').to_ascii_uppercase();
+            // Format: LongPrice:Paradex=X, ShortPrice:Vest=Y
+            let long_ex_name = if long_ex == "vest" { "Vest" } else { "Paradex" };
+            let short_ex_name = if short_ex == "vest" { "Vest" } else { "Paradex" };
             
             // F1 Fix: Use actual fill prices instead of placeholder
-            let pel_price = event.long_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
-            let pes_price = event.short_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
+            let long_price = event.long_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
+            let short_price = event.short_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
             
             let msg = log_compact("ENTRY", &[
-                ("ES", es),
-                (&format!("PEL:{}", pel_ex), pel_price),
-                (&format!("PES:{}", pes_ex), pes_price),
-                ("LAT", lat),
+                ("EntrySpread", entry_spread),
+                (&format!("LongPrice:{}", long_ex_name), long_price),
+                (&format!("ShortPrice:{}", short_ex_name), short_price),
+                ("Latency", latency),
             ]);
             info!(
                 event_type = %event_type,
@@ -476,10 +475,10 @@ pub fn log_event(event: &TradingEvent) {
                 "{}", msg
             );
         }
-        // T5: [HOLD] LXS=X% - Position monitoring (DEBUG level, throttled)
+        // T5: [HOLD] LiveExitSpread=X% - Position monitoring (DEBUG level, throttled)
         TradingEventType::PositionMonitoring => {
-            let lxs = event.exit_spread.map(format_pct_compact).unwrap_or_default();
-            let msg = log_compact("HOLD", &[("LXS", lxs)]);
+            let live_exit_spread = event.exit_spread.map(format_pct_compact).unwrap_or_default();
+            let msg = log_compact("HOLD", &[("LiveExitSpread", live_exit_spread)]);
             debug!(
                 event_type = %event_type,
                 timestamp = timestamp,
@@ -488,20 +487,19 @@ pub fn log_event(event: &TradingEvent) {
                 "{}", msg
             );
         }
-        // T6: [EXIT] XS=X% CAP=Y% LAT=Nms
+        // T6: [EXIT] ExitSpread=X% Captured=Y% Latency=Nms
         TradingEventType::TradeExit => {
-            let xs = event.exit_spread.map(format_pct_compact).unwrap_or_default();
-            // CAP = entry_spread + exit_spread (total captured profit)
-            // F2 Fix: Renamed shadowed variable from `xs` to `exit_spread_val`
-            let cap = match (event.entry_spread, event.exit_spread) {
-                (Some(es), Some(exit_spread_val)) => format_pct_compact(es + exit_spread_val),
+            let exit_spread = event.exit_spread.map(format_pct_compact).unwrap_or_default();
+            // Captured = entry_spread + exit_spread (total captured profit)
+            let captured = match (event.entry_spread, event.exit_spread) {
+                (Some(es), Some(xs)) => format_pct_compact(es + xs),
                 _ => "?".to_string(),
             };
-            let lat = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
+            let latency = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
             let msg = log_compact("EXIT", &[
-                ("XS", xs),
-                ("CAP", cap),
-                ("LAT", lat),
+                ("ExitSpread", exit_spread),
+                ("Captured", captured),
+                ("Latency", latency),
             ]);
             info!(
                 event_type = %event_type,

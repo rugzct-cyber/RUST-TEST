@@ -207,6 +207,33 @@ async fn main() -> anyhow::Result<()> {
     );
     info!(event_type = "SUBSCRIPTION", channel = "orders", exchange = "paradex", "Subscribed to order confirmations");
 
+    // DEBUG: Check current positions at startup to verify entry prices
+    info!(event_type = "DEBUG", "Checking current positions at startup...");
+    if let Ok(Some(vest_pos)) = vest_adapter.get_position(&vest_symbol).await {
+        info!(
+            event_type = "STARTUP_POSITION",
+            exchange = "vest",
+            entry_price = vest_pos.entry_price,
+            side = %vest_pos.side,
+            quantity = vest_pos.quantity,
+            "Vest position found at startup"
+        );
+    } else {
+        info!(event_type = "STARTUP_POSITION", exchange = "vest", "No position");
+    }
+    if let Ok(Some(paradex_pos)) = paradex_adapter.get_position(&paradex_symbol).await {
+        info!(
+            event_type = "STARTUP_POSITION",
+            exchange = "paradex",
+            entry_price = paradex_pos.entry_price,
+            side = %paradex_pos.side,
+            quantity = paradex_pos.quantity,
+            "Paradex position found at startup"
+        );
+    } else {
+        info!(event_type = "STARTUP_POSITION", exchange = "paradex", "No position");
+    }
+
     // Story 7.3: Get SharedOrderbooks for lock-free monitoring (NO Mutex!)
     let vest_shared_orderbooks = vest_adapter.get_shared_orderbooks();
     let paradex_shared_orderbooks = paradex_adapter.get_shared_orderbooks();
@@ -247,6 +274,7 @@ async fn main() -> anyhow::Result<()> {
     let exec_paradex_orderbooks = paradex_shared_orderbooks.clone();
     let exec_vest_symbol = vest_symbol.clone();
     let exec_paradex_symbol = paradex_symbol.clone();
+    let exec_tui_state = app_state.clone();
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
@@ -257,6 +285,7 @@ async fn main() -> anyhow::Result<()> {
             exec_paradex_symbol,
             execution_shutdown,
             exit_spread_target,
+            exec_tui_state,
         ).await;
     });
     info!(event_type = "RUNTIME", task = "execution", "Task spawned (V1 HFT mode with exit monitoring)");
@@ -327,13 +356,12 @@ async fn main() -> anyhow::Result<()> {
                                 paradex_ob.best_ask().unwrap_or(0.0),
                             );
                             
-                            // Calculate spread
-                            let vest_mid = (state.vest_best_bid + state.vest_best_ask) / 2.0;
-                            let paradex_mid = (state.paradex_best_bid + state.paradex_best_ask) / 2.0;
-                            if vest_mid > 0.0 && paradex_mid > 0.0 {
-                                let spread = (paradex_mid - vest_mid) / vest_mid;
-                                state.update_spread(spread, None);
-                            }
+                            // Calculate live entry/exit spreads
+                            state.update_live_spreads();
+                            
+                            // Use live_entry_spread for header (already in percentage)
+                            let entry_spread = state.live_entry_spread;
+                            state.update_spread(entry_spread / 100.0, None);
                         }
                     }
                 }

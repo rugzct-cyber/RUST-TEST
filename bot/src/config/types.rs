@@ -172,9 +172,11 @@ pub struct ApiConfig {
 pub struct AppConfig {
     /// List of bot configurations
     pub bots: Vec<BotConfig>,
-    /// Risk management settings
+    /// Risk management settings (optional - uses defaults if omitted)
+    #[serde(default)]
     pub risk: RiskConfig,
-    /// API server settings
+    /// API server settings (optional - uses defaults if omitted)
+    #[serde(default)]
     pub api: ApiConfig,
 }
 
