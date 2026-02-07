@@ -264,14 +264,11 @@ impl SpreadCalculator {
 // Helper Functions
 // =============================================================================
 
-/// Get current timestamp in milliseconds (Unix epoch)
-#[inline(always)]
-fn current_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+// Timestamp function: use canonical implementation from core::events
+use crate::core::events::current_timestamp_ms as current_time_ms;
+
+
+
 
 
 

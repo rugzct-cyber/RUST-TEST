@@ -11,12 +11,11 @@
 //! - Distinct entry_spread vs exit_spread fields for slippage analysis
 
 use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info};
 
-use crate::adapters::{ExchangeAdapter, Orderbook};
+use crate::adapters::ExchangeAdapter;
 use crate::core::channels::SpreadOpportunity;
 use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, calculate_latency_ms, format_pct};
 use crate::core::execution::DeltaNeutralExecutor;
@@ -26,8 +25,7 @@ use crate::core::spread::{SpreadCalculator, SpreadDirection};
 use crate::tui::app::AppState as TuiState;
 use std::sync::Mutex as StdMutex;
 
-/// Type alias for shared orderbooks
-pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+use crate::core::channels::SharedOrderbooks;
 
 // =============================================================================
 // Constants
@@ -36,8 +34,8 @@ pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 /// Exit monitoring polling interval in milliseconds (25ms for V1 HFT)
 const EXIT_POLL_INTERVAL_MS: u64 = 25;
 
-/// Log throttle interval - log every N polls (~1 second at 25ms polling)
-const LOG_THROTTLE_POLLS: u64 = 40;
+/// Log throttle — imported from channels (single source of truth)
+use super::channels::LOG_THROTTLE_POLLS;
 
 // =============================================================================
 // Helper Functions
@@ -157,7 +155,7 @@ where
                         log_event(&event);
                         
                         // Close the position
-                        match executor.close_position(exit_spread).await {
+                        match executor.close_position(exit_spread, vest_bid, vest_ask).await {
                             Ok(close_result) => {
                                 // Log POSITION_CLOSED event
                                 let closed_event = TradingEvent::position_closed(
@@ -410,6 +408,8 @@ pub async fn execution_task<V, P>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tokio::sync::RwLock;
     use crate::adapters::ExchangeResult;
     use crate::adapters::types::{OrderRequest, OrderResponse, OrderStatus, Orderbook, PositionInfo};
     use crate::core::spread::SpreadDirection;

@@ -4,10 +4,8 @@
 //! - Configuration types (`AppConfig`, `BotConfig`, `RiskConfig`, `ApiConfig`)
 //! - YAML loading functionality (`load_config`)
 //! - Shared state wrapper (`SharedConfig`)
-//! - Application constants with environment variable overrides
 //! - Logging configuration (`init_logging`) - Story 5.1
 
-pub mod constants;
 pub mod logging;
 mod loader;
 mod types;

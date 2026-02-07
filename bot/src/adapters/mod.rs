@@ -1,4 +1,4 @@
-//! Exchange adapters for Vest, Paradex, Hyperliquid, Lighter
+//! Exchange adapters for Vest and Paradex
 //!
 //! This module provides the core abstractions for connecting to
 //! various cryptocurrency exchanges via WebSocket.
@@ -17,7 +17,7 @@ pub use types::{
     OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderType, TimeInForce,
     PositionInfo, OrderBuilder,
 };
-pub use traits::{ExchangeAdapter, OrderbookStream};
+pub use traits::ExchangeAdapter;
 pub use vest::{VestAdapter, VestConfig, SharedOrderbooks};
 pub use paradex::{ParadexAdapter, ParadexConfig};
 

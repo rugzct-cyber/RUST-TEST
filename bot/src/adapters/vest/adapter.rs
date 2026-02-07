@@ -57,7 +57,7 @@ pub(crate) type WsStream =
 pub(crate) type WsWriter = SplitSink<WsStream, Message>;
 pub(crate) type WsReader = SplitStream<WsStream>;
 /// Thread-safe shared orderbooks storage for lock-free monitoring (Story 7.3)
-pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+pub use crate::core::channels::SharedOrderbooks;
 
 // next_subscription_id() imported from crate::adapters::types (shared counter)
 
@@ -206,14 +206,18 @@ impl VestAdapter {
         if response.status().is_success() || response.status().as_u16() == 401 {
             // 401 is expected without auth - connection is still established
             tracing::info!(
-                "[INIT] Vest HTTP connection pool warmed up (latency={}ms)",
-                elapsed.as_millis()
+                phase = "init",
+                exchange = "vest",
+                latency_ms = %elapsed.as_millis(),
+                "HTTP connection pool warmed up"
             );
         } else {
             tracing::warn!(
-                "[INIT] Vest HTTP warm-up returned status {} (latency={}ms)",
-                response.status(),
-                elapsed.as_millis()
+                phase = "init",
+                exchange = "vest",
+                status = %response.status(),
+                latency_ms = %elapsed.as_millis(),
+                "HTTP warm-up returned non-success status"
             );
         }
         
@@ -786,12 +790,6 @@ impl VestAdapter {
             .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
 
         Ok(unsub_id)
-    }
-
-    /// Sync local orderbooks from shared storage
-    pub async fn sync_orderbooks(&mut self) {
-        let books = self.shared_orderbooks.read().await;
-        self.orderbooks = books.clone();
     }
 
     /// Spawn heartbeat monitoring task

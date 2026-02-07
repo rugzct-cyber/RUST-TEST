@@ -32,11 +32,11 @@ pub(crate) struct ListenKeyResponse {
 
 /// Response from POST /orders (Vest API)
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Some fields used only by serde for complete API response parsing
 pub(crate) struct VestOrderResponse {
     /// Exchange-assigned order ID (Vest returns "id", not "orderId")
     pub id: Option<String>,
     /// Nonce used for the order
-    #[allow(dead_code)]
     pub nonce: Option<u64>,
     /// Order status: NEW, PARTIALLY_FILLED, FILLED, CANCELLED, REJECTED
     pub status: Option<String>,
@@ -44,11 +44,9 @@ pub(crate) struct VestOrderResponse {
     pub size: Option<String>,
     /// Order type
     #[serde(rename = "orderType")]
-    #[allow(dead_code)]
     pub order_type: Option<String>,
     /// Post time
     #[serde(rename = "postTime")]
-    #[allow(dead_code)]
     pub post_time: Option<u64>,
     /// Average fill price (only present when status is FILLED)
     #[serde(rename = "avgFilledPrice")]
@@ -64,13 +62,13 @@ pub(crate) struct VestOrderResponse {
 
 /// Response from GET /account (Vest API)
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Some fields used only by serde
 pub struct VestAccountResponse {
     /// List of active positions
     #[serde(default)]
     pub positions: Vec<VestPositionData>,
     /// Account balances
     #[serde(default)]
-    #[allow(dead_code)]
     pub balances: Vec<VestBalanceData>,
     /// Leverage settings per symbol
     #[serde(default)]
@@ -118,9 +116,9 @@ pub struct VestBalanceData {
 
 /// Leverage setting per symbol from Vest API
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fields used by serde
 pub struct VestLeverageData {
     /// Trading symbol
-    #[allow(dead_code)]
     pub symbol: Option<String>,
     /// Leverage value (e.g., 10)
     pub value: Option<u32>,
@@ -128,9 +126,9 @@ pub struct VestLeverageData {
 
 /// Response from POST /account/leverage (Vest API)
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Fields used by serde
 pub(crate) struct VestLeverageResponse {
     /// Symbol the leverage was set for
-    #[allow(dead_code)]
     pub symbol: Option<String>,
     /// New leverage value
     pub value: Option<u32>,

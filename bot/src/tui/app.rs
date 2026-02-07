@@ -40,7 +40,7 @@ pub struct AppState {
     pub paradex_best_bid: f64,
     pub paradex_best_ask: f64,
     
-    // Spread actuel (live from orderbooks)
+    // Spread actuel (live from orderbooks, in percentage e.g. 0.34 = 0.34%)
     pub current_spread_pct: f64,
     pub spread_direction: Option<SpreadDirection>,
     pub live_entry_spread: f64,  // (BID_B - ASK_A) / ASK_A * 100
@@ -221,7 +221,7 @@ impl AppState {
     /// Record trade exit
     pub fn record_exit(&mut self, exit_spread: f64, pnl_usd: f64, latency_ms: u64) {
         // Save trade to history BEFORE resetting position fields
-        if let (Some(direction), Some(entry_spread)) = (self.entry_direction.clone(), self.entry_spread) {
+        if let (Some(direction), Some(entry_spread)) = (self.entry_direction, self.entry_spread) {
             let record = TradeRecord {
                 direction,
                 entry_spread,

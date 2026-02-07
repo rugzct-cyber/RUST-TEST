@@ -19,6 +19,7 @@ use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::traits::ExchangeAdapter;
 use hft_bot::adapters::types::{OrderRequest, OrderSide, OrderType, TimeInForce};
 use hft_bot::config;
+use tracing::{info, warn, error};
 use uuid::Uuid;
 
 const VEST_PAIR: &str = "BTC-PERP";
@@ -31,37 +32,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
     config::init_logging();
     
-    let log = |msg: &str| println!("{}", msg);
+    info!("╔══════════════════════════════════════════════════════════╗");
+    info!("║          AUTO-CLOSE SAFETY MECHANISM TEST                ║");
+    info!("║  Story 2.5 - NFR7: Zero Directional Exposure            ║");
+    info!("╚══════════════════════════════════════════════════════════╝");
     
-    log("╔══════════════════════════════════════════════════════════╗");
-    log("║          AUTO-CLOSE SAFETY MECHANISM TEST                ║");
-    log("║  Story 2.5 - NFR7: Zero Directional Exposure            ║");
-    log("╚══════════════════════════════════════════════════════════╝");
-    
-    log("\n🎯 TEST SCENARIO:");
-    log("   1. Open LONG position on Vest (0.0005 BTC)");
-    log("   2. Simulate SHORT failure (skip Paradex order)");
-    log("   3. Manually trigger auto-close on Vest");
-    log("   4. Verify position is closed");
+    info!("TEST SCENARIO:");
+    info!("  1. Open LONG position on Vest (0.0005 BTC)");
+    info!("  2. Simulate SHORT failure (skip Paradex order)");
+    info!("  3. Manually trigger auto-close on Vest");
+    info!("  4. Verify position is closed");
     
     // =========================================================================
     // PHASE 0: Connect Vest adapter
     // =========================================================================
-    log("\n📡 PHASE 0: Connecting to Vest...");
+    info!("PHASE 0: Connecting to Vest...");
     
     let vest_config = VestConfig::from_env()?;
     let mut vest_adapter = VestAdapter::new(vest_config);
     vest_adapter.connect().await?;
-    log("   ✅ Vest connected");
+    info!(exchange = "vest", "Connected");
 
     // =========================================================================
     // PHASE 0.5: SET LEVERAGE
     // =========================================================================
-    log(&format!("\n⚙️  PHASE 0.5: Setting leverage to {}x...", LEVERAGE));
+    info!(leverage = LEVERAGE, "PHASE 0.5: Setting leverage...");
     
     match vest_adapter.set_leverage(VEST_PAIR, LEVERAGE).await {
-        Ok(lev) => log(&format!("   ✅ Leverage set to {}x", lev)),
-        Err(e) => log(&format!("   ⚠️  Set leverage failed: {} (continuing...)", e)),
+        Ok(lev) => info!(leverage = lev, "Leverage set"),
+        Err(e) => warn!(error = %e, "Set leverage failed (continuing)"),
     }
 
     // Subscribe to orderbook and wait for data
@@ -77,20 +76,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|ob| ob.asks.first().map(|l| l.price))
         .unwrap_or(0.0);
     
-    log(&format!("   Vest ask: ${:.2}", vest_ask));
+    info!(vest_ask = vest_ask, "Current ask price");
 
     // =========================================================================
     // PHASE 1: OPEN LONG POSITION ON VEST
     // =========================================================================
-    log("\n🚀 PHASE 1: OPENING LONG POSITION ON VEST...");
-    log(&format!("   Opening BUY {} BTC @ ${:.2}", BTC_QTY, vest_ask * 1.002));
+    info!("PHASE 1: OPENING LONG POSITION ON VEST...");
+    let limit_price = vest_ask * 1.002;
+    info!(side = "BUY", qty = BTC_QTY, price = limit_price, "Opening position");
 
     let vest_open_order = OrderRequest {
         client_order_id: format!("test-open-{}", &Uuid::new_v4().to_string()[..6]),
         symbol: VEST_PAIR.to_string(),
         side: OrderSide::Buy,
         order_type: OrderType::Limit,
-        price: Some(vest_ask * 1.002),  // Slightly above ask
+        price: Some(limit_price),
         quantity: BTC_QTY,
         time_in_force: TimeInForce::Ioc,
         reduce_only: false,
@@ -100,16 +100,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let vest_open_result = vest_adapter.place_order(vest_open_order).await;
     let open_latency = open_start.elapsed();
 
-    log(&format!("\n   ⏱️  Open latency: {}ms", open_latency.as_millis()));
+    info!(latency_ms = open_latency.as_millis() as u64, "Open latency");
     
     let vest_order_response = match vest_open_result {
         Ok(resp) => {
-            log(&format!("   ✅ LONG opened: Order ID: {} | Status: {:?}", resp.order_id, resp.status));
+            info!(order_id = %resp.order_id, status = ?resp.status, "LONG opened");
             resp
         }
         Err(e) => {
-            log(&format!("   ❌ LONG failed: {}", e));
-            log("\n   ⚠️  Cannot proceed without successful LONG position");
+            error!(error = %e, "LONG failed");
+            warn!("Cannot proceed without successful LONG position");
             return Ok(());
         }
     };
@@ -117,20 +117,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // PHASE 2: VERIFY LONG POSITION
     // =========================================================================
-    log("\n🔍 PHASE 2: VERIFYING LONG POSITION (waiting 2s for settlement)...");
+    info!("PHASE 2: VERIFYING LONG POSITION (waiting 2s for settlement)...");
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     
     let vest_pos = vest_adapter.get_position(VEST_PAIR).await?;
     
     let position_qty = match &vest_pos {
         Some(pos) => {
-            log(&format!("   ✅ Vest: {} {} BTC @ ${:.2} (PnL: ${:.2})", 
-                pos.side.to_uppercase(), pos.quantity, pos.entry_price, pos.unrealized_pnl));
+            info!(side = %pos.side.to_uppercase(), qty = pos.quantity, 
+                  entry_price = pos.entry_price, pnl = pos.unrealized_pnl, "Position verified");
             pos.quantity
         }
         None => {
-            log("   ⚠️  NO POSITION DETECTED - order may not have filled");
-            log("   Exiting test...");
+            warn!("NO POSITION DETECTED - order may not have filled");
+            info!("Exiting test...");
             return Ok(());
         }
     };
@@ -138,18 +138,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // PHASE 3: SIMULATE SHORT FAILURE (skip Paradex)
     // =========================================================================
-    log("\n❌ PHASE 3: SIMULATING SHORT FAILURE...");
-    log("   Paradex: SHORT order NOT PLACED (simulated failure)");
-    log("   💡 This triggers the auto-close scenario:");
-    log("      - LONG succeeded ✅");
-    log("      - SHORT failed ❌");
-    log("      → Must close LONG to avoid directional exposure");
+    info!("PHASE 3: SIMULATING SHORT FAILURE...");
+    info!("Paradex: SHORT order NOT PLACED (simulated failure)");
+    info!("Auto-close scenario: LONG succeeded, SHORT failed → must close LONG");
 
     // =========================================================================
     // PHASE 4: MANUALLY TRIGGER AUTO-CLOSE (Story 2.5 logic)
     // =========================================================================
-    log("\n🔒 PHASE 4: AUTO-CLOSE PROCEDURE (NFR7)...");
-    log(&format!("   [SAFETY] Closing exposed LONG leg: {} BTC", position_qty));
+    info!("PHASE 4: AUTO-CLOSE PROCEDURE (NFR7)...");
+    info!(qty = position_qty, "[SAFETY] Closing exposed LONG leg");
     
     // Get fresh bid price for closing
     vest_adapter.sync_orderbooks().await;
@@ -168,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_millis()
         ),
         symbol: VEST_PAIR.to_string(),
-        side: OrderSide::Sell,  // Inverted from Buy
+        side: OrderSide::Sell,
         order_type: OrderType::Limit,
         price: Some(close_price),
         quantity: position_qty,
@@ -176,48 +173,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         reduce_only: true,  // ← NFR7: MUST be reduce_only
     };
 
-    log(&format!("   Closing order: SELL {} BTC @ ${:.2} (reduce_only=true)", 
-        position_qty, close_price));
+    info!(side = "SELL", qty = position_qty, price = close_price, reduce_only = true, "Closing order");
 
     let close_start = std::time::Instant::now();
     let close_result = vest_adapter.place_order(vest_close_order).await;
     let close_latency = close_start.elapsed();
 
-    log(&format!("\n   ⏱️  Auto-close latency: {}ms", close_latency.as_millis()));
+    info!(latency_ms = close_latency.as_millis() as u64, "Auto-close latency");
     
     match close_result {
         Ok(resp) => {
-            log(&format!("   ✅ [SAFETY] Auto-close succeeded: Order ID: {}", resp.order_id));
-            log(&format!("   Status: {:?} | Filled: {} BTC", resp.status, resp.filled_quantity));
+            info!(order_id = %resp.order_id, status = ?resp.status, filled = resp.filled_quantity, 
+                  "[SAFETY] Auto-close succeeded");
         }
         Err(e) => {
-            log(&format!("   ❌ [SAFETY] CRITICAL: Auto-close failed: {}", e));
-            log("   ⚠️  DIRECTIONAL EXPOSURE REMAINS - manual intervention required!");
+            error!(error = %e, "[SAFETY] CRITICAL: Auto-close failed");
+            error!("DIRECTIONAL EXPOSURE REMAINS - manual intervention required!");
         }
     }
 
     // =========================================================================
     // PHASE 5: FINAL VERIFICATION
     // =========================================================================
-    log("\n✅ PHASE 5: FINAL POSITION CHECK...");
+    info!("PHASE 5: FINAL POSITION CHECK...");
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     match vest_adapter.get_position(VEST_PAIR).await {
         Ok(Some(pos)) => {
-            log(&format!("   ⚠️  POSITION STILL OPEN: {} {} BTC", pos.side, pos.quantity));
-            log("   NFR7 VIOLATION: Directional exposure detected!");
+            error!(side = %pos.side, qty = pos.quantity, "POSITION STILL OPEN - NFR7 VIOLATION");
         }
         Ok(None) => {
-            log("   ✅ Position fully closed");
-            log("   NFR7 VALIDATED: Zero directional exposure confirmed");
+            info!("Position fully closed");
+            info!("NFR7 VALIDATED: Zero directional exposure confirmed");
         }
-        Err(e) => log(&format!("   Error checking position: {}", e)),
+        Err(e) => error!(error = %e, "Error checking position"),
     }
 
-    log("\n╔══════════════════════════════════════════════════════════╗");
-    log("║              AUTO-CLOSE TEST COMPLETE                    ║");
-    log("║  Review logs for [SAFETY] messages and NFR7 validation  ║");
-    log("╚══════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════╗");
+    info!("║              AUTO-CLOSE TEST COMPLETE                    ║");
+    info!("║  Review logs for [SAFETY] messages and NFR7 validation  ║");
+    info!("╚══════════════════════════════════════════════════════════╝");
     
     Ok(())
 }

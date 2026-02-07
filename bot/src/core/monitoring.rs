@@ -15,25 +15,21 @@
 //! - Uses structured SPREAD_DETECTED events for opportunity logging
 //! - Events include entry_spread, spread_threshold, direction, pair
 
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
 use tracing::{debug, warn, error};
 
-use crate::adapters::Orderbook;
 use crate::core::channels::SpreadOpportunity;
 use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, current_timestamp_ms, format_pct};
 use crate::core::spread::SpreadCalculator;
 
-/// Type alias for shared orderbooks (same as adapters::SharedOrderbooks)
-pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+use crate::core::channels::SharedOrderbooks;
 
 /// Polling interval for orderbook monitoring (25ms for V1 HFT)
 pub const POLL_INTERVAL_MS: u64 = 25;
 
-/// Log throttle interval - log every N polls (~1 second at 25ms polling)
-const LOG_THROTTLE_POLLS: u64 = 40;
+/// Log throttle — imported from channels (single source of truth)
+use crate::core::channels::LOG_THROTTLE_POLLS;
 
 /// Warning throttle interval - warn every N polls (~10 seconds at 25ms polling)
 const WARN_THROTTLE_POLLS: u32 = 400;
@@ -78,6 +74,7 @@ pub async fn monitoring_task(
     let calculator = SpreadCalculator::new("vest", "paradex");
     let mut poll_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
     let mut poll_count: u64 = 0;
+    let mut warn_counter: u32 = 0;
     
     loop {
         tokio::select! {
@@ -165,10 +162,9 @@ pub async fn monitoring_task(
                     }
                 } else {
                     // Log when orderbooks are missing (helps debug connection issues)
-                    static WARN_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                    let count = WARN_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    warn_counter += 1;
                     // Only warn every 400 iterations (~10 seconds at 25ms) to avoid spam
-                    if count % WARN_THROTTLE_POLLS == 0 {
+                    if warn_counter % WARN_THROTTLE_POLLS == 0 {
                         let vest_has_ob = vest_orderbooks.read().await.contains_key(&vest_symbol);
                         let paradex_has_ob = paradex_orderbooks.read().await.contains_key(&paradex_symbol);
                         warn!(
@@ -188,6 +184,9 @@ pub async fn monitoring_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::collections::HashMap;
+    use tokio::sync::RwLock;
     use crate::adapters::types::{Orderbook, OrderbookLevel};
     use tokio::time::timeout;
     

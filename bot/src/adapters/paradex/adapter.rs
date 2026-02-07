@@ -64,7 +64,7 @@ type WsSink = SplitSink<WsStream, Message>;
 type WsReader = SplitStream<WsStream>;
 
 /// Shared orderbook storage for concurrent access (Story 7.3: lock-free monitoring)
-pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+pub use crate::core::channels::SharedOrderbooks;
 
 
 // =============================================================================
@@ -421,41 +421,46 @@ impl ParadexAdapter {
                     // Log raw message at trace level
                     tracing::trace!("Paradex raw WS message: {}", text);
                     
-                    // First, check for order channel messages (different structure than orderbook)
-                    // Parse as raw JSON to check channel type
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                        // Check if this is a subscription notification for orders channel
-                        if let Some(params) = json.get("params") {
-                            if let Some(channel) = params.get("channel").and_then(|c| c.as_str()) {
-                                if channel.starts_with("orders.") {
-                                    // This is an order channel notification
-                                    if let Some(data) = params.get("data") {
-                                        let order_id = data.get("id")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        let status = data.get("status")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        let side = data.get("side")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        let market = data.get("market")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        
-                                        tracing::info!(
-                                            "[ORDER] Paradex order confirmed via WS: id={}, status={}, side={}, market={}",
-                                            order_id, status, side, market
-                                        );
-                                    }
-                                    continue; // Skip regular parsing for order messages
+                    // Parse JSON once (avoid double parsing — CR-16 optimization)
+                    let json: serde_json::Value = match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            tracing::debug!("Paradex WS: failed to parse JSON: {}", e);
+                            continue;
+                        }
+                    };
+                    
+                    // Check for order channel messages (different structure than orderbook)
+                    if let Some(params) = json.get("params") {
+                        if let Some(channel) = params.get("channel").and_then(|c| c.as_str()) {
+                            if channel.starts_with("orders.") {
+                                // This is an order channel notification
+                                if let Some(data) = params.get("data") {
+                                    let order_id = data.get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let status = data.get("status")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let side = data.get("side")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    let market = data.get("market")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
+                                    
+                                    tracing::info!(
+                                        "[ORDER] Paradex order confirmed via WS: id={}, status={}, side={}, market={}",
+                                        order_id, status, side, market
+                                    );
                                 }
+                                continue; // Skip regular parsing for order messages
                             }
                         }
                     }
                     
-                    // Try to parse as typed message (orderbook updates, etc.)
-                    match serde_json::from_str::<ParadexWsMessage>(&text) {
+                    // Convert pre-parsed JSON to typed message (no re-parsing)
+                    match serde_json::from_value::<ParadexWsMessage>(json) {
                         Ok(msg) => {
                             match msg {
                                 ParadexWsMessage::SubscriptionNotification(notif) => {
@@ -686,14 +691,18 @@ impl ParadexAdapter {
         
         if response.status().is_success() {
             tracing::info!(
-                "[INIT] Paradex HTTP connection pool warmed up (latency={}ms)",
-                elapsed.as_millis()
+                phase = "init",
+                exchange = "paradex",
+                latency_ms = %elapsed.as_millis(),
+                "HTTP connection pool warmed up"
             );
         } else {
             tracing::warn!(
-                "[INIT] Paradex HTTP warm-up returned status {} (latency={}ms)",
-                response.status(),
-                elapsed.as_millis()
+                phase = "init",
+                exchange = "paradex",
+                status = %response.status(),
+                latency_ms = %elapsed.as_millis(),
+                "HTTP warm-up returned non-success status"
             );
         }
         
@@ -1486,14 +1495,8 @@ impl ParadexAdapter {
         let books = self.shared_orderbooks.read().await;
         books.get(symbol).cloned()
     }
-    
-    /// Sync local orderbooks cache from shared storage
-    /// Call this periodically to update the local cache for synchronous access
-    pub async fn sync_orderbooks(&mut self) {
-        let books = self.shared_orderbooks.read().await;
-        self.orderbooks = books.clone();
-    }
 }
+
 
 // =============================================================================
 // Unit Tests (Minimal - essential adapter tests only)

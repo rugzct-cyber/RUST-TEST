@@ -47,8 +47,6 @@ impl std::fmt::Display for TradingPair {
 pub enum Dex {
     Vest,
     Paradex,
-    Hyperliquid,
-    Lighter,
 }
 
 impl std::fmt::Display for Dex {
@@ -56,8 +54,6 @@ impl std::fmt::Display for Dex {
         match self {
             Dex::Vest => write!(f, "vest"),
             Dex::Paradex => write!(f, "paradex"),
-            Dex::Hyperliquid => write!(f, "hyperliquid"),
-            Dex::Lighter => write!(f, "lighter"),
         }
     }
 }

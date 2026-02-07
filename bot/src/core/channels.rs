@@ -2,7 +2,17 @@
 //!
 //! Minimal inter-task communication without complex dependencies.
 
-use tokio::sync::{broadcast, mpsc};
+use std::sync::Arc;
+use std::collections::HashMap;
+use tokio::sync::{broadcast, mpsc, RwLock};
+
+use crate::adapters::Orderbook;
+
+/// Type alias for shared orderbooks used across all modules
+/// 
+/// Single source of truth — imported by adapters, runtime, and monitoring.
+pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+
 
 // Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
 pub use super::spread::SpreadDirection;
@@ -12,6 +22,10 @@ use crate::adapters::types::OrderbookUpdate;
 
 /// Default channel capacity for bounded channels
 pub const DEFAULT_CHANNEL_CAPACITY: usize = 100;
+
+/// Log throttle interval — log every N polls (~1 second at 25ms polling)
+/// Single source of truth for runtime and monitoring tasks.
+pub const LOG_THROTTLE_POLLS: u64 = 40;
 
 /// Simple spread opportunity for MVP
 #[derive(Debug, Clone)]

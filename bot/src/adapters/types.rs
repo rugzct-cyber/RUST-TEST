@@ -44,8 +44,12 @@ pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     tracing::info!(
-        "[INIT] {} HTTP client configured: pool_max_idle=2, pool_idle_timeout=60s, tcp_keepalive=30s",
-        exchange_name
+        phase = "init",
+        exchange = %exchange_name,
+        pool_max_idle = 2,
+        pool_idle_timeout_s = 60,
+        tcp_keepalive_s = 30,
+        "HTTP client configured"
     );
     client
 }

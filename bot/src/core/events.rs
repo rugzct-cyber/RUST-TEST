@@ -556,10 +556,6 @@ pub fn log_event(event: &TradingEvent) {
     }
 }
 
-/// Log a trading event at INFO level (for important events)
-pub fn log_trading_event(event: &TradingEvent) {
-    log_event(event);
-}
 
 // =============================================================================
 // SystemEvent (Log Centralization - Tech-Spec: log-centralization)

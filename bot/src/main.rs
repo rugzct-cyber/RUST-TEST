@@ -208,7 +208,7 @@ async fn main() -> anyhow::Result<()> {
     info!(event_type = "SUBSCRIPTION", channel = "orders", exchange = "paradex", "Subscribed to order confirmations");
 
     // DEBUG: Check current positions at startup to verify entry prices
-    info!(event_type = "DEBUG", "Checking current positions at startup...");
+    info!(event_type = "STARTUP_CHECK", "Checking current positions at startup...");
     if let Ok(Some(vest_pos)) = vest_adapter.get_position(&vest_symbol).await {
         info!(
             event_type = "STARTUP_POSITION",
@@ -373,9 +373,9 @@ async fn main() -> anyhow::Result<()> {
                             // Calculate live entry/exit spreads
                             state.update_live_spreads();
                             
-                            // Use live_entry_spread for header (already in percentage)
+                            // Use live_entry_spread for header (same percentage unit)
                             let entry_spread = state.live_entry_spread;
-                            state.update_spread(entry_spread / 100.0, None);
+                            state.update_spread(entry_spread, None);
                         }
                     }
                 }

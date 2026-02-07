@@ -6,17 +6,14 @@
 //! # Logging (Story 5.1)
 //! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
+use std::path::Path;
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::traits::ExchangeAdapter;
 use hft_bot::adapters::types::{OrderRequest, OrderSide, OrderType, TimeInForce};
 use hft_bot::config;
+use tracing::{info, warn, error};
 use uuid::Uuid;
-
-const VEST_PAIR: &str = "BTC-PERP";
-const PARADEX_PAIR: &str = "BTC-USD-PERP";
-const BTC_QTY: f64 = 0.005;     // User requested 0.005 BTC
-const LEVERAGE: u32 = 50;       // 50x leverage
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,17 +21,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
     config::init_logging();
     
-    let log = |msg: &str| println!("{}", msg);
+    // Load config from config.yaml (same source of truth as main bot)
+    let cfg = config::load_config(Path::new("config.yaml"))
+        .expect("Failed to load config.yaml");
+    let bot = &cfg.bots[0];
+    let vest_pair = bot.pair.to_string();
+    let paradex_pair = format!("{}-USD-PERP",
+        vest_pair.split('-').next().unwrap_or("BTC"));
+    let qty = bot.position_size;
+    let leverage = bot.leverage as u32;
     
-    log("╔══════════════════════════════════════════════════════════╗");
-    log("║       DELTA-NEUTRAL FULL CYCLE TEST                      ║");
-    log("║  Open → Verify → Close                                   ║");
-    log("╚══════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════╗");
+    info!("║       DELTA-NEUTRAL FULL CYCLE TEST                      ║");
+    info!("║  Open → Verify → Close                                   ║");
+    info!("╚══════════════════════════════════════════════════════════╝");
+    info!(vest = %vest_pair, paradex = %paradex_pair, qty = qty, leverage = leverage, "Test configuration");
     
     // =========================================================================
     // SETUP: Connect both adapters
     // =========================================================================
-    log("\n📡 PHASE 0: Connecting adapters...");
+    info!("PHASE 0: Connecting adapters...");
     
     let vest_config = VestConfig::from_env()?;
     let paradex_config = ParadexConfig::from_env()?;
@@ -47,29 +53,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     vest_conn?;
     paradex_conn?;
-    log("   ✅ Both adapters connected");
+    info!("Both adapters connected");
 
     // =========================================================================
-    // PHASE 0.5: SET LEVERAGE (50x on both exchanges)
+    // PHASE 0.5: SET LEVERAGE
     // =========================================================================
-    log(&format!("\n⚙️  PHASE 0.5: Setting leverage to {}x on both exchanges...", LEVERAGE));
+    info!(leverage = leverage, "PHASE 0.5: Setting leverage on both exchanges...");
     
-    let vest_lev_result = vest_adapter.set_leverage(VEST_PAIR, LEVERAGE).await;
-    let paradex_lev_result = paradex_adapter.set_leverage(PARADEX_PAIR, LEVERAGE).await;
+    let vest_lev_result = vest_adapter.set_leverage(&vest_pair, leverage).await;
+    let paradex_lev_result = paradex_adapter.set_leverage(&paradex_pair, leverage).await;
     
     match &vest_lev_result {
-        Ok(lev) => log(&format!("   Vest: ✅ Leverage set to {}x", lev)),
-        Err(e) => log(&format!("   Vest: ⚠️  Set leverage failed: {} (continuing...)", e)),
+        Ok(lev) => info!(exchange = "vest", leverage = lev, "Leverage set"),
+        Err(e) => warn!(exchange = "vest", error = %e, "Set leverage failed (continuing)"),
     }
     match &paradex_lev_result {
-        Ok(lev) => log(&format!("   Paradex: ✅ Leverage set to {}x", lev)),
-        Err(e) => log(&format!("   Paradex: ⚠️  Set leverage failed: {} (continuing...)", e)),
+        Ok(lev) => info!(exchange = "paradex", leverage = lev, "Leverage set"),
+        Err(e) => warn!(exchange = "paradex", error = %e, "Set leverage failed (continuing)"),
     }
 
     // Subscribe to orderbooks for pricing
     let (vest_sub, paradex_sub) = tokio::join!(
-        vest_adapter.subscribe_orderbook(VEST_PAIR),
-        paradex_adapter.subscribe_orderbook(PARADEX_PAIR)
+        vest_adapter.subscribe_orderbook(&vest_pair),
+        paradex_adapter.subscribe_orderbook(&paradex_pair)
     );
     vest_sub?;
     paradex_sub?;
@@ -82,40 +88,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Get current prices
-    let vest_ask = vest_adapter.get_orderbook(VEST_PAIR)
+    let vest_ask = vest_adapter.get_orderbook(&vest_pair)
         .and_then(|ob| ob.asks.first().map(|l| l.price))
         .unwrap_or(0.0);
-    let paradex_bid = paradex_adapter.get_orderbook(PARADEX_PAIR)
+    let paradex_bid = paradex_adapter.get_orderbook(&paradex_pair)
         .and_then(|ob| ob.bids.first().map(|l| l.price))
         .unwrap_or(0.0);
     
-    log(&format!("   Vest ask: ${:.2} | Paradex bid: ${:.2}", vest_ask, paradex_bid));
+    info!(vest_ask = vest_ask, paradex_bid = paradex_bid, "Current prices");
 
     // =========================================================================
     // PHASE 1: OPEN DELTA-NEUTRAL POSITIONS
     // =========================================================================
-    log("\n🚀 PHASE 1: OPENING DELTA-NEUTRAL POSITIONS...");
-    log(&format!("   Vest: BUY {} BTC (LONG)", BTC_QTY));
-    log(&format!("   Paradex: SELL {} BTC (SHORT)", BTC_QTY));
+    info!("PHASE 1: OPENING DELTA-NEUTRAL POSITIONS...");
+    info!(exchange = "vest", side = "BUY", qty = qty, "Opening LONG");
+    info!(exchange = "paradex", side = "SELL", qty = qty, "Opening SHORT");
 
     let vest_open_order = OrderRequest {
         client_order_id: format!("open-vest-{}", &Uuid::new_v4().to_string()[..6]),
-        symbol: VEST_PAIR.to_string(),
+        symbol: vest_pair.clone(),
         side: OrderSide::Buy,
         order_type: OrderType::Limit,
         price: Some(vest_ask * 1.002),  // Slightly above ask
-        quantity: BTC_QTY,
+        quantity: qty,
         time_in_force: TimeInForce::Ioc,
         reduce_only: false,
     };
 
     let paradex_open_order = OrderRequest {
         client_order_id: format!("open-pdx-{}", &Uuid::new_v4().to_string()[..6]),
-        symbol: PARADEX_PAIR.to_string(),
+        symbol: paradex_pair.clone(),
         side: OrderSide::Sell,
         order_type: OrderType::Market,
         price: None,
-        quantity: BTC_QTY,
+        quantity: qty,
         time_in_force: TimeInForce::Ioc,
         reduce_only: false,
     };
@@ -127,75 +133,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let open_latency = open_start.elapsed();
 
-    log(&format!("\n   ⏱️  Open latency: {}ms", open_latency.as_millis()));
+    info!(latency_ms = open_latency.as_millis() as u64, "Open latency");
     
     match &vest_open_result {
-        Ok(resp) => log(&format!("   Vest OPEN: ✅ Order ID: {} | Status: {:?}", resp.order_id, resp.status)),
-        Err(e) => log(&format!("   Vest OPEN: ❌ {}", e)),
+        Ok(resp) => info!(exchange = "vest", order_id = %resp.order_id, status = ?resp.status, "OPEN succeeded"),
+        Err(e) => error!(exchange = "vest", error = %e, "OPEN failed"),
     }
     match &paradex_open_result {
-        Ok(resp) => log(&format!("   Paradex OPEN: ✅ Order ID: {} | Status: {:?}", resp.order_id, resp.status)),
-        Err(e) => log(&format!("   Paradex OPEN: ❌ {}", e)),
+        Ok(resp) => info!(exchange = "paradex", order_id = %resp.order_id, status = ?resp.status, "OPEN succeeded"),
+        Err(e) => error!(exchange = "paradex", error = %e, "OPEN failed"),
     }
 
     // =========================================================================
     // PHASE 2: VERIFY POSITIONS
     // =========================================================================
-    log("\n🔍 PHASE 2: VERIFYING POSITIONS (waiting 2s for settlement)...");
+    info!("PHASE 2: VERIFYING POSITIONS (waiting 2s for settlement)...");
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     
-    let vest_pos = vest_adapter.get_position(VEST_PAIR).await?;
-    let paradex_pos = paradex_adapter.get_position(PARADEX_PAIR).await?;
+    let vest_pos = vest_adapter.get_position(&vest_pair).await?;
+    let paradex_pos = paradex_adapter.get_position(&paradex_pair).await?;
     
-    log("\n   Position Status:");
     let vest_has_position = match &vest_pos {
         Some(pos) => {
-            log(&format!("   Vest:    ✅ {} {} BTC @ ${:.2} (PnL: ${:.2})", 
-                pos.side.to_uppercase(), pos.quantity, pos.entry_price, pos.unrealized_pnl));
+            info!(exchange = "vest", side = %pos.side.to_uppercase(), qty = pos.quantity, 
+                  entry_price = pos.entry_price, pnl = pos.unrealized_pnl, "Position verified");
             true
         }
         None => {
-            log("   Vest:    ⚠️  NO POSITION DETECTED");
+            warn!(exchange = "vest", "NO POSITION DETECTED");
             false
         }
     };
     
     let paradex_has_position = match &paradex_pos {
         Some(pos) => {
-            log(&format!("   Paradex: ✅ {} {} BTC @ ${:.2} (PnL: ${:.2})", 
-                pos.side.to_uppercase(), pos.quantity, pos.entry_price, pos.unrealized_pnl));
+            info!(exchange = "paradex", side = %pos.side.to_uppercase(), qty = pos.quantity,
+                  entry_price = pos.entry_price, pnl = pos.unrealized_pnl, "Position verified");
             true
         }
         None => {
-            log("   Paradex: ⚠️  NO POSITION DETECTED");
+            warn!(exchange = "paradex", "NO POSITION DETECTED");
             false
         }
     };
 
     if !vest_has_position && !paradex_has_position {
-        log("\n   ⚠️  No positions to close. Orders may not have filled.");
-        log("=== TEST COMPLETE ===");
+        warn!("No positions to close. Orders may not have filled.");
+        info!("=== TEST COMPLETE ===");
         return Ok(());
     }
 
     // =========================================================================
     // PHASE 3: CLOSE POSITIONS
     // =========================================================================
-    log("\n🔒 PHASE 3: CLOSING POSITIONS...");
+    info!("PHASE 3: CLOSING POSITIONS...");
 
     // Get fresh prices for closing
     vest_adapter.sync_orderbooks().await;
     paradex_adapter.sync_orderbooks().await;
     
-    let vest_bid = vest_adapter.get_orderbook(VEST_PAIR)
+    let vest_bid = vest_adapter.get_orderbook(&vest_pair)
         .and_then(|ob| ob.bids.first().map(|l| l.price))
         .unwrap_or(0.0);
 
     let vest_close_future = async {
         if let Some(pos) = vest_pos {
             let close_side = if pos.side.to_lowercase() == "long" { OrderSide::Sell } else { OrderSide::Buy };
-            // For SELL: use bid price * 0.998 (aggressive, cross the spread)
-            // For BUY: use ask price * 1.002
             let close_price = if close_side == OrderSide::Sell {
                 vest_bid * 0.998
             } else {
@@ -203,15 +206,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let order = OrderRequest {
                 client_order_id: format!("close-vest-{}", &Uuid::new_v4().to_string()[..6]),
-                symbol: VEST_PAIR.to_string(),
+                symbol: vest_pair.clone(),
                 side: close_side,
-                order_type: OrderType::Limit,  // LIMIT order for Vest
+                order_type: OrderType::Limit,
                 price: Some(close_price),
                 quantity: pos.quantity,
                 time_in_force: TimeInForce::Ioc,
                 reduce_only: true,
             };
-            log(&format!("   Vest: Closing {} {} BTC @ ${:.2}", pos.side, pos.quantity, close_price));
+            info!(exchange = "vest", side = %pos.side, qty = pos.quantity, price = close_price, "Closing position");
             Some(vest_adapter.place_order(order).await)
         } else {
             None
@@ -223,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let close_side = if pos.side.to_lowercase() == "short" { OrderSide::Buy } else { OrderSide::Sell };
             let order = OrderRequest {
                 client_order_id: format!("close-pdx-{}", &Uuid::new_v4().to_string()[..6]),
-                symbol: PARADEX_PAIR.to_string(),
+                symbol: paradex_pair.clone(),
                 side: close_side,
                 order_type: OrderType::Market,
                 price: None,
@@ -231,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 time_in_force: TimeInForce::Ioc,
                 reduce_only: true,
             };
-            log(&format!("   Paradex: Closing {} {} BTC", pos.side, pos.quantity));
+            info!(exchange = "paradex", side = %pos.side, qty = pos.quantity, "Closing position");
             Some(paradex_adapter.place_order(order).await)
         } else {
             None
@@ -242,38 +245,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (vest_close_result, paradex_close_result) = tokio::join!(vest_close_future, paradex_close_future);
     let close_latency = close_start.elapsed();
 
-    log(&format!("\n   ⏱️  Close latency: {}ms", close_latency.as_millis()));
+    info!(latency_ms = close_latency.as_millis() as u64, "Close latency");
     
     match vest_close_result {
-        Some(Ok(resp)) => log(&format!("   Vest CLOSE: ✅ Order ID: {}", resp.order_id)),
-        Some(Err(e)) => log(&format!("   Vest CLOSE: ❌ {}", e)),
-        None => log("   Vest CLOSE: ⏭️  Skipped (no position)"),
+        Some(Ok(resp)) => info!(exchange = "vest", order_id = %resp.order_id, "CLOSE succeeded"),
+        Some(Err(e)) => error!(exchange = "vest", error = %e, "CLOSE failed"),
+        None => info!(exchange = "vest", "CLOSE skipped (no position)"),
     }
     match paradex_close_result {
-        Some(Ok(resp)) => log(&format!("   Paradex CLOSE: ✅ Order ID: {}", resp.order_id)),
-        Some(Err(e)) => log(&format!("   Paradex CLOSE: ❌ {}", e)),
-        None => log("   Paradex CLOSE: ⏭️  Skipped (no position)"),
+        Some(Ok(resp)) => info!(exchange = "paradex", order_id = %resp.order_id, "CLOSE succeeded"),
+        Some(Err(e)) => error!(exchange = "paradex", error = %e, "CLOSE failed"),
+        None => info!(exchange = "paradex", "CLOSE skipped (no position)"),
     }
 
     // =========================================================================
     // PHASE 4: FINAL VERIFICATION
     // =========================================================================
-    log("\n✅ PHASE 4: FINAL POSITION CHECK...");
+    info!("PHASE 4: FINAL POSITION CHECK...");
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
-    match vest_adapter.get_position(VEST_PAIR).await {
-        Ok(Some(pos)) => log(&format!("   Vest: ⚠️  Still have {} {} BTC", pos.side, pos.quantity)),
-        Ok(None) => log("   Vest: ✅ Position closed"),
-        Err(e) => log(&format!("   Vest: Error - {}", e)),
+    match vest_adapter.get_position(&vest_pair).await {
+        Ok(Some(pos)) => warn!(exchange = "vest", side = %pos.side, qty = pos.quantity, "Position still open"),
+        Ok(None) => info!(exchange = "vest", "Position closed"),
+        Err(e) => error!(exchange = "vest", error = %e, "Error checking position"),
     }
-    match paradex_adapter.get_position(PARADEX_PAIR).await {
-        Ok(Some(pos)) => log(&format!("   Paradex: ⚠️  Still have {} {} BTC", pos.side, pos.quantity)),
-        Ok(None) => log("   Paradex: ✅ Position closed"),
-        Err(e) => log(&format!("   Paradex: Error - {}", e)),
+    match paradex_adapter.get_position(&paradex_pair).await {
+        Ok(Some(pos)) => warn!(exchange = "paradex", side = %pos.side, qty = pos.quantity, "Position still open"),
+        Ok(None) => info!(exchange = "paradex", "Position closed"),
+        Err(e) => error!(exchange = "paradex", error = %e, "Error checking position"),
     }
 
-    log("\n╔══════════════════════════════════════════════════════════╗");
-    log("║                    TEST COMPLETE                         ║");
-    log("╚══════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════╗");
+    info!("║                    TEST COMPLETE                         ║");
+    info!("╚══════════════════════════════════════════════════════════╝");
     Ok(())
 }

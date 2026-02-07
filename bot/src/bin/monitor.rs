@@ -16,6 +16,7 @@
 //! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 //! - For human-readable output, set LOG_FORMAT=pretty
 
+use std::path::Path;
 use std::time::Duration;
 use tokio::signal;
 use tracing::{info, warn, error};
@@ -28,12 +29,6 @@ use hft_bot::adapters::{
 use hft_bot::config;
 use hft_bot::core::spread::SpreadCalculator;
 
-/// Trading pair for Vest (format: SYMBOL-PERP)
-const VEST_PAIR: &str = "BTC-PERP";
-
-/// Trading pair for Paradex (format: SYMBOL-USD-PERP)
-const PARADEX_PAIR: &str = "BTC-USD-PERP";
-
 /// Polling interval in milliseconds (100ms = 10 fps)
 const POLL_INTERVAL_MS: u64 = 100;
 
@@ -45,10 +40,18 @@ async fn main() -> anyhow::Result<()> {
     // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
     config::init_logging();
 
+    // Load pairs from config.yaml (same source of truth as main bot)
+    let cfg = config::load_config(Path::new("config.yaml"))
+        .expect("Failed to load config.yaml");
+    let bot = &cfg.bots[0];
+    let vest_pair = bot.pair.to_string();
+    let paradex_pair = format!("{}-USD-PERP",
+        vest_pair.split('-').next().unwrap_or("BTC"));
+
     info!("═══════════════════════════════════════════════════════════");
     info!("🔍 HFT Arbitrage Bot - LIVE MONITOR MODE");
     info!("═══════════════════════════════════════════════════════════");
-    info!("📊 Vest pair: {} | Paradex pair: {}", VEST_PAIR, PARADEX_PAIR);
+    info!("📊 Vest pair: {} | Paradex pair: {}", vest_pair, paradex_pair);
     info!("⏱️  Poll interval: {}ms", POLL_INTERVAL_MS);
     info!("Press Ctrl+C to exit");
     info!("═══════════════════════════════════════════════════════════\n");
@@ -64,9 +67,9 @@ async fn main() -> anyhow::Result<()> {
             let mut adapter = VestAdapter::new(config);
             match adapter.connect().await {
                 Ok(()) => {
-                    match adapter.subscribe_orderbook(VEST_PAIR).await {
+                    match adapter.subscribe_orderbook(&vest_pair).await {
                         Ok(()) => {
-                            info!("✅ Vest connected and subscribed to {}", VEST_PAIR);
+                            info!("✅ Vest connected and subscribed to {}", vest_pair);
                             vest = Some(adapter);
                         }
                         Err(e) => warn!("⚠️  Vest subscription failed: {}", e),
@@ -86,9 +89,9 @@ async fn main() -> anyhow::Result<()> {
             let mut adapter = ParadexAdapter::new(config);
             match adapter.connect().await {
                 Ok(()) => {
-                    match adapter.subscribe_orderbook(PARADEX_PAIR).await {
+                    match adapter.subscribe_orderbook(&paradex_pair).await {
                         Ok(()) => {
-                            info!("✅ Paradex connected and subscribed to {}", PARADEX_PAIR);
+                            info!("✅ Paradex connected and subscribed to {}", paradex_pair);
                             paradex = Some(adapter);
                         }
                         Err(e) => warn!("⚠️  Paradex subscription failed: {}", e),
@@ -121,14 +124,14 @@ async fn main() -> anyhow::Result<()> {
                 // Get Vest orderbook (sync from shared storage first)
                 let vest_ob = if let Some(ref mut adapter) = vest {
                     adapter.sync_orderbooks().await;
-                    adapter.get_orderbook(VEST_PAIR).cloned()
+                    adapter.get_orderbook(&vest_pair).cloned()
                 } else {
                     None
                 };
 
                 // Get Paradex orderbook (use async method that reads from shared storage)
                 let paradex_ob = if let Some(ref adapter) = paradex {
-                    adapter.get_orderbook_async(PARADEX_PAIR).await
+                    adapter.get_orderbook_async(&paradex_pair).await
                 } else {
                     None
                 };
@@ -139,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
                     let best_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
                     info!(
                         "{:<12} {:<12} {:>12.2} {:>12.2}",
-                        "[VEST]", VEST_PAIR, best_bid, best_ask
+                        "[VEST]", vest_pair, best_bid, best_ask
                     );
                 }
 
@@ -149,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
                     let best_ask = ob.asks.first().map(|l| l.price).unwrap_or(0.0);
                     info!(
                         "{:<12} {:<12} {:>12.2} {:>12.2}",
-                        "[PARADEX]", PARADEX_PAIR, best_bid, best_ask
+                        "[PARADEX]", paradex_pair, best_bid, best_ask
                     );
                 }
 

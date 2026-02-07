@@ -2,8 +2,6 @@
 //!
 //! EIP-712 signing logic for Vest authentication and order signing.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use ethers::core::types::{Address, U256};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::contract::EthAbiType;
@@ -15,18 +13,8 @@ use crate::adapters::types::OrderRequest;
 
 use super::config::VestConfig;
 
-// =============================================================================
-// Time Utilities
-// =============================================================================
-
-/// Generate current timestamp in milliseconds
-/// Returns 0 if system time is before Unix epoch (should never happen)
-pub fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+// Re-export canonical timestamp function (defined in core::events)
+pub use crate::core::events::current_timestamp_ms as current_time_ms;
 
 /// Generate expiry timestamp (7 days from now)
 pub fn expiry_7_days_ms() -> u64 {

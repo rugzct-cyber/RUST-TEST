@@ -3,8 +3,6 @@
 //! Starknet signature functions for Paradex authentication and order signing.
 //! Implements SNIP-12 typed data signing (EIP-712 inspired) for Starknet.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use starknet_crypto::{pedersen_hash, FieldElement};
 use starknet_core::crypto::compute_hash_on_elements as core_compute_hash_on_elements;
 use starknet_core::utils::{cairo_short_string_to_felt, starknet_keccak};
@@ -15,13 +13,8 @@ use crate::adapters::errors::{ExchangeError, ExchangeResult};
 // Helper Functions
 // =============================================================================
 
-/// Generate current timestamp in milliseconds
-pub fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+// Re-export canonical timestamp function (defined in core::events)
+pub use crate::core::events::current_timestamp_ms as current_time_ms;
 
 /// Build WebSocket authentication message
 pub fn build_ws_auth_message(jwt_token: &str) -> String {
@@ -48,6 +41,22 @@ pub fn build_ws_url(production: bool) -> String {
 // =============================================================================
 // Starknet Signature Functions
 // =============================================================================
+
+/// Compute the Paradex StarkNetDomain hash (shared by auth and order signing)
+///
+/// Factored out to avoid drift between `sign_auth_message` and `sign_order_message` (CR-3).
+fn compute_paradex_domain_hash(chain_felt: starknet_core::types::Felt) -> starknet_core::types::Felt {
+    use starknet_core::types::Felt;
+    let domain_type_hash = starknet_keccak("StarkNetDomain(name:felt,chainId:felt,version:felt)".as_bytes());
+    let domain_name = cairo_short_string_to_felt("Paradex")
+        .expect("'Paradex' is always a valid short string");
+    core_compute_hash_on_elements(&[
+        domain_type_hash,
+        domain_name,
+        chain_felt,
+        Felt::ONE,  // version = 1
+    ])
+}
 
 /// Sign an authentication message for Paradex REST /auth endpoint
 /// 
@@ -85,18 +94,8 @@ pub fn sign_auth_message(
     let chain_felt = cairo_short_string_to_felt(chain_id)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid chain_id: {}", e)))?;
     
-    // === Build Domain hash (matching bot3/SDK) ===
-    // IMPORTANT: bot3 uses NO QUOTES in type hash!
-    let domain_type_hash = starknet_keccak("StarkNetDomain(name:felt,chainId:felt,version:felt)".as_bytes());
-    let domain_name = cairo_short_string_to_felt("Paradex")
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid domain name: {}", e)))?;
-    
-    let domain_hash = core_compute_hash_on_elements(&[
-        domain_type_hash,
-        domain_name,
-        chain_felt,
-        Felt::ONE,  // version = 1
-    ]);
+    // === Build Domain hash (factored into helper — CR-3) ===
+    let domain_hash = compute_paradex_domain_hash(chain_felt);
     
     // === Build Request struct hash ===
     let request_type_hash = starknet_keccak(
@@ -207,17 +206,8 @@ pub fn sign_order_message(params: OrderSignParams) -> ExchangeResult<(String, St
     let chain_felt = cairo_short_string_to_felt(params.chain_id)
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid chain_id: {}", e)))?;
     
-    // === Build Domain hash (same as auth) ===
-    let domain_type_hash = starknet_keccak("StarkNetDomain(name:felt,chainId:felt,version:felt)".as_bytes());
-    let domain_name = cairo_short_string_to_felt("Paradex")
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid domain name: {}", e)))?;
-    
-    let domain_hash = core_compute_hash_on_elements(&[
-        domain_type_hash,
-        domain_name,
-        chain_felt,
-        Felt::ONE,  // version = 1
-    ]);
+    // === Build Domain hash (factored into helper — CR-3) ===
+    let domain_hash = compute_paradex_domain_hash(chain_felt);
     
     // === Build Order struct hash ===
     // Order type: timestamp, market, side, orderType, size, price

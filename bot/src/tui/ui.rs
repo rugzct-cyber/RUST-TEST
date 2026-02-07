@@ -41,14 +41,14 @@ pub fn draw(frame: &mut Frame, state: &AppState) {
 fn draw_header(frame: &mut Frame, area: Rect, state: &AppState) {
     // Format spread with direction
     let spread_text = if let Some(dir) = &state.spread_direction {
-        format!("{:.2}% ({:?})", state.current_spread_pct * 100.0, dir)
+        format!("{:.2}% ({:?})", state.current_spread_pct, dir)
     } else {
-        format!("{:.2}%", state.current_spread_pct * 100.0)
+        format!("{:.2}%", state.current_spread_pct)
     };
     
     // Spread color: green if above threshold, white otherwise
-    // current_spread_pct is a ratio (e.g. 0.0034), threshold is percentage (e.g. 0.34)
-    let spread_color = if state.current_spread_pct * 100.0 >= state.spread_entry_threshold {
+    // current_spread_pct is a percentage (e.g. 0.34), same unit as threshold
+    let spread_color = if state.current_spread_pct >= state.spread_entry_threshold {
         Color::Green
     } else {
         Color::White

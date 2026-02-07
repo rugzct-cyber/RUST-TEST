@@ -514,7 +514,21 @@ where
     /// 
     /// Uses reduce_only=true to ensure we only close, not open new positions.
     /// Resets position_open and entry_direction after successful close.
-    pub async fn close_position(&self, exit_spread: f64) -> ExchangeResult<DeltaNeutralResult> {
+    /// 
+    /// # Arguments
+    /// - `exit_spread`: The spread percentage at exit time
+    /// - `vest_bid`: Current best bid from Vest orderbook (already in RAM)
+    /// - `vest_ask`: Current best ask from Vest orderbook (already in RAM)
+    /// 
+    /// # Pricing Strategy
+    /// Uses live orderbook prices (0ms) instead of `get_position()` API call (200-500ms).
+    /// Applies SLIPPAGE_BUFFER_PCT to the live price, same pattern as entry.
+    pub async fn close_position(
+        &self,
+        exit_spread: f64,
+        vest_bid: f64,
+        vest_ask: f64,
+    ) -> ExchangeResult<DeltaNeutralResult> {
         let start = Instant::now();
         
         // Get the entry direction
@@ -534,26 +548,24 @@ where
             .unwrap_or(0);
         
         // Vest requires a limit price even for MARKET orders (slippage protection)
-        // Fetch current Vest position to get entry_price as basis for limit price
-        let vest_guard = self.vest_adapter.lock().await;
-        let vest_limit_price = match vest_guard.get_position(&self.vest_symbol).await {
-            Ok(Some(pos)) => {
-                // Apply 1% slippage tolerance based on close direction
-                if vest_side == OrderSide::Buy {
-                    pos.entry_price * 1.01  // Buying to close short: allow 1% above
-                } else {
-                    pos.entry_price * 0.99  // Selling to close long: allow 1% below
-                }
-            }
-            _ => {
-                // Fallback: use a high/low price that should always fill
-                // This is a safety net - should not happen in normal operation
-                tracing::warn!(event_type = "CLOSE_POSITION", "No Vest position found for limit price, using fallback");
-                if vest_side == OrderSide::Buy { 1_000_000.0 } else { 1.0 }
-            }
+        // Use live orderbook price + slippage buffer (same pattern as entry)
+        let vest_limit_price = if vest_side == OrderSide::Buy {
+            // Buying to close short → use ask + slippage buffer above
+            vest_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
+        } else {
+            // Selling to close long → use bid - slippage buffer below
+            vest_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
         };
-        // Release lock before placing orders (we'll re-acquire it below)
-        drop(vest_guard);
+        
+        debug!(
+            event_type = "CLOSE_POSITION",
+            vest_side = ?vest_side,
+            vest_bid = %format!("{:.2}", vest_bid),
+            vest_ask = %format!("{:.2}", vest_ask),
+            vest_limit = %format!("{:.2}", vest_limit_price),
+            slippage_pct = %format!("{:.3}", SLIPPAGE_BUFFER_PCT * 100.0),
+            "Vest close price from live orderbook"
+        );
         
         let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, self.default_quantity)
             .client_order_id(format!("close-vest-{}", timestamp))

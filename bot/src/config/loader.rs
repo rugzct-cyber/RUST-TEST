@@ -191,8 +191,8 @@ bots:
     position_size: 0.001
   - id: eth_bot
     pair: ETH-PERP
-    dex_a: hyperliquid
-    dex_b: lighter
+    dex_a: paradex
+    dex_b: vest
     spread_entry: 0.40
     spread_exit: 0.10
     leverage: 20

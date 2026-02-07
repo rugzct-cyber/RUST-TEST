@@ -4,26 +4,12 @@
 //! exchange adapters must implement for consistent behavior.
 
 use async_trait::async_trait;
-use std::pin::Pin;
-use futures_util::Stream;
+
 
 use crate::adapters::errors::ExchangeResult;
-use crate::adapters::types::{Orderbook, OrderRequest, OrderResponse, OrderbookUpdate, PositionInfo};
+use crate::adapters::types::{Orderbook, OrderRequest, OrderResponse, PositionInfo};
 
-/// Stream type for receiving orderbook updates asynchronously
-///
-/// This type is used for adapters that support streaming orderbook data
-/// via WebSocket. Consumers can poll this stream to receive real-time
-/// orderbook snapshots as they arrive from the exchange.
-///
-/// # Example Usage
-/// ```ignore
-/// let stream: OrderbookStream = adapter.orderbook_stream("BTC-PERP").await?;
-/// while let Some(update) = stream.next().await {
-///     println!("Received orderbook for {}: {:?}", update.symbol, update.orderbook);
-/// }
-/// ```
-pub type OrderbookStream = Pin<Box<dyn Stream<Item = OrderbookUpdate> + Send>>;
+
 
 /// Common trait for all exchange adapters
 ///
