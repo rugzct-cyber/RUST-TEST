@@ -97,13 +97,6 @@ bots:
     spread_exit: 0.05
     leverage: 10
     position_size: 0.001
-risk:
-  adl_warning: 10.0
-  adl_critical: 5.0
-  max_duration_hours: 24
-api:
-  port: 8080
-  ws_heartbeat_sec: 30
 "#;
 
     #[test]
@@ -111,7 +104,6 @@ api:
         let config = load_config_from_str(VALID_CONFIG_YAML).unwrap();
         assert_eq!(config.bots.len(), 1);
         assert_eq!(config.bots[0].id, "btc_vest_paradex");
-        assert_eq!(config.api.port, 8080);
     }
 
     #[test]

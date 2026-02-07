@@ -1,7 +1,7 @@
 //! Configuration module for bot settings and YAML loading
 //!
 //! This module provides:
-//! - Configuration types (`AppConfig`, `BotConfig`, `RiskConfig`, `ApiConfig`)
+//! - Configuration types (`AppConfig`, `BotConfig`)
 //! - YAML loading functionality (`load_config`)
 //! - Shared state wrapper (`SharedConfig`)
 //! - Logging configuration (`init_logging`) - Story 5.1
@@ -11,7 +11,7 @@ mod loader;
 mod types;
 
 // Re-export types
-pub use types::{ApiConfig, AppConfig, BotConfig, Dex, RiskConfig, SharedConfig, TradingPair};
+pub use types::{AppConfig, BotConfig, Dex, SharedConfig, TradingPair};
 
 // Re-export loader functions
 pub use loader::{load_config, load_config_from_str};

@@ -155,37 +155,12 @@ impl BotConfig {
     }
 }
 
-/// Risk management parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RiskConfig {
-    /// ADL warning threshold (percentage distance from liquidation)
-    pub adl_warning: f64,
-    /// ADL critical threshold - triggers position reduction
-    pub adl_critical: f64,
-    /// Maximum position duration in hours before force exit
-    pub max_duration_hours: u32,
-}
-
-/// API server configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiConfig {
-    /// HTTP/WebSocket server port
-    pub port: u16,
-    /// WebSocket heartbeat interval in seconds
-    pub ws_heartbeat_sec: u32,
-}
 
 /// Root application configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// List of bot configurations
     pub bots: Vec<BotConfig>,
-    /// Risk management settings (optional - uses defaults if omitted)
-    #[serde(default)]
-    pub risk: RiskConfig,
-    /// API server settings (optional - uses defaults if omitted)
-    #[serde(default)]
-    pub api: ApiConfig,
 }
 
 impl AppConfig {
@@ -203,13 +178,7 @@ impl AppConfig {
             bot.validate()?;
         }
 
-        // Validate risk config
-        if self.risk.adl_warning <= self.risk.adl_critical {
-            return Err(AppError::Config(format!(
-                "Risk config: adl_warning ({}) must be > adl_critical ({})",
-                self.risk.adl_warning, self.risk.adl_critical
-            )));
-        }
+
 
         Ok(())
     }
@@ -220,24 +189,7 @@ impl AppConfig {
     }
 }
 
-impl Default for RiskConfig {
-    fn default() -> Self {
-        Self {
-            adl_warning: 10.0,
-            adl_critical: 5.0,
-            max_duration_hours: 24,
-        }
-    }
-}
 
-impl Default for ApiConfig {
-    fn default() -> Self {
-        Self {
-            port: 8080,
-            ws_heartbeat_sec: 30,
-        }
-    }
-}
 
 // ============================================================================
 // Tests
@@ -329,19 +281,11 @@ bots:
     spread_exit: 0.05
     leverage: 10
     position_size: 0.001
-risk:
-  adl_warning: 10.0
-  adl_critical: 5.0
-  max_duration_hours: 24
-api:
-  port: 8080
-  ws_heartbeat_sec: 30
 "#;
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.validate().is_ok());
         assert_eq!(config.bots.len(), 1);
         assert_eq!(config.bots[0].id, "test_bot");
-        assert_eq!(config.api.port, 8080);
     }
 
     #[test]
@@ -404,15 +348,6 @@ api:
     fn test_empty_bots_array_fails() {
         let config = AppConfig {
             bots: vec![],
-            risk: RiskConfig {
-                adl_warning: 10.0,
-                adl_critical: 5.0,
-                max_duration_hours: 24,
-            },
-            api: ApiConfig {
-                port: 8080,
-                ws_heartbeat_sec: 30,
-            },
         };
         
         let result = config.validate();
@@ -424,15 +359,6 @@ api:
     fn test_into_shared() {
         let config = AppConfig {
             bots: vec![],
-            risk: RiskConfig {
-                adl_warning: 10.0,
-                adl_critical: 5.0,
-                max_duration_hours: 24,
-            },
-            api: ApiConfig {
-                port: 8080,
-                ws_heartbeat_sec: 30,
-            },
         };
         
         let shared = config.into_shared();
