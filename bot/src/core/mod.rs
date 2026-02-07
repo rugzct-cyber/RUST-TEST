@@ -41,7 +41,7 @@ pub use runtime::execution_task;
 pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
 
 // Explicit re-exports for events module (Story 5.3)
-pub use events::{TradingEvent, TradingEventType, log_event, current_timestamp_ms, calculate_latency_ms, format_pct};
+pub use events::{EventPayload, TradingEvent, TradingEventType, log_event, current_timestamp_ms, calculate_latency_ms, format_pct};
 
 // Explicit re-exports for pyth module (USD/USDC conversion)
 pub use pyth::{UsdcRateCache, spawn_rate_refresh_task};

@@ -120,70 +120,96 @@ impl TimingBreakdown {
     }
 }
 
-/// Trading event with all context fields for structured logging
+/// Type-safe event payload — each variant carries only its relevant fields
+#[derive(Debug, Clone)]
+pub enum EventPayload {
+    /// Pre-entry spread detection
+    SpreadDetected {
+        entry_spread: f64,
+        spread_threshold: f64,
+        direction: String,
+    },
+    /// Delta-neutral entry executed
+    TradeEntry {
+        entry_spread: f64,
+        spread_threshold: f64,
+        direction: String,
+        latency_ms: u64,
+        long_exchange: String,
+        short_exchange: String,
+        vest_fill_price: f64,
+        paradex_fill_price: f64,
+    },
+    /// Position closed
+    TradeExit {
+        entry_spread: f64,
+        exit_spread: f64,
+        spread_threshold: f64,
+        profit: f64,
+        polls: u64,
+    },
+    /// Periodic monitoring tick (throttled)
+    PositionMonitoring {
+        entry_spread: f64,
+        exit_spread: f64,
+        spread_threshold: f64,
+        polls: u64,
+    },
+    /// Order sent to exchange
+    OrderPlaced {
+        order_id: String,
+        direction: String,
+    },
+    /// Order confirmation received
+    OrderFilled {
+        order_id: String,
+        latency_ms: u64,
+    },
+    /// Position fully closed
+    PositionClosed {
+        entry_spread: f64,
+        exit_spread: f64,
+        profit: f64,
+    },
+    /// Detailed slippage + timing breakdown after trade (Story 8.1)
+    SlippageAnalysis {
+        detection_spread: f64,
+        execution_spread: f64,
+        slippage_bps: f64,
+        slippage: f64,
+        timing: TimingBreakdown,
+        long_exchange: String,
+        short_exchange: String,
+        direction: String,
+    },
+    /// Events with no extra fields (BotStarted, BotShutdown, OrderFailed)
+    Simple,
+}
+
+/// Trading event with common header + typed payload for structured logging
 ///
-/// # Spread Fields (CRITICAL DISTINCTION)
-/// - `entry_spread`: Spread at detection/entry (e.g., 0.35%)
-/// - `exit_spread`: Spread at close/exit (e.g., -0.08%)
-/// - `spread_threshold`: Configured threshold being checked
+/// # Design (CR-8)
+/// Instead of 19 `Option<T>` fields, each event type gets only its relevant
+/// fields via `EventPayload`. The common header (type, timestamp, pair, exchange)
+/// is shared across all events.
 #[derive(Debug, Clone)]
 pub struct TradingEvent {
     pub event_type: TradingEventType,
-    pub timestamp_ms: u64,           // Unix epoch milliseconds
-    pub pair: Option<String>,        // e.g., "BTC-PERP"
-    pub exchange: Option<String>,    // e.g., "vest", "paradex", "both"
-    
-    // IMPORTANT: Two distinct spread types
-    pub entry_spread: Option<f64>,   // Spread at detection/entry
-    pub exit_spread: Option<f64>,    // Spread at close/exit
-    pub spread_threshold: Option<f64>, // Configured threshold
-    
-    pub latency_ms: Option<u64>,     // Detection-to-event latency
-    pub order_id: Option<String>,    // For order events
-    pub direction: Option<String>,   // "A_OVER_B" or "B_OVER_A"
-    pub profit: Option<f64>,         // For exit events
-    pub slippage: Option<f64>,       // Difference between detected and executed spread
-    pub polls: Option<u64>,          // For monitoring events
-    
-    // Story 8.1: Slippage Investigation fields
-    pub detection_spread: Option<f64>,  // Spread at detection time
-    pub execution_spread: Option<f64>,  // Spread at execution time (recalculated)
-    pub slippage_bps: Option<f64>,      // Slippage in basis points
-    pub timing: Option<TimingBreakdown>, // Timing breakdown for latency analysis
-    pub long_exchange: Option<String>,  // Exchange that received long order
-    pub short_exchange: Option<String>, // Exchange that received short order
-    
-    // F1 Fix: Fill prices for compact [ENTRY] format
-    pub vest_fill_price: Option<f64>,     // Fill price from Vest order
-    pub paradex_fill_price: Option<f64>,  // Fill price from Paradex order
+    pub timestamp_ms: u64,
+    pub pair: Option<String>,
+    pub exchange: Option<String>,
+    pub payload: EventPayload,
 }
 
 impl TradingEvent {
-    /// Create a new event with the current timestamp
+    /// Create a new event with the current timestamp and Simple payload
     pub fn new(event_type: TradingEventType) -> Self {
         Self {
             event_type,
             timestamp_ms: current_timestamp_ms(),
             pair: None,
             exchange: None,
-            entry_spread: None,
-            exit_spread: None,
-            spread_threshold: None,
-            latency_ms: None,
-            order_id: None,
-            direction: None,
-            profit: None,
-            slippage: None,
-            polls: None,
-            // Story 8.1 fields
-            detection_spread: None,
-            execution_spread: None,
-            slippage_bps: None,
-            timing: None,
-            long_exchange: None,
-            short_exchange: None,
-            vest_fill_price: None,
-            paradex_fill_price: None,
+            payload: EventPayload::Simple,
         }
     }
     
@@ -203,9 +229,11 @@ impl TradingEvent {
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::SpreadDetected, pair);
         event.exchange = Some("both".to_string());
-        event.entry_spread = Some(entry_spread);
-        event.spread_threshold = Some(spread_threshold);
-        event.direction = Some(direction.to_string());
+        event.payload = EventPayload::SpreadDetected {
+            entry_spread,
+            spread_threshold,
+            direction: direction.to_string(),
+        };
         event
     }
     
@@ -223,14 +251,16 @@ impl TradingEvent {
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::TradeEntry, pair);
         event.exchange = Some(format!("long:{},short:{}", long_exchange, short_exchange));
-        event.entry_spread = Some(entry_spread);
-        event.spread_threshold = Some(spread_threshold);
-        event.latency_ms = Some(latency_ms);
-        event.direction = Some(direction.to_string());
-        event.long_exchange = Some(long_exchange.to_string());
-        event.short_exchange = Some(short_exchange.to_string());
-        event.vest_fill_price = Some(vest_fill_price);
-        event.paradex_fill_price = Some(paradex_fill_price);
+        event.payload = EventPayload::TradeEntry {
+            entry_spread,
+            spread_threshold,
+            direction: direction.to_string(),
+            latency_ms,
+            long_exchange: long_exchange.to_string(),
+            short_exchange: short_exchange.to_string(),
+            vest_fill_price,
+            paradex_fill_price,
+        };
         event
     }
     
@@ -245,11 +275,13 @@ impl TradingEvent {
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::TradeExit, pair);
         event.exchange = Some("both".to_string());
-        event.entry_spread = Some(entry_spread);
-        event.exit_spread = Some(exit_spread);
-        event.spread_threshold = Some(spread_threshold);
-        event.profit = Some(profit);
-        event.polls = Some(polls);
+        event.payload = EventPayload::TradeExit {
+            entry_spread,
+            exit_spread,
+            spread_threshold,
+            profit,
+            polls,
+        };
         event
     }
     
@@ -262,10 +294,12 @@ impl TradingEvent {
         polls: u64,
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::PositionMonitoring, pair);
-        event.entry_spread = Some(entry_spread);
-        event.exit_spread = Some(exit_spread);
-        event.spread_threshold = Some(spread_threshold);
-        event.polls = Some(polls);
+        event.payload = EventPayload::PositionMonitoring {
+            entry_spread,
+            exit_spread,
+            spread_threshold,
+            polls,
+        };
         event
     }
     
@@ -278,8 +312,10 @@ impl TradingEvent {
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::OrderPlaced, pair);
         event.exchange = Some(exchange.to_string());
-        event.order_id = Some(order_id.to_string());
-        event.direction = Some(direction.to_string());
+        event.payload = EventPayload::OrderPlaced {
+            order_id: order_id.to_string(),
+            direction: direction.to_string(),
+        };
         event
     }
     
@@ -292,8 +328,10 @@ impl TradingEvent {
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::OrderFilled, pair);
         event.exchange = Some(exchange.to_string());
-        event.order_id = Some(order_id.to_string());
-        event.latency_ms = Some(latency_ms);
+        event.payload = EventPayload::OrderFilled {
+            order_id: order_id.to_string(),
+            latency_ms,
+        };
         event
     }
     
@@ -306,9 +344,11 @@ impl TradingEvent {
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::PositionClosed, pair);
         event.exchange = Some("both".to_string());
-        event.entry_spread = Some(entry_spread);
-        event.exit_spread = Some(exit_spread);
-        event.profit = Some(profit);
+        event.payload = EventPayload::PositionClosed {
+            entry_spread,
+            exit_spread,
+            profit,
+        };
         event
     }
     
@@ -329,20 +369,20 @@ impl TradingEvent {
         short_exchange: &str,
         direction: &str,
     ) -> Self {
-        // Calculate slippage in basis points (detection - execution) * 100
         let slippage_bps = (detection_spread - execution_spread) * 100.0;
         
         let mut event = Self::with_pair(TradingEventType::SlippageAnalysis, pair);
         event.exchange = Some("both".to_string());
-        event.latency_ms = Some(timing.total_latency_ms);
-        event.direction = Some(direction.to_string());
-        event.slippage = Some(slippage_bps / 100.0);
-        event.detection_spread = Some(detection_spread);
-        event.execution_spread = Some(execution_spread);
-        event.slippage_bps = Some(slippage_bps);
-        event.timing = Some(timing);
-        event.long_exchange = Some(long_exchange.to_string());
-        event.short_exchange = Some(short_exchange.to_string());
+        event.payload = EventPayload::SlippageAnalysis {
+            detection_spread,
+            execution_spread,
+            slippage_bps,
+            slippage: slippage_bps / 100.0,
+            timing,
+            long_exchange: long_exchange.to_string(),
+            short_exchange: short_exchange.to_string(),
+            direction: direction.to_string(),
+        };
         event
     }
     
@@ -414,118 +454,130 @@ pub fn log_event(event: &TradingEvent) {
     let event_type = event.event_type.to_string();
     let timestamp = event.timestamp_ms;
     
-    match event.event_type {
+    match &event.payload {
         // T3: [SCAN] LiveEntrySpread=X% - Pre-entry spread detection
-        TradingEventType::SpreadDetected => {
-            let live_entry_spread = event.entry_spread.map(format_pct_compact).unwrap_or_default();
-            let msg = log_compact("SCAN", &[("LiveEntrySpread", live_entry_spread)]);
+        EventPayload::SpreadDetected { entry_spread, direction, .. } => {
+            let msg = log_compact("SCAN", &[("LiveEntrySpread", format_pct_compact(*entry_spread))]);
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
                 pair = ?event.pair,
-                direction = ?event.direction,
+                direction = %direction,
                 "{}", msg
             );
         }
-        // T4: [ENTRY] EntrySpread=X% LongPrice:Exchange=Y ShortPrice:Exchange=Z Latency=Nms
-        TradingEventType::TradeEntry => {
-            let entry_spread = event.entry_spread.map(format_pct_compact).unwrap_or_default();
-            let latency = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
-            
-            // CR-12: Prices are now labeled by exchange directly
-            let vest_price = event.vest_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
-            let paradex_price = event.paradex_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
-            
+        // T4: [ENTRY] EntrySpread=X% VestPrice=Y ParadexPrice=Z Latency=Nms
+        EventPayload::TradeEntry {
+            entry_spread, latency_ms, vest_fill_price, paradex_fill_price,
+            long_exchange, short_exchange, ..
+        } => {
             let msg = log_compact("ENTRY", &[
-                ("EntrySpread", entry_spread),
-                ("VestPrice", vest_price),
-                ("ParadexPrice", paradex_price),
-                ("Latency", latency),
+                ("EntrySpread", format_pct_compact(*entry_spread)),
+                ("VestPrice", format!("{:.0}", vest_fill_price)),
+                ("ParadexPrice", format!("{:.0}", paradex_fill_price)),
+                ("Latency", format!("{}ms", latency_ms)),
             ]);
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
                 pair = ?event.pair,
-                long_exchange = ?event.long_exchange,
-                short_exchange = ?event.short_exchange,
+                long_exchange = %long_exchange,
+                short_exchange = %short_exchange,
                 "{}", msg
             );
         }
         // T5: [HOLD] LiveExitSpread=X% - Position monitoring (DEBUG level, throttled)
-        TradingEventType::PositionMonitoring => {
-            let live_exit_spread = event.exit_spread.map(format_pct_compact).unwrap_or_default();
-            let msg = log_compact("HOLD", &[("LiveExitSpread", live_exit_spread)]);
+        EventPayload::PositionMonitoring { exit_spread, polls, .. } => {
+            let msg = log_compact("HOLD", &[("LiveExitSpread", format_pct_compact(*exit_spread))]);
             debug!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
                 pair = ?event.pair,
-                polls = ?event.polls,
+                polls = polls,
                 "{}", msg
             );
         }
-        // T6: [EXIT] ExitSpread=X% Captured=Y% Latency=Nms
-        TradingEventType::TradeExit => {
-            let exit_spread = event.exit_spread.map(format_pct_compact).unwrap_or_default();
-            // Captured = entry_spread + exit_spread (total captured profit)
-            let captured = match (event.entry_spread, event.exit_spread) {
-                (Some(es), Some(xs)) => format_pct_compact(es + xs),
-                _ => "?".to_string(),
-            };
-            let latency = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
+        // T6: [EXIT] ExitSpread=X% Captured=Y%
+        EventPayload::TradeExit { entry_spread, exit_spread, profit, polls, .. } => {
+            let captured = format_pct_compact(entry_spread + exit_spread);
             let msg = log_compact("EXIT", &[
-                ("ExitSpread", exit_spread),
+                ("ExitSpread", format_pct_compact(*exit_spread)),
                 ("Captured", captured),
-                ("Latency", latency),
             ]);
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
                 pair = ?event.pair,
-                polls = ?event.polls,
-                profit = ?event.profit.map(format_pct),
+                polls = polls,
+                profit = %format_pct(*profit),
                 "{}", msg
             );
         }
-        // Story 8.1: SLIPPAGE_ANALYSIS with timing breakdown for easy grep
-        TradingEventType::SlippageAnalysis => {
-            let timing = event.timing.as_ref();
+        // Story 8.1: SLIPPAGE_ANALYSIS with timing breakdown
+        EventPayload::SlippageAnalysis {
+            detection_spread, execution_spread, slippage_bps,
+            timing, long_exchange, short_exchange, direction, ..
+        } => {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
                 pair = ?event.pair,
-                detection_spread_pct = ?event.detection_spread,
-                execution_spread_pct = ?event.execution_spread,
-                slippage_bps = ?event.slippage_bps,
-                detection_to_signal_ms = timing.map(|t| t.detection_to_signal_ms),
-                signal_to_order_ms = timing.map(|t| t.signal_to_order_ms),
-                order_to_confirm_ms = timing.map(|t| t.order_to_confirm_ms),
-                total_latency_ms = timing.map(|t| t.total_latency_ms),
-                long_exchange = ?event.long_exchange,
-                short_exchange = ?event.short_exchange,
-                direction = ?event.direction,
+                detection_spread_pct = detection_spread,
+                execution_spread_pct = execution_spread,
+                slippage_bps = slippage_bps,
+                detection_to_signal_ms = timing.detection_to_signal_ms,
+                signal_to_order_ms = timing.signal_to_order_ms,
+                order_to_confirm_ms = timing.order_to_confirm_ms,
+                total_latency_ms = timing.total_latency_ms,
+                long_exchange = %long_exchange,
+                short_exchange = %short_exchange,
+                direction = %direction,
                 "[SLIPPAGE] Trade analysis"
             );
         }
-        // INFO level for other business events (ORDER_*, POSITION_*, BOT_*)
-        _ => {
-            let entry_spread_str = event.entry_spread.map(format_pct);
-            let exit_spread_str = event.exit_spread.map(format_pct);
-            let threshold_str = event.spread_threshold.map(format_pct);
-            let profit_str = event.profit.map(format_pct);
+        // ORDER_PLACED
+        EventPayload::OrderPlaced { order_id, direction } => {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
                 pair = ?event.pair,
                 exchange = ?event.exchange,
-                entry_spread = ?entry_spread_str,
-                exit_spread = ?exit_spread_str,
-                spread_threshold = ?threshold_str,
-                latency_ms = ?event.latency_ms,
-                order_id = ?event.order_id,
-                direction = ?event.direction,
-                profit = ?profit_str,
-                slippage = ?event.slippage,
-                polls = ?event.polls,
+                order_id = %order_id,
+                direction = %direction,
+                ""
+            );
+        }
+        // ORDER_FILLED
+        EventPayload::OrderFilled { order_id, latency_ms } => {
+            info!(
+                event_type = %event_type,
+                event_ts_ms = timestamp,
+                pair = ?event.pair,
+                exchange = ?event.exchange,
+                order_id = %order_id,
+                latency_ms = latency_ms,
+                ""
+            );
+        }
+        // POSITION_CLOSED
+        EventPayload::PositionClosed { entry_spread, exit_spread, profit } => {
+            info!(
+                event_type = %event_type,
+                event_ts_ms = timestamp,
+                pair = ?event.pair,
+                entry_spread = %format_pct(*entry_spread),
+                exit_spread = %format_pct(*exit_spread),
+                profit = %format_pct(*profit),
+                ""
+            );
+        }
+        // Simple events (BotStarted, BotShutdown, etc.)
+        EventPayload::Simple => {
+            info!(
+                event_type = %event_type,
+                event_ts_ms = timestamp,
+                pair = ?event.pair,
+                exchange = ?event.exchange,
                 ""
             );
         }
@@ -730,10 +782,14 @@ mod tests {
         
         assert_eq!(event.event_type, TradingEventType::SpreadDetected);
         assert_eq!(event.pair, Some("BTC-PERP".to_string()));
-        assert_eq!(event.entry_spread, Some(0.35));
-        assert_eq!(event.exit_spread, None); // Not set for entry events
-        assert_eq!(event.spread_threshold, Some(0.10));
-        assert_eq!(event.direction, Some("A_OVER_B".to_string()));
+        match &event.payload {
+            EventPayload::SpreadDetected { entry_spread, spread_threshold, direction } => {
+                assert_eq!(*entry_spread, 0.35);
+                assert_eq!(*spread_threshold, 0.10);
+                assert_eq!(direction, "A_OVER_B");
+            }
+            _ => panic!("Expected SpreadDetected payload"),
+        }
     }
     
     #[test]
@@ -746,16 +802,21 @@ mod tests {
             "vest",
             "paradex",
             150,
-            42000.0,  // vest_fill_price
-            42100.0,  // paradex_fill_price
+            42000.0,
+            42100.0,
         );
         
         assert_eq!(event.event_type, TradingEventType::TradeEntry);
-        assert_eq!(event.entry_spread, Some(0.35));
-        assert_eq!(event.latency_ms, Some(150));
         assert!(event.exchange.unwrap().contains("vest"));
-        assert_eq!(event.vest_fill_price, Some(42000.0));
-        assert_eq!(event.paradex_fill_price, Some(42100.0));
+        match &event.payload {
+            EventPayload::TradeEntry { entry_spread, latency_ms, vest_fill_price, paradex_fill_price, .. } => {
+                assert_eq!(*entry_spread, 0.35);
+                assert_eq!(*latency_ms, 150);
+                assert_eq!(*vest_fill_price, 42000.0);
+                assert_eq!(*paradex_fill_price, 42100.0);
+            }
+            _ => panic!("Expected TradeEntry payload"),
+        }
     }
     
     #[test]
@@ -770,10 +831,15 @@ mod tests {
         );
         
         assert_eq!(event.event_type, TradingEventType::TradeExit);
-        assert_eq!(event.entry_spread, Some(0.35));
-        assert_eq!(event.exit_spread, Some(-0.08));
-        assert_eq!(event.profit, Some(0.27));
-        assert_eq!(event.polls, Some(1200));
+        match &event.payload {
+            EventPayload::TradeExit { entry_spread, exit_spread, profit, polls, .. } => {
+                assert_eq!(*entry_spread, 0.35);
+                assert_eq!(*exit_spread, -0.08);
+                assert_eq!(*profit, 0.27);
+                assert_eq!(*polls, 1200);
+            }
+            _ => panic!("Expected TradeExit payload"),
+        }
     }
     
     #[test]
@@ -787,9 +853,14 @@ mod tests {
         );
         
         assert_eq!(event.event_type, TradingEventType::PositionMonitoring);
-        assert_eq!(event.entry_spread, Some(0.35));
-        assert_eq!(event.exit_spread, Some(-0.05));
-        assert_eq!(event.polls, Some(40));
+        match &event.payload {
+            EventPayload::PositionMonitoring { entry_spread, exit_spread, polls, .. } => {
+                assert_eq!(*entry_spread, 0.35);
+                assert_eq!(*exit_spread, -0.05);
+                assert_eq!(*polls, 40);
+            }
+            _ => panic!("Expected PositionMonitoring payload"),
+        }
     }
     
     #[test]
@@ -811,11 +882,10 @@ mod tests {
     
     #[test]
     fn test_timing_breakdown_new() {
-        // Simulate timestamps with known values
         let t_detection = 1000u64;
-        let t_signal = 1005u64;      // 5ms after detection
-        let t_order_sent = 1010u64;   // 5ms after signal
-        let t_order_confirmed = 1100u64; // 90ms after order sent
+        let t_signal = 1005u64;
+        let t_order_sent = 1010u64;
+        let t_order_confirmed = 1100u64;
         
         let timing = TimingBreakdown::new(
             t_detection,
@@ -828,10 +898,10 @@ mod tests {
         assert_eq!(timing.signal_timestamp_ms, 1005);
         assert_eq!(timing.order_sent_timestamp_ms, 1010);
         assert_eq!(timing.order_confirmed_timestamp_ms, 1100);
-        assert_eq!(timing.detection_to_signal_ms, 5);  // 1005 - 1000
-        assert_eq!(timing.signal_to_order_ms, 5);      // 1010 - 1005
-        assert_eq!(timing.order_to_confirm_ms, 90);    // 1100 - 1010
-        assert_eq!(timing.total_latency_ms, 100);      // 1100 - 1000
+        assert_eq!(timing.detection_to_signal_ms, 5);
+        assert_eq!(timing.signal_to_order_ms, 5);
+        assert_eq!(timing.order_to_confirm_ms, 90);
+        assert_eq!(timing.total_latency_ms, 100);
     }
     
     #[test]
@@ -840,8 +910,8 @@ mod tests {
         
         let event = TradingEvent::slippage_analysis(
             "BTC-PERP",
-            0.35,    // detection_spread (detected at 0.35%)
-            0.10,    // execution_spread (executed at 0.10%)
+            0.35,
+            0.10,
             timing,
             "vest",
             "paradex",
@@ -850,25 +920,21 @@ mod tests {
         
         assert_eq!(event.event_type, TradingEventType::SlippageAnalysis);
         assert_eq!(event.pair, Some("BTC-PERP".to_string()));
-        assert_eq!(event.detection_spread, Some(0.35));
-        assert_eq!(event.execution_spread, Some(0.10));
-        // CR-7: entry_spread/exit_spread must NOT be set on slippage events
-        assert_eq!(event.entry_spread, None, "slippage events use detection_spread, not entry_spread");
-        assert_eq!(event.exit_spread, None, "slippage events use execution_spread, not exit_spread");
-        
-        // Slippage = (0.35 - 0.10) * 100 = 25 basis points
-        // Use approximate comparison for floating point
-        let slippage_bps = event.slippage_bps.unwrap();
-        assert!((slippage_bps - 25.0).abs() < 0.001, "Expected ~25.0 bps, got {}", slippage_bps);
-        
-        // Check timing was stored
-        assert!(event.timing.is_some());
-        let stored_timing = event.timing.unwrap();
-        assert_eq!(stored_timing.total_latency_ms, 100);
-        
-        // Check exchanges
-        assert_eq!(event.long_exchange, Some("vest".to_string()));
-        assert_eq!(event.short_exchange, Some("paradex".to_string()));
+        match &event.payload {
+            EventPayload::SlippageAnalysis {
+                detection_spread, execution_spread, slippage_bps,
+                timing: stored_timing, long_exchange, short_exchange, ..
+            } => {
+                assert_eq!(*detection_spread, 0.35);
+                assert_eq!(*execution_spread, 0.10);
+                // Slippage = (0.35 - 0.10) * 100 = 25 basis points
+                assert!((*slippage_bps - 25.0).abs() < 0.001, "Expected ~25.0 bps, got {}", slippage_bps);
+                assert_eq!(stored_timing.total_latency_ms, 100);
+                assert_eq!(long_exchange, "vest");
+                assert_eq!(short_exchange, "paradex");
+            }
+            _ => panic!("Expected SlippageAnalysis payload"),
+        }
     }
     
     #[test]
