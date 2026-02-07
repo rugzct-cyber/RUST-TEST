@@ -826,13 +826,18 @@ impl VestAdapter {
 
                 tokio::time::sleep(Duration::from_secs(5)).await;
 
-                // Just trace-level health check, no warning needed
+                // Check if PONG is stale - connection likely dead
                 let last = last_pong.load(Ordering::Relaxed);
                 let now = current_time_ms();
-                tracing::trace!(
-                    "Vest heartbeat: last PONG was {}ms ago",
-                    now.saturating_sub(last)
-                );
+                let pong_age_ms = now.saturating_sub(last);
+                if pong_age_ms > 30_000 {
+                    tracing::warn!(
+                        "Vest heartbeat: PONG stale ({}ms ago) - connection likely dead",
+                        pong_age_ms
+                    );
+                    break;
+                }
+                tracing::trace!("Vest heartbeat: last PONG was {}ms ago", pong_age_ms);
             }
 
             tracing::debug!("Vest heartbeat task ended");

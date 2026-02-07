@@ -266,7 +266,7 @@ impl ParadexAdapter {
         )?;
         
         self.jwt_expiry = Some(timestamp_ms + JWT_LIFETIME_MS);
-        tracing::info!(event_type = "AUTH_SUCCESS", exchange = "paradex", expiry = self.jwt_expiry.unwrap(), "JWT obtained successfully");
+        tracing::info!(event_type = "AUTH_SUCCESS", exchange = "paradex", expiry = self.jwt_expiry.unwrap_or(0), "JWT obtained successfully");
         
         Ok(jwt)
     }
@@ -897,6 +897,12 @@ impl ExchangeAdapter for ParadexAdapter {
         if let Some(ws_sender) = self.ws_sender.take() {
             let mut sender = ws_sender.lock().await;
             let _ = sender.close().await;
+        }
+        
+        // Close raw WebSocket stream to prevent lingering TCP connections
+        if let Some(ws) = self.ws_stream.take() {
+            let mut stream = ws.lock().await;
+            let _ = stream.close(None).await;
         }
         
         // Clear state

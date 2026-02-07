@@ -46,8 +46,6 @@ pub enum TradingEventType {
     OrderFilled,          // Order confirmation received
     OrderFailed,          // Order rejected
     
-    // Position Events
-    PositionOpened,       // New position tracked
     PositionClosed,       // Position fully closed
     PositionMonitoring,   // Periodic monitoring tick (throttled)
     
@@ -69,7 +67,6 @@ impl fmt::Display for TradingEventType {
             TradingEventType::OrderPlaced => write!(f, "ORDER_PLACED"),
             TradingEventType::OrderFilled => write!(f, "ORDER_FILLED"),
             TradingEventType::OrderFailed => write!(f, "ORDER_FAILED"),
-            TradingEventType::PositionOpened => write!(f, "POSITION_OPENED"),
             TradingEventType::PositionClosed => write!(f, "POSITION_CLOSED"),
             TradingEventType::PositionMonitoring => write!(f, "POSITION_MONITORING"),
             TradingEventType::BotStarted => write!(f, "BOT_STARTED"),
@@ -390,17 +387,6 @@ pub fn format_pct(value: f64) -> String {
 #[inline]
 pub fn format_pct_compact(value: f64) -> String {
     format!("{:.2}%", value)
-}
-
-/// Format price with 2 decimals and $ prefix
-/// 
-/// # Examples
-/// - `100.5` → "$100.50"
-/// - `-50.0` → "$-50.00"
-/// - NaN/Infinity will produce "$NaN" or "$inf"
-#[inline]
-pub fn fmt_price(value: f64) -> String {
-    format!("${:.2}", value)
 }
 
 /// Format compact log message for terminal display (T2)
