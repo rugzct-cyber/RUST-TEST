@@ -203,8 +203,9 @@ impl VestAdapter {
         let elapsed = start.elapsed();
         
         // Log success regardless of response status (we just want to establish the connection)
-        if response.status().is_success() || response.status().as_u16() == 401 {
-            // 401 is expected without auth - connection is still established
+        // W-4 fix: 401/403 are expected without auth — connection is still established
+        let status_code = response.status().as_u16();
+        if response.status().is_success() || status_code == 401 || status_code == 403 {
             tracing::info!(
                 phase = "init",
                 exchange = "vest",
@@ -212,12 +213,13 @@ impl VestAdapter {
                 "HTTP connection pool warmed up"
             );
         } else {
-            tracing::warn!(
+            // Any other status still means TCP/TLS is established, just unexpected
+            tracing::debug!(
                 phase = "init",
                 exchange = "vest",
                 status = %response.status(),
                 latency_ms = %elapsed.as_millis(),
-                "HTTP warm-up returned non-success status"
+                "HTTP warm-up returned unexpected status (connection still established)"
             );
         }
         

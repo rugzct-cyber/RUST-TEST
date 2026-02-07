@@ -42,17 +42,17 @@ const SLIPPAGE_BUFFER_PCT: f64 = 0.02;
 /// 3. `mark_order_sent()` - Before tokio::join! on place_order
 /// 4. `mark_order_confirmed()` - After tokio::join! completes
 /// 5. `total_latency_ms()` - For result struct
-#[derive(Debug)]
-struct TradeTimings {
+#[derive(Debug, Clone)]
+pub struct TradeTimings {
     start: Instant,
-    t_signal: u64,
-    t_order_sent: u64,
-    t_order_confirmed: u64,
+    pub t_signal: u64,
+    pub t_order_sent: u64,
+    pub t_order_confirmed: u64,
 }
 
 impl TradeTimings {
     /// Create new timing tracker. Does NOT capture t_signal (Red Team F1)
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             start: Instant::now(),
             t_signal: 0,  // Captured explicitly via mark_signal_received()
@@ -90,13 +90,21 @@ fn calculate_execution_spread(long_fill_price: f64, short_fill_price: f64) -> f6
 }
 
 /// Log successful trade with timing and slippage analysis
-fn log_successful_trade(
+///
+/// Called from runtime.rs AFTER verify_positions() returns real fill prices.
+/// The `verified_vest_price` and `verified_paradex_price` override the
+/// (often 0.0) avg_price from the initial order response.
+pub fn log_successful_trade(
     opportunity: &SpreadOpportunity,
     result: &DeltaNeutralResult,
     timings: &TradeTimings,
+    verified_vest_price: f64,
+    verified_paradex_price: f64,
 ) {
-    // T7: Use centralized TradingEvent for compact [ENTRY] format
-    // F1 Fix: Pass fill prices to trade_entry()
+    // Use verified prices (from get_position) instead of avg_price (often None for IOC)
+    let vest_price = if verified_vest_price > 0.0 { verified_vest_price } else { result.vest_fill_price };
+    let paradex_price = if verified_paradex_price > 0.0 { verified_paradex_price } else { result.paradex_fill_price };
+
     let direction_str = format!("{:?}", opportunity.direction);
     let entry_event = TradingEvent::trade_entry(
         &opportunity.pair,
@@ -106,15 +114,15 @@ fn log_successful_trade(
         &result.long_exchange,
         &result.short_exchange,
         result.execution_latency_ms,
-        result.vest_fill_price,
-        result.paradex_fill_price,
+        vest_price,
+        paradex_price,
     );
     log_event(&entry_event);
     
-    // Story 8.1: Calculate execution spread and emit SlippageAnalysis event
+    // Story 8.1: Calculate execution spread from verified prices
     let execution_spread = calculate_execution_spread(
-        result.vest_fill_price,
-        result.paradex_fill_price,
+        vest_price,
+        paradex_price,
     );
     
     let timing = TimingBreakdown::new(
@@ -243,6 +251,8 @@ pub struct DeltaNeutralResult {
     pub vest_fill_price: f64,
     /// Fill price from Paradex order (avg_fill_price)
     pub paradex_fill_price: f64,
+    /// Trade timing breakdown for deferred logging
+    pub timings: Option<TradeTimings>,
 }
 
 // =============================================================================
@@ -438,14 +448,15 @@ where
             short_exchange: short_exchange.to_string(),
             vest_fill_price,
             paradex_fill_price,
+            timings: Some(timings),
         };
         
         if success {
             // Store the entry direction for exit spread calculation
             self.entry_direction.store(opportunity.direction.to_u8(), Ordering::SeqCst);
             
-            // Delegate logging to helper function (Task 3)
-            log_successful_trade(&opportunity, &partial_result, &timings);
+            // TRADE_ENTRY + SLIPPAGE_ANALYSIS logging is deferred to runtime.rs
+            // after verify_positions() provides real fill prices (C-1/C-2/W-1 fix)
         } else {
             // CR-1: Rollback the successful leg if the other failed
             let long_ok = long_status.is_success();
@@ -733,6 +744,7 @@ where
             short_exchange: short_exchange.to_string(),
             vest_fill_price: vest_fill,
             paradex_fill_price: paradex_fill,
+            timings: None,
         })
     }
 

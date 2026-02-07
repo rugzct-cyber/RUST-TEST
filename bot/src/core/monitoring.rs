@@ -117,19 +117,6 @@ pub async fn monitoring_task(
                         if spread_result.spread_pct >= config.spread_entry {
                             let now_ms = current_timestamp_ms();
                             
-                            // Log SPREAD_DETECTED event (structured, throttled to reduce noise)
-                            // Only log once per ~2 seconds to avoid flooding
-                            if poll_count % LOG_THROTTLE_POLLS == 0 {
-                                let direction_str = format!("{:?}", spread_result.direction);
-                                let event = TradingEvent::spread_detected(
-                                    &config.pair,
-                                    spread_result.spread_pct,
-                                    config.spread_entry,
-                                    &direction_str,
-                                );
-                                log_event(&event);
-                            }
-                            
                             let opportunity = SpreadOpportunity {
                                 pair: config.pair.clone(),
                                 dex_a: "vest".to_string(),
@@ -147,6 +134,18 @@ pub async fn monitoring_task(
                             // Non-blocking send to avoid blocking monitoring loop
                             match opportunity_tx.try_send(opportunity) {
                                 Ok(_) => {
+                                    // W-2 fix: Only log SPREAD_DETECTED when opportunity
+                                    // is actually sent (not when position is open/channel full)
+                                    if poll_count % LOG_THROTTLE_POLLS == 0 {
+                                        let direction_str = format!("{:?}", spread_result.direction);
+                                        let event = TradingEvent::spread_detected(
+                                            &config.pair,
+                                            spread_result.spread_pct,
+                                            config.spread_entry,
+                                            &direction_str,
+                                        );
+                                        log_event(&event);
+                                    }
                                     debug!("Spread opportunity sent to execution task");
                                 }
                                 Err(mpsc::error::TrySendError::Full(_)) => {

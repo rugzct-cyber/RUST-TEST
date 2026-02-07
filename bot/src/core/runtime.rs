@@ -17,8 +17,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::adapters::ExchangeAdapter;
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, calculate_latency_ms, format_pct};
-use crate::core::execution::DeltaNeutralExecutor;
+use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, format_pct};
+use crate::core::execution::{DeltaNeutralExecutor, log_successful_trade};
 use crate::core::spread::{SpreadCalculator, SpreadDirection};
 
 // TUI State type for optional TUI updates
@@ -140,9 +140,10 @@ where
                         log_event(&event);
                     }
                     
-                    // DEBUG: Log near-exit conditions at INFO level
-                    if exit_spread >= exit_spread_target - 0.02 {
-                        info!(
+                    // DEBUG: Log near-exit conditions (throttled - every ~1 second)
+                    // W-3 fix: was logging at info! 40x/sec → now debug! throttled
+                    if exit_spread >= exit_spread_target - 0.02 && poll_count % LOG_THROTTLE_POLLS == 0 {
+                        debug!(
                             event_type = "EXIT_CHECK",
                             exit_spread = %format!("{:.4}", exit_spread),
                             target = %format!("{:.4}", exit_spread_target),
@@ -306,28 +307,22 @@ pub async fn execution_task<V, P>(
                 match executor.execute_delta_neutral(opportunity.clone()).await {
                     Ok(result) => {
                         if result.success {
-                            // Calculate latency from detection to execution
-                            let latency = calculate_latency_ms(opportunity.detected_at_ms);
-                            let direction_str = format!("{:?}", opportunity.direction);
-                            
-                            // Log TRADE_ENTRY event (Story 5.3)
-                            let event = TradingEvent::trade_entry(
-                                &pair,
-                                spread_pct,
-                                exit_spread_target, // entry threshold
-                                &direction_str,
-                                &result.long_exchange,
-                                &result.short_exchange,
-                                latency,
-                                result.vest_fill_price,
-                                result.paradex_fill_price,
-                            );
-                            log_event(&event);
-                            
                             // Verify positions on both exchanges and get entry prices
                             // Add small delay to let Vest API update entry price
                             tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
                             let (vest_entry, paradex_entry) = executor.verify_positions(spread_pct, exit_spread_target).await;
+                            
+                            // C-1/C-2/W-1 fix: Log TRADE_ENTRY + SLIPPAGE_ANALYSIS AFTER
+                            // verify_positions() with real fill prices (not 0.0 from IOC response)
+                            if let Some(timings) = result.timings.as_ref() {
+                                log_successful_trade(
+                                    &opportunity,
+                                    &result,
+                                    timings,
+                                    vest_entry.unwrap_or(0.0),
+                                    paradex_entry.unwrap_or(0.0),
+                                );
+                            }
                             
                             // Update TUI state with entry prices from position data
                             if let Some(ref tui) = tui_state {
