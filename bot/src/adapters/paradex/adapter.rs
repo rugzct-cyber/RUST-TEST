@@ -914,6 +914,7 @@ impl ExchangeAdapter for ParadexAdapter {
         self.orderbooks.clear();
         
         // Reset connection health timestamps 
+        self.connection_health.last_pong.store(0, Ordering::Relaxed);
         self.connection_health.last_data.store(0, Ordering::Relaxed);
         
         // Clear shared orderbooks

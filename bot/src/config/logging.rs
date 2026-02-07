@@ -47,8 +47,14 @@ pub fn init_logging() {
                 .init();
         }
         "tui" => {
-            // TUI mode: do NOT initialize here
-            // main.rs will set up the subscriber with TuiLayer
+            // TUI mode: do NOT initialize subscriber here.
+            // main.rs sets up the subscriber with TuiLayer.
+            // If this branch runs, ALL logs are silently dropped until
+            // the caller initializes the subscriber.
+            debug_assert!(
+                false,
+                "init_logging() called in TUI mode — subscriber must be set up by caller via TuiLayer"
+            );
         }
         _ => {
             // JSON for production (default)

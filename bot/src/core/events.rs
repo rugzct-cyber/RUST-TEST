@@ -334,8 +334,6 @@ impl TradingEvent {
         
         let mut event = Self::with_pair(TradingEventType::SlippageAnalysis, pair);
         event.exchange = Some("both".to_string());
-        event.entry_spread = Some(detection_spread);
-        event.exit_spread = Some(execution_spread);
         event.latency_ms = Some(timing.total_latency_ms);
         event.direction = Some(direction.to_string());
         event.slippage = Some(slippage_bps / 100.0);
@@ -854,6 +852,9 @@ mod tests {
         assert_eq!(event.pair, Some("BTC-PERP".to_string()));
         assert_eq!(event.detection_spread, Some(0.35));
         assert_eq!(event.execution_spread, Some(0.10));
+        // CR-7: entry_spread/exit_spread must NOT be set on slippage events
+        assert_eq!(event.entry_spread, None, "slippage events use detection_spread, not entry_spread");
+        assert_eq!(event.exit_spread, None, "slippage events use execution_spread, not exit_spread");
         
         // Slippage = (0.35 - 0.10) * 100 = 25 basis points
         // Use approximate comparison for floating point

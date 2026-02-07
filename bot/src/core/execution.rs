@@ -28,7 +28,7 @@ use crate::core::events::{TradingEvent, TimingBreakdown, SystemEvent, current_ti
 
 /// Slippage buffer for LIMIT IOC and MARKET orders (0.5% = 50 basis points)
 /// Used as price protection on both Vest and Paradex orders
-const SLIPPAGE_BUFFER_PCT: f64 = 0.005;
+const SLIPPAGE_BUFFER_PCT: f64 = 0.02;
 
 // =============================================================================
 // Trade Timing Breakdown (Story 8.1 refactoring)

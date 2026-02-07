@@ -69,9 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Vest REQUIRES a limit price even for MARKET orders (slippage protection)
             // Use entry_price with 1% slippage tolerance
             let limit_price = if close_side == OrderSide::Buy {
-                pos.entry_price * 1.01  // Buying to close short: allow 1% above
+                pos.entry_price * 1.02  // Buying to close short: allow 2% above
             } else {
-                pos.entry_price * 0.99  // Selling to close long: allow 1% below
+                pos.entry_price * 0.98  // Selling to close long: allow 2% below
             };
             
             let order = OrderRequest {

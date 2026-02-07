@@ -391,18 +391,31 @@ impl VestAdapter {
             }
         };
 
-        let filled_quantity = result
-            .size
-            .as_ref()
-            .and_then(|s| s.parse::<f64>().ok())
-            .map(|_| 0.0)
-            .unwrap_or(0.0);
+        let filled_quantity = match result.size.as_ref().and_then(|s| s.parse::<f64>().ok()) {
+            Some(_) => 0.0,
+            None => {
+                if result.size.is_some() {
+                    tracing::warn!(raw_size = ?result.size, "Vest: failed to parse filled_quantity, defaulting to 0.0");
+                }
+                0.0
+            }
+        };
 
         // Parse avg_price from avgFilledPrice (preferred) or lastFilledPrice (fallback)
         let avg_price: Option<f64> = result.avg_filled_price
             .as_ref()
-            .and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| result.last_filled_price.as_ref().and_then(|s| s.parse::<f64>().ok()));
+            .and_then(|s| {
+                s.parse::<f64>().map_err(|e| {
+                    tracing::warn!(raw_avg_price = %s, error = %e, "Vest: failed to parse avg_filled_price");
+                    e
+                }).ok()
+            })
+            .or_else(|| result.last_filled_price.as_ref().and_then(|s| {
+                s.parse::<f64>().map_err(|e| {
+                    tracing::warn!(raw_last_price = %s, error = %e, "Vest: failed to parse last_filled_price");
+                    e
+                }).ok()
+            }));
 
         let order_id = match result.id {
             Some(id) => id,

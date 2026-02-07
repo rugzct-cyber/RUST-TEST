@@ -127,9 +127,13 @@ impl ParadexOrderbookData {
             let mut price = level.price.parse::<f64>().map_err(|e| 
                 ExchangeError::InvalidResponse(format!("Invalid price: {}", e)))?;
             
-            // Convert USD → USDC if rate provided
+            // Convert USD → USDC if rate provided and within sane bounds
             if let Some(rate) = usdc_rate {
-                price = price / rate;
+                if rate <= 0.0 || rate > 2.0 {
+                    tracing::warn!("Paradex: suspicious USD/USDC rate {:.6}, skipping conversion", rate);
+                } else {
+                    price = price / rate;
+                }
             }
             
             let quantity = level.size.parse::<f64>().map_err(|e| 
@@ -146,12 +150,19 @@ impl ParadexOrderbookData {
             }
         }
         
-        // Sort and take top 10
-        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
-        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
-        
-        bids.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
-        asks.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
+        // Take only top N levels after sorting
+        let depth = crate::adapters::types::MAX_ORDERBOOK_DEPTH;
+        if bids.len() > depth || asks.len() > depth {
+            tracing::debug!(
+                exchange = "paradex",
+                raw_bids = bids.len(),
+                raw_asks = asks.len(),
+                max_depth = depth,
+                "Orderbook truncated to max depth"
+            );
+        }
+        bids.truncate(depth);
+        asks.truncate(depth);
         
         let orderbook = Orderbook {
             bids,

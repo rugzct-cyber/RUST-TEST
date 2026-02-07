@@ -220,9 +220,19 @@ impl VestDepthData {
         // Sort asks ascending (lowest price first = best ask)
         asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
         
-        // Take only top 10 levels after sorting
-        bids.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
-        asks.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
+        // Take only top N levels after sorting
+        let depth = crate::adapters::types::MAX_ORDERBOOK_DEPTH;
+        if bids.len() > depth || asks.len() > depth {
+            tracing::debug!(
+                exchange = "vest",
+                raw_bids = bids.len(),
+                raw_asks = asks.len(),
+                max_depth = depth,
+                "Orderbook truncated to max depth"
+            );
+        }
+        bids.truncate(depth);
+        asks.truncate(depth);
         
         let orderbook = Orderbook {
             bids,
