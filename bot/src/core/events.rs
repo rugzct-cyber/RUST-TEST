@@ -157,8 +157,8 @@ pub struct TradingEvent {
     pub short_exchange: Option<String>, // Exchange that received short order
     
     // F1 Fix: Fill prices for compact [ENTRY] format
-    pub long_fill_price: Option<f64>,   // Fill price from long order
-    pub short_fill_price: Option<f64>,  // Fill price from short order
+    pub vest_fill_price: Option<f64>,     // Fill price from Vest order
+    pub paradex_fill_price: Option<f64>,  // Fill price from Paradex order
 }
 
 impl TradingEvent {
@@ -185,8 +185,8 @@ impl TradingEvent {
             timing: None,
             long_exchange: None,
             short_exchange: None,
-            long_fill_price: None,
-            short_fill_price: None,
+            vest_fill_price: None,
+            paradex_fill_price: None,
         }
     }
     
@@ -221,8 +221,8 @@ impl TradingEvent {
         long_exchange: &str,
         short_exchange: &str,
         latency_ms: u64,
-        long_fill_price: f64,
-        short_fill_price: f64,
+        vest_fill_price: f64,
+        paradex_fill_price: f64,
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::TradeEntry, pair);
         event.exchange = Some(format!("long:{},short:{}", long_exchange, short_exchange));
@@ -232,8 +232,8 @@ impl TradingEvent {
         event.direction = Some(direction.to_string());
         event.long_exchange = Some(long_exchange.to_string());
         event.short_exchange = Some(short_exchange.to_string());
-        event.long_fill_price = Some(long_fill_price);
-        event.short_fill_price = Some(short_fill_price);
+        event.vest_fill_price = Some(vest_fill_price);
+        event.paradex_fill_price = Some(paradex_fill_price);
         event
     }
     
@@ -448,22 +448,14 @@ pub fn log_event(event: &TradingEvent) {
             let entry_spread = event.entry_spread.map(format_pct_compact).unwrap_or_default();
             let latency = event.latency_ms.map(|l| format!("{}ms", l)).unwrap_or_default();
             
-            // Determine exchange mapping from long/short_exchange fields
-            let long_ex = event.long_exchange.as_deref().unwrap_or("?");
-            let short_ex = event.short_exchange.as_deref().unwrap_or("?");
-            
-            // Format: LongPrice:Paradex=X, ShortPrice:Vest=Y
-            let long_ex_name = if long_ex == "vest" { "Vest" } else { "Paradex" };
-            let short_ex_name = if short_ex == "vest" { "Vest" } else { "Paradex" };
-            
-            // F1 Fix: Use actual fill prices instead of placeholder
-            let long_price = event.long_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
-            let short_price = event.short_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
+            // CR-12: Prices are now labeled by exchange directly
+            let vest_price = event.vest_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
+            let paradex_price = event.paradex_fill_price.map(|p| format!("{:.0}", p)).unwrap_or_default();
             
             let msg = log_compact("ENTRY", &[
                 ("EntrySpread", entry_spread),
-                (&format!("LongPrice:{}", long_ex_name), long_price),
-                (&format!("ShortPrice:{}", short_ex_name), short_price),
+                ("VestPrice", vest_price),
+                ("ParadexPrice", paradex_price),
                 ("Latency", latency),
             ]);
             info!(
@@ -770,16 +762,16 @@ mod tests {
             "vest",
             "paradex",
             150,
-            42000.0,  // long_fill_price
-            42100.0,  // short_fill_price
+            42000.0,  // vest_fill_price
+            42100.0,  // paradex_fill_price
         );
         
         assert_eq!(event.event_type, TradingEventType::TradeEntry);
         assert_eq!(event.entry_spread, Some(0.35));
         assert_eq!(event.latency_ms, Some(150));
         assert!(event.exchange.unwrap().contains("vest"));
-        assert_eq!(event.long_fill_price, Some(42000.0));
-        assert_eq!(event.short_fill_price, Some(42100.0));
+        assert_eq!(event.vest_fill_price, Some(42000.0));
+        assert_eq!(event.paradex_fill_price, Some(42100.0));
     }
     
     #[test]

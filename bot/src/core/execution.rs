@@ -15,7 +15,7 @@ use tracing::{debug, info, warn, error};
 
 use crate::adapters::{
     ExchangeAdapter, ExchangeResult, ExchangeError,
-    types::{OrderRequest, OrderResponse, OrderSide},
+    types::{OrderRequest, OrderResponse, OrderSide, OrderStatus},
     OrderBuilder,
 };
 use crate::core::channels::SpreadOpportunity;
@@ -106,15 +106,15 @@ fn log_successful_trade(
         &result.long_exchange,
         &result.short_exchange,
         result.execution_latency_ms,
-        result.long_fill_price,
-        result.short_fill_price,
+        result.vest_fill_price,
+        result.paradex_fill_price,
     );
     log_event(&entry_event);
     
     // Story 8.1: Calculate execution spread and emit SlippageAnalysis event
     let execution_spread = calculate_execution_spread(
-        result.long_fill_price,
-        result.short_fill_price,
+        result.vest_fill_price,
+        result.paradex_fill_price,
     );
     
     let timing = TimingBreakdown::new(
@@ -175,7 +175,12 @@ impl PositionVerification {
             .unwrap_or(0.0);
         
         let captured_spread = direction
-            .map(|dir| dir.calculate_captured_spread(vest_price, paradex_price))
+            .map(|dir| match dir {
+                // AOverB: long Vest (buy), short Paradex (sell)
+                SpreadDirection::AOverB => dir.calculate_captured_spread(vest_price, paradex_price),
+                // BOverA: long Paradex (buy), short Vest (sell)
+                SpreadDirection::BOverA => dir.calculate_captured_spread(paradex_price, vest_price),
+            })
             .unwrap_or(0.0);
         
         Self { vest_price, paradex_price, captured_spread }
@@ -234,10 +239,10 @@ pub struct DeltaNeutralResult {
     pub long_exchange: String,
     /// Exchange that received the short order
     pub short_exchange: String,
-    /// Fill price from long order (avg_fill_price)
-    pub long_fill_price: f64,
-    /// Fill price from short order (avg_fill_price)
-    pub short_fill_price: f64,
+    /// Fill price from Vest order (avg_fill_price)
+    pub vest_fill_price: f64,
+    /// Fill price from Paradex order (avg_fill_price)
+    pub paradex_fill_price: f64,
 }
 
 // =============================================================================
@@ -325,6 +330,13 @@ where
     pub fn get_default_quantity(&self) -> f64 {
         self.default_quantity
     }
+    
+    /// Test helper: simulate an open position so close_position can work
+    #[cfg(test)]
+    pub fn simulate_open_position(&self, direction: SpreadDirection) {
+        self.position_open.store(true, Ordering::SeqCst);
+        self.entry_direction.store(direction.to_u8(), Ordering::SeqCst);
+    }
 
     /// Execute delta-neutral trade based on spread opportunity
     ///
@@ -402,14 +414,16 @@ where
 
         let success = long_status.is_success() && short_status.is_success();
         
-        // Extract fill prices from order responses (Story 8.1: needed for slippage calculation)
-        let long_fill_price = match &long_status {
-            LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
-            _ => 0.0,
+        // Extract fill prices by exchange (CR-12: use vest/paradex instead of long/short)
+        let vest_fill_price = if long_exchange == "vest" {
+            match &long_status { LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0), _ => 0.0 }
+        } else {
+            match &short_status { LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0), _ => 0.0 }
         };
-        let short_fill_price = match &short_status {
-            LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
-            _ => 0.0,
+        let paradex_fill_price = if long_exchange == "paradex" {
+            match &long_status { LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0), _ => 0.0 }
+        } else {
+            match &short_status { LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0), _ => 0.0 }
         };
 
         // Log outcome
@@ -422,8 +436,8 @@ where
             spread_percent: opportunity.spread_percent,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            long_fill_price,
-            short_fill_price,
+            vest_fill_price,
+            paradex_fill_price,
         };
         
         if success {
@@ -433,15 +447,86 @@ where
             // Delegate logging to helper function (Task 3)
             log_successful_trade(&opportunity, &partial_result, &timings);
         } else {
-            // Log partial/total failure - user handles exposed positions manually
+            // CR-1: Rollback the successful leg if the other failed
+            let long_ok = long_status.is_success();
+            let short_ok = short_status.is_success();
+            
             warn!(
                 event_type = "TRADE_FAILED",
                 spread = %format_pct(opportunity.spread_percent),
-                long_success = long_status.is_success(),
-                short_success = short_status.is_success(),
+                long_success = long_ok,
+                short_success = short_ok,
                 latency_ms = execution_latency_ms,
-                "Execution failed - manual intervention may be required"
+                "Execution failed - attempting rollback"
             );
+            
+            // Attempt rollback of the filled leg
+            if long_ok && !short_ok {
+                // Long leg filled, short failed → close the long (sell on long_exchange)
+                let rollback_result = if long_exchange == "vest" {
+                    let order = OrderBuilder::new(&self.vest_symbol, OrderSide::Sell, self.default_quantity)
+                        .client_order_id(format!("rollback-vest-{}", timestamp))
+                        .market()
+                        .price(opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT))
+                        // Vest rejects reduce_only - use correct side+qty instead
+                        .build()
+                        .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
+                    match order {
+                        Ok(o) => vest_guard.place_order(o).await,
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    let order = OrderBuilder::new(&self.paradex_symbol, OrderSide::Sell, self.default_quantity)
+                        .client_order_id(format!("rollback-paradex-{}", timestamp))
+                        .market()
+                        .reduce_only()
+                        .build()
+                        .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
+                    match order {
+                        Ok(o) => paradex_guard.place_order(o).await,
+                        Err(e) => Err(e),
+                    }
+                };
+                match rollback_result {
+                    Ok(_) => info!(event_type = "ROLLBACK_SUCCESS", exchange = %long_exchange, "Rolled back long leg"),
+                    Err(e) => error!(event_type = "ROLLBACK_FAILED", exchange = %long_exchange, error = %e, "CRITICAL: Rollback failed - manual intervention required"),
+                }
+            } else if short_ok && !long_ok {
+                // Short leg filled, long failed → close the short (buy on short_exchange)
+                let rollback_result = if short_exchange == "vest" {
+                    let order = OrderBuilder::new(&self.vest_symbol, OrderSide::Buy, self.default_quantity)
+                        .client_order_id(format!("rollback-vest-{}", timestamp))
+                        .market()
+                        .price(opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT))
+                        // Vest rejects reduce_only - use correct side+qty instead
+                        .build()
+                        .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
+                    match order {
+                        Ok(o) => vest_guard.place_order(o).await,
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    let order = OrderBuilder::new(&self.paradex_symbol, OrderSide::Buy, self.default_quantity)
+                        .client_order_id(format!("rollback-paradex-{}", timestamp))
+                        .market()
+                        .reduce_only()
+                        .build()
+                        .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
+                    match order {
+                        Ok(o) => paradex_guard.place_order(o).await,
+                        Err(e) => Err(e),
+                    }
+                };
+                match rollback_result {
+                    Ok(_) => info!(event_type = "ROLLBACK_SUCCESS", exchange = %short_exchange, "Rolled back short leg"),
+                    Err(e) => error!(event_type = "ROLLBACK_FAILED", exchange = %short_exchange, error = %e, "CRITICAL: Rollback failed - manual intervention required"),
+                }
+            }
+            // else: both failed, nothing to rollback
+            
+            // Reset position guard so bot can continue trading
+            self.position_open.store(false, Ordering::SeqCst);
+            self.entry_direction.store(0, Ordering::SeqCst);
         }
 
         Ok(partial_result)
@@ -571,7 +656,7 @@ where
             .client_order_id(format!("close-vest-{}", timestamp))
             .market()
             .price(vest_limit_price)  // Vest requires limit price for all orders
-            .reduce_only()
+            // Vest rejects reduce_only - use correct side+qty instead
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
@@ -645,8 +730,8 @@ where
             spread_percent: exit_spread,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            long_fill_price: vest_fill,
-            short_fill_price: paradex_fill,
+            vest_fill_price: vest_fill,
+            paradex_fill_price: paradex_fill,
         })
     }
 
@@ -720,7 +805,20 @@ where
 /// Convert ExchangeResult to LegStatus
 fn result_to_leg_status(result: ExchangeResult<OrderResponse>, exchange: &str) -> LegStatus {
     match result {
-        Ok(response) => LegStatus::Success(response),
+        Ok(response) => {
+            // Check actual order status - REJECTED/CANCELLED are failures even if API returned 200
+            match response.status {
+                OrderStatus::Rejected => {
+                    error!(exchange = %exchange, order_id = %response.order_id, "Order REJECTED by exchange");
+                    LegStatus::Failed(format!("Order rejected by {}", exchange))
+                }
+                OrderStatus::Cancelled => {
+                    warn!(exchange = %exchange, order_id = %response.order_id, "Order CANCELLED by exchange");
+                    LegStatus::Failed(format!("Order cancelled by {}", exchange))
+                }
+                _ => LegStatus::Success(response),
+            }
+        }
         Err(e) => {
             error!(exchange = %exchange, error = %e, "[ORDER] Failed");
             LegStatus::Failed(e.to_string())

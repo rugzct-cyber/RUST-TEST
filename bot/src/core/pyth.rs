@@ -248,11 +248,20 @@ pub fn spawn_rate_refresh_task(cache: Arc<UsdcRateCache>, client: reqwest::Clien
         // Skip the first immediate tick (we just fetched)
         interval.tick().await;
 
+        let mut consecutive_failures: u32 = 0;
+
         loop {
             interval.tick().await;
 
             match fetch_usdc_rate(&client).await {
                 Ok(rate) => {
+                    if consecutive_failures > 0 {
+                        tracing::info!(
+                            recovered_after = consecutive_failures,
+                            "Pyth rate refresh recovered"
+                        );
+                    }
+                    consecutive_failures = 0;
                     let old_rate = cache.get_rate();
                     if cache.update(rate) {
                         tracing::debug!(
@@ -263,12 +272,33 @@ pub fn spawn_rate_refresh_task(cache: Arc<UsdcRateCache>, client: reqwest::Clien
                     }
                 }
                 Err(e) => {
+                    consecutive_failures += 1;
                     let current = cache.get_rate();
-                    tracing::warn!(
-                        error = %e,
-                        keeping_rate = %format!("{:.6}", current),
-                        "Pyth refresh failed, keeping current rate"
-                    );
+                    let stale_mins = consecutive_failures as u64 * (REFRESH_INTERVAL_SECS / 60);
+
+                    if consecutive_failures >= 6 {
+                        tracing::error!(
+                            error = %e,
+                            consecutive_failures,
+                            stale_minutes = stale_mins,
+                            keeping_rate = %format!("{:.6}", current),
+                            "CRITICAL: Pyth rate stale for extended period"
+                        );
+                    } else if consecutive_failures >= 3 {
+                        tracing::warn!(
+                            error = %e,
+                            consecutive_failures,
+                            stale_minutes = stale_mins,
+                            keeping_rate = %format!("{:.6}", current),
+                            "Pyth refresh failing repeatedly, rate may be stale"
+                        );
+                    } else {
+                        tracing::warn!(
+                            error = %e,
+                            keeping_rate = %format!("{:.6}", current),
+                            "Pyth refresh failed, keeping current rate"
+                        );
+                    }
                 }
             }
         }

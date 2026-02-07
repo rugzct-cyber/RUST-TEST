@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::adapters::ExchangeAdapter;
 use crate::core::channels::SpreadOpportunity;
@@ -94,6 +94,14 @@ where
             _ = exit_interval.tick() => {
                 poll_count += 1;
                 
+                // Proactively refresh JWT every ~2 min so close_position has zero delay
+                const JWT_REFRESH_POLLS: u64 = 4800; // 4800 × 25ms ≈ 2 min
+                if poll_count % JWT_REFRESH_POLLS == 0 {
+                    if let Err(e) = executor.ensure_ready().await {
+                        warn!(event_type = "JWT_REFRESH_FAILED", error = %e, "Adapter refresh failed during monitoring");
+                    }
+                }
+                
                 // Read orderbooks
                 let vest_ob = vest_orderbooks.read().await.get(vest_symbol).cloned();
                 let paradex_ob = paradex_orderbooks.read().await.get(paradex_symbol).cloned();
@@ -157,39 +165,58 @@ where
                         );
                         log_event(&event);
                         
-                        // Close the position
-                        match executor.close_position(exit_spread, vest_bid, vest_ask).await {
-                            Ok(close_result) => {
-                                // Log POSITION_CLOSED event
-                                let closed_event = TradingEvent::position_closed(
-                                    pair,
-                                    entry_spread,
-                                    exit_spread,
-                                    profit,
-                                );
-                                log_event(&closed_event);
-                                
-                                // Return exit fill prices for real-price PnL calculation
-                                return (poll_count, Some(ExitResult {
-                                    exit_spread,
-                                    vest_exit_price: close_result.long_fill_price,
-                                    paradex_exit_price: close_result.short_fill_price,
-                                }));
-                            }
-                            Err(e) => {
-                                error!(
-                                    event_type = "ORDER_FAILED",
-                                    error = ?e,
-                                    "Failed to close position"
-                                );
+                        // CR-2: Retry close with backoff instead of abandoning
+                        const MAX_CLOSE_RETRIES: u32 = 3;
+                        const CLOSE_RETRY_DELAY_SECS: u64 = 5;
+                        let mut close_retries = 0u32;
+                        
+                        loop {
+                            match executor.close_position(exit_spread, vest_bid, vest_ask).await {
+                                Ok(close_result) => {
+                                    // Log POSITION_CLOSED event
+                                    let closed_event = TradingEvent::position_closed(
+                                        pair,
+                                        entry_spread,
+                                        exit_spread,
+                                        profit,
+                                    );
+                                    log_event(&closed_event);
+                                    
+                                    // Return exit fill prices for real-price PnL calculation
+                                    return (poll_count, Some(ExitResult {
+                                        exit_spread,
+                                        vest_exit_price: close_result.vest_fill_price,
+                                        paradex_exit_price: close_result.paradex_fill_price,
+                                    }));
+                                }
+                                Err(e) => {
+                                    close_retries += 1;
+                                    error!(
+                                        event_type = "ORDER_FAILED",
+                                        error = ?e,
+                                        retry = close_retries,
+                                        max_retries = MAX_CLOSE_RETRIES,
+                                        "Failed to close position - retrying in {}s",
+                                        CLOSE_RETRY_DELAY_SECS
+                                    );
+                                    
+                                    if close_retries >= MAX_CLOSE_RETRIES {
+                                        error!(
+                                            event_type = "CLOSE_ABANDONED",
+                                            retries = close_retries,
+                                            "CRITICAL: All close retries exhausted - manual intervention required"
+                                        );
+                                        return (poll_count, Some(ExitResult {
+                                            exit_spread,
+                                            vest_exit_price: 0.0,
+                                            paradex_exit_price: 0.0,
+                                        }));
+                                    }
+                                    
+                                    tokio::time::sleep(Duration::from_secs(CLOSE_RETRY_DELAY_SECS)).await;
+                                }
                             }
                         }
-                        
-                        return (poll_count, Some(ExitResult {
-                            exit_spread,
-                            vest_exit_price: 0.0,
-                            paradex_exit_price: 0.0,
-                        }));
                     }
                 } else {
                     debug!(
@@ -285,8 +312,8 @@ pub async fn execution_task<V, P>(
                                 &result.long_exchange,
                                 &result.short_exchange,
                                 latency,
-                                result.long_fill_price,
-                                result.short_fill_price,
+                                result.vest_fill_price,
+                                result.paradex_fill_price,
                             );
                             log_event(&event);
                             
@@ -605,8 +632,11 @@ mod tests {
         
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         
+        // CR-1 fix: simulate open position so close_position can work
+        executor.simulate_open_position(SpreadDirection::AOverB);
+        
         // Call the extracted function directly
-        let result = timeout(Duration::from_secs(2), exit_monitoring_loop(
+        let result = timeout(Duration::from_secs(5), exit_monitoring_loop(
             &executor,
             vest_orderbooks,
             paradex_orderbooks,
@@ -720,8 +750,11 @@ mod tests {
         
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
         
+        // CR-1 fix: simulate open position so close_position can work
+        executor.simulate_open_position(SpreadDirection::BOverA);
+        
         // Call with BOverA direction
-        let result = timeout(Duration::from_secs(2), exit_monitoring_loop(
+        let result = timeout(Duration::from_secs(5), exit_monitoring_loop(
             &executor,
             vest_orderbooks,
             paradex_orderbooks,

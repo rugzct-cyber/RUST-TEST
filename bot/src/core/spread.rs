@@ -62,21 +62,17 @@ impl SpreadDirection {
         }
     }
     
-    /// Calculate captured spread from entry prices
+    /// Calculate captured spread from entry fill prices
+    /// 
+    /// # Arguments
+    /// * `buy_price` - Price paid on the buying leg (Vest for AOverB, Paradex for BOverA)
+    /// * `sell_price` - Price received on the selling leg (Paradex for AOverB, Vest for BOverA)
     #[inline]
-    pub fn calculate_captured_spread(&self, vest_price: f64, paradex_price: f64) -> f64 {
-        match self {
-            SpreadDirection::AOverB => {
-                if vest_price > 0.0 {
-                    ((paradex_price - vest_price) / vest_price) * 100.0
-                } else { 0.0 }
-            }
-            SpreadDirection::BOverA => {
-                if paradex_price > 0.0 {
-                    ((vest_price - paradex_price) / paradex_price) * 100.0
-                } else { 0.0 }
-            }
+    pub fn calculate_captured_spread(&self, buy_price: f64, sell_price: f64) -> f64 {
+        if buy_price <= 0.0 {
+            return 0.0;
         }
+        ((sell_price - buy_price) / buy_price) * 100.0
     }
 }
 
@@ -204,7 +200,7 @@ impl SpreadCalculator {
     /// * Returns 0.0 if ask_a is zero (prevents division by zero)
     #[inline]
     pub fn calculate_entry_spread(ask_a: f64, bid_b: f64) -> f64 {
-        if ask_a == 0.0 {
+        if ask_a <= 0.0 {
             return 0.0;
         }
         ((bid_b - ask_a) / ask_a) * 100.0
@@ -226,7 +222,7 @@ impl SpreadCalculator {
     /// * Returns 0.0 if ask_b is zero (prevents division by zero)
     #[inline]
     pub fn calculate_exit_spread(bid_a: f64, ask_b: f64) -> f64 {
-        if ask_b == 0.0 {
+        if ask_b <= 0.0 {
             return 0.0;
         }
         ((bid_a - ask_b) / ask_b) * 100.0
@@ -234,10 +230,11 @@ impl SpreadCalculator {
     
     /// Calculate both Entry and Exit spreads from orderbooks
     /// 
-    /// Convenience method that returns both spread values for dashboard display.
+    /// Evaluates both directions and returns the best entry spread
+    /// with the corresponding exit spread for that direction.
     /// 
     /// # Returns
-    /// * `Option<(f64, f64)>` - (entry_spread_pct, exit_spread_pct) or None if orderbooks empty
+    /// * `Option<(f64, f64)>` - (best_entry_spread_pct, matching_exit_spread_pct) or None if orderbooks empty
     #[inline]
     #[must_use]
     pub fn calculate_dual_spreads(
@@ -251,11 +248,20 @@ impl SpreadCalculator {
         let ask_b = orderbook_b.best_ask()?;
         let bid_b = orderbook_b.best_bid()?;
         
-        // Calculate both spreads using the dedicated functions
-        let entry_spread = Self::calculate_entry_spread(ask_a, bid_b);
-        let exit_spread = Self::calculate_exit_spread(bid_a, ask_b);
+        // A→B: Buy A (ask_a), Sell B (bid_b)  →  Exit: Sell A (bid_a), Buy B (ask_b)
+        let entry_a_to_b = Self::calculate_entry_spread(ask_a, bid_b);
+        let exit_a_to_b = Self::calculate_exit_spread(bid_a, ask_b);
         
-        Some((entry_spread, exit_spread))
+        // B→A: Buy B (ask_b), Sell A (bid_a)  →  Exit: Sell B (bid_b), Buy A (ask_a)
+        let entry_b_to_a = Self::calculate_entry_spread(ask_b, bid_a);
+        let exit_b_to_a = Self::calculate_exit_spread(bid_b, ask_a);
+        
+        // Return the direction with the best entry, plus its matching exit
+        if entry_a_to_b >= entry_b_to_a {
+            Some((entry_a_to_b, exit_a_to_b))
+        } else {
+            Some((entry_b_to_a, exit_b_to_a))
+        }
     }
 }
 
@@ -682,16 +688,17 @@ mod tests {
 
     #[test]
     fn test_spread_direction_calculate_captured_spread_b_over_a() {
-        // Long Paradex at 42000, Short Vest at 42100
+        // Long Paradex at 42000 (buy), Short Vest at 42100 (sell)
         // Spread = (42100 - 42000) / 42000 * 100 = 0.238%
-        let spread = SpreadDirection::BOverA.calculate_captured_spread(42100.0, 42000.0);
+        let spread = SpreadDirection::BOverA.calculate_captured_spread(42000.0, 42100.0);
         assert!((spread - 0.238).abs() < 0.01);
     }
 
     #[test]
     fn test_spread_direction_calculate_captured_spread_zero_price() {
+        // buy_price = 0 → always returns 0.0
         assert_eq!(SpreadDirection::AOverB.calculate_captured_spread(0.0, 42100.0), 0.0);
-        assert_eq!(SpreadDirection::BOverA.calculate_captured_spread(42100.0, 0.0), 0.0);
+        assert_eq!(SpreadDirection::BOverA.calculate_captured_spread(0.0, 42100.0), 0.0);
     }
 
     #[test]

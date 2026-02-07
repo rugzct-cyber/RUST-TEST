@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 price: Some(limit_price),  // Vest requires this!
                 quantity: pos.quantity,
                 time_in_force: TimeInForce::Ioc,
-                reduce_only: true,
+                reduce_only: false,  // Vest rejects reduce_only - use correct side+qty instead
             };
             info!(exchange = "vest", side = %pos.side, qty = pos.quantity, limit_price = limit_price, "Closing position (reduce_only)");
             vest_adapter.place_order(order).await
