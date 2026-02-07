@@ -47,7 +47,8 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &AppState) {
     };
     
     // Spread color: green if above threshold, white otherwise
-    let spread_color = if state.current_spread_pct >= state.spread_entry_threshold {
+    // current_spread_pct is a ratio (e.g. 0.0034), threshold is percentage (e.g. 0.34)
+    let spread_color = if state.current_spread_pct * 100.0 >= state.spread_entry_threshold {
         Color::Green
     } else {
         Color::White
