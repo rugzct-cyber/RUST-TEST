@@ -737,107 +737,11 @@ mod tests {
     use super::*;
     use crate::adapters::errors::ExchangeError;
     use crate::adapters::types::{OrderStatus, Orderbook};
-    use async_trait::async_trait;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    /// Mock adapter for testing
-    struct MockAdapter {
-        connected: bool,
-        should_fail: bool,
-        order_count: Arc<AtomicU64>,
-        name: &'static str,
-    }
-
-    impl MockAdapter {
-        fn new(name: &'static str) -> Self {
-            Self {
-                connected: true,
-                should_fail: false,
-                order_count: Arc::new(AtomicU64::new(0)),
-                name,
-            }
-        }
-
-        fn with_failure(name: &'static str) -> Self {
-            Self {
-                connected: true,
-                should_fail: true,
-                order_count: Arc::new(AtomicU64::new(0)),
-                name,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl ExchangeAdapter for MockAdapter {
-        async fn connect(&mut self) -> ExchangeResult<()> {
-            self.connected = true;
-            Ok(())
-        }
-
-        async fn disconnect(&mut self) -> ExchangeResult<()> {
-            self.connected = false;
-            Ok(())
-        }
-
-        async fn subscribe_orderbook(&mut self, _symbol: &str) -> ExchangeResult<()> {
-            Ok(())
-        }
-
-        async fn unsubscribe_orderbook(&mut self, _symbol: &str) -> ExchangeResult<()> {
-            Ok(())
-        }
-
-        async fn place_order(&self, order: OrderRequest) -> ExchangeResult<OrderResponse> {
-            self.order_count.fetch_add(1, Ordering::Relaxed);
-            
-            // Simulate network delay for latency tests
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-            
-            if self.should_fail {
-                return Err(ExchangeError::OrderRejected("Mock failure".to_string()));
-            }
-
-            Ok(OrderResponse {
-                order_id: format!("{}-{}", self.name, order.client_order_id),
-                client_order_id: order.client_order_id,
-                status: OrderStatus::Filled,
-                filled_quantity: order.quantity,
-                avg_price: Some(42000.0),
-            })
-        }
-
-        async fn cancel_order(&self, _order_id: &str) -> ExchangeResult<()> {
-            Ok(())
-        }
-
-        fn get_orderbook(&self, _symbol: &str) -> Option<&Orderbook> {
-            None
-        }
-
-        fn is_connected(&self) -> bool {
-            self.connected
-        }
-
-        fn is_stale(&self) -> bool {
-            false
-        }
-
-        async fn sync_orderbooks(&mut self) {}
-
-        async fn reconnect(&mut self) -> ExchangeResult<()> {
-            Ok(())
-        }
-
-        async fn get_position(&self, _symbol: &str) -> ExchangeResult<Option<crate::adapters::types::PositionInfo>> {
-            Ok(None)
-        }
-
-        fn exchange_name(&self) -> &'static str {
-            self.name
-        }
-    }
+    // Use shared TestMockAdapter (CR-4) — alias for zero test-code changes
+    use crate::adapters::test_utils::TestMockAdapter as MockAdapter;
 
     fn create_test_opportunity() -> SpreadOpportunity {
         SpreadOpportunity {

@@ -145,122 +145,21 @@ pub trait ExchangeAdapter: Send + Sync {
 #[cfg(any(test, doc))]
 pub mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::adapters::types::{OrderSide, OrderStatus};
 
-    /// Mock adapter for testing trait implementation
-    pub struct MockAdapter {
-        connected: bool,
-        orderbooks: HashMap<String, Orderbook>,
-        subscriptions: Vec<String>,
-        is_stale_flag: bool,
-        reconnect_count: usize,
-    }
+    // Use shared TestMockAdapter (CR-4) — alias for minimal test changes
+    use crate::adapters::test_utils::TestMockAdapter;
 
-    impl MockAdapter {
-        pub fn new() -> Self {
-            Self {
-                connected: false,
-                orderbooks: HashMap::new(),
-                subscriptions: Vec::new(),
-                is_stale_flag: false,
-                reconnect_count: 0,
-            }
-        }
-        
-        /// Set the stale flag for testing purposes
-        pub fn set_stale(&mut self, stale: bool) {
-            self.is_stale_flag = stale;
-        }
-        
-        /// Get the number of times reconnect() was called
-        pub fn reconnect_call_count(&self) -> usize {
-            self.reconnect_count
-        }
-    }
-
-    impl Default for MockAdapter {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    #[async_trait]
-    impl ExchangeAdapter for MockAdapter {
-        async fn connect(&mut self) -> ExchangeResult<()> {
-            self.connected = true;
-            Ok(())
-        }
-
-        async fn disconnect(&mut self) -> ExchangeResult<()> {
-            self.connected = false;
-            self.subscriptions.clear();
-            Ok(())
-        }
-
-        async fn subscribe_orderbook(&mut self, symbol: &str) -> ExchangeResult<()> {
-            self.subscriptions.push(symbol.to_string());
-            self.orderbooks.insert(symbol.to_string(), Orderbook::default());
-            Ok(())
-        }
-
-        async fn unsubscribe_orderbook(&mut self, symbol: &str) -> ExchangeResult<()> {
-            self.subscriptions.retain(|s| s != symbol);
-            self.orderbooks.remove(symbol);
-            Ok(())
-        }
-
-        async fn place_order(&self, order: OrderRequest) -> ExchangeResult<OrderResponse> {
-            Ok(OrderResponse {
-                order_id: format!("mock-{}", order.client_order_id),
-                client_order_id: order.client_order_id,
-                status: OrderStatus::Filled,
-                filled_quantity: order.quantity,
-                avg_price: order.price,
-            })
-        }
-
-        async fn cancel_order(&self, _order_id: &str) -> ExchangeResult<()> {
-            Ok(())
-        }
-
-        fn get_orderbook(&self, symbol: &str) -> Option<&Orderbook> {
-            self.orderbooks.get(symbol)
-        }
-
-        fn is_connected(&self) -> bool {
-            self.connected
-        }
-        
-        fn is_stale(&self) -> bool {
-            // Use explicit stale flag for testing
-            self.is_stale_flag
-        }
-        
-        async fn sync_orderbooks(&mut self) {
-            // No-op for mock - orderbooks are directly written
-        }
-        
-        async fn reconnect(&mut self) -> ExchangeResult<()> {
-            // Increment counter for testing
-            self.reconnect_count += 1;
-            // Mock reconnect calls connect
-            self.connect().await
-        }
-
-        async fn get_position(&self, _symbol: &str) -> ExchangeResult<Option<PositionInfo>> {
-            // Mock adapter returns no position by default
-            Ok(None)
-        }
-
-        fn exchange_name(&self) -> &'static str {
-            "mock"
-        }
+    /// Create a disconnected mock adapter (matching old MockAdapter::new() behaviour)
+    fn new_mock() -> TestMockAdapter {
+        let mut m = TestMockAdapter::default();
+        m.connected = false; // traits.rs tests expect disconnected on new()
+        m
     }
 
     #[tokio::test]
     async fn test_mock_adapter_connect() {
-        let mut adapter = MockAdapter::new();
+        let mut adapter = new_mock();
         assert!(!adapter.is_connected());
 
         adapter.connect().await.unwrap();
@@ -269,7 +168,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_disconnect() {
-        let mut adapter = MockAdapter::new();
+        let mut adapter = new_mock();
         adapter.connect().await.unwrap();
         adapter.disconnect().await.unwrap();
         assert!(!adapter.is_connected());
@@ -277,7 +176,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_subscribe_orderbook() {
-        let mut adapter = MockAdapter::new();
+        let mut adapter = new_mock();
         adapter.connect().await.unwrap();
         adapter.subscribe_orderbook("BTC-PERP").await.unwrap();
 
@@ -287,7 +186,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_unsubscribe_orderbook() {
-        let mut adapter = MockAdapter::new();
+        let mut adapter = new_mock();
         adapter.connect().await.unwrap();
         adapter.subscribe_orderbook("BTC-PERP").await.unwrap();
         adapter.unsubscribe_orderbook("BTC-PERP").await.unwrap();
@@ -297,7 +196,7 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_place_order() {
-        let adapter = MockAdapter::new();
+        let adapter = new_mock();
         let order = OrderRequest::ioc_limit(
             "test-order-1".to_string(),
             "BTC-PERP".to_string(),
@@ -314,13 +213,13 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_mock_adapter_exchange_name() {
-        let adapter = MockAdapter::new();
+        let adapter = new_mock();
         assert_eq!(adapter.exchange_name(), "mock");
     }
 
     #[tokio::test]
     async fn test_mock_adapter_cancel_order() {
-        let adapter = MockAdapter::new();
+        let adapter = new_mock();
         // cancel_order should succeed even for non-existent orders in mock
         let result = adapter.cancel_order("non-existent-order").await;
         assert!(result.is_ok());

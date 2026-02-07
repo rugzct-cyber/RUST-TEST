@@ -10,6 +10,9 @@ pub mod vest;
 pub mod paradex;
 pub mod shared;
 
+#[cfg(test)]
+pub mod test_utils;
+
 // Re-export commonly used types for convenience
 pub use errors::{ExchangeError, ExchangeResult};
 pub use types::{
