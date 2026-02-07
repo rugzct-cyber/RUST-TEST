@@ -139,6 +139,18 @@ impl BotConfig {
             )));
         }
 
+        // Rule: no NaN or Infinity in numeric fields (YAML allows .nan, .inf)
+        if !self.spread_entry.is_finite()
+            || !self.spread_exit.is_finite()
+            || !self.position_size.is_finite()
+        {
+            return Err(AppError::Config(format!(
+                "Bot '{}': spread_entry, spread_exit and position_size must be finite numbers \
+                 (got entry={}, exit={}, size={})",
+                self.id, self.spread_entry, self.spread_exit, self.position_size
+            )));
+        }
+
         Ok(())
     }
 }
@@ -468,5 +480,32 @@ api:
         
         let result = bot.validate();
         assert!(result.is_ok(), "Valid boundary values should pass validation");
+    }
+
+    #[test]
+    fn test_nan_spread_entry_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_entry = f64::NAN;
+        
+        let result = bot.validate();
+        assert!(result.is_err(), "NaN spread_entry should fail validation");
+    }
+
+    #[test]
+    fn test_infinity_position_size_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.position_size = f64::INFINITY;
+        
+        let result = bot.validate();
+        assert!(result.is_err(), "Infinity position_size should fail validation");
+    }
+
+    #[test]
+    fn test_neg_infinity_spread_exit_fails() {
+        let mut bot = create_valid_bot_config();
+        bot.spread_exit = f64::NEG_INFINITY;
+        
+        let result = bot.validate();
+        assert!(result.is_err(), "NEG_INFINITY spread_exit should fail validation");
     }
 }
