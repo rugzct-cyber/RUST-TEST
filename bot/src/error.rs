@@ -3,29 +3,29 @@
 //! All errors in the application should be wrapped in AppError
 //! to provide consistent error handling across the codebase.
 
-use thiserror::Error;
 use crate::adapters::errors::ExchangeError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error("Configuration error: {0}")]
     Config(String),
-    
+
     #[error("Exchange error: {0}")]
     Exchange(#[from] ExchangeError),
-    
+
     #[error("Execution error: {0}")]
     Execution(String),
-    
+
     #[error("WebSocket error: {0}")]
     WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("API error: {0}")]
     Api(String),
 }

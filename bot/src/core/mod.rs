@@ -1,6 +1,6 @@
-//! Core module - Spread calculation, VWAP, channels, execution, events
+//! Core module - Spread calculation, channels, execution, events
 //!
-//! # Module Architecture (Story 0.3, Story 7.3, Story 7.4, Story 5.3)
+//! # Module Architecture
 //!
 //! This module uses **explicit re-exports** instead of glob exports (`pub use module::*`)
 //! to provide better API visibility and prevent accidental public API changes.
@@ -10,7 +10,7 @@
 //! ## Usage
 //! Prefer importing from `crate::core`:
 //! ```ignore
-//! use crate::core::{SpreadCalculator, VwapResult, TradingEvent};
+//! use crate::core::{SpreadCalculator, TradingEvent};
 //! ```
 //!
 //! ## Adding New Public Types
@@ -25,24 +25,26 @@ pub mod pyth;
 pub mod runtime;
 pub mod spread;
 
-// Explicit re-exports for spread module (Story 7.4: SpreadMonitor, SpreadTick, SpreadThresholds removed - unused)
+// Explicit re-exports for spread module (SpreadMonitor, SpreadTick, SpreadThresholds removed - unused)
 pub use spread::{SpreadCalculator, SpreadDirection, SpreadResult};
 
 // Explicit re-exports for channels module
 pub use channels::{ChannelBundle, SharedOrderbooks, SpreadOpportunity, DEFAULT_CHANNEL_CAPACITY};
 
-// Explicit re-exports for execution module (Story 2.3)
+// Explicit re-exports for execution module
 pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
 
-// Explicit re-exports for runtime module (Story 2.3, Story 7.3)
+// Explicit re-exports for runtime module
 pub use runtime::execution_task;
 
-// Explicit re-exports for monitoring module (Story 6.2)
+// Explicit re-exports for monitoring module
 pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
 
-// Explicit re-exports for events module (Story 5.3)
-pub use events::{EventPayload, TradingEvent, TradingEventType, log_event, current_timestamp_ms, calculate_latency_ms, format_pct};
+// Explicit re-exports for events module
+pub use events::{
+    calculate_latency_ms, current_timestamp_ms, format_pct, log_event, EventPayload, TradingEvent,
+    TradingEventType,
+};
 
 // Explicit re-exports for pyth module (USD/USDC conversion)
-pub use pyth::{UsdcRateCache, spawn_rate_refresh_task};
-
+pub use pyth::{spawn_rate_refresh_task, UsdcRateCache};

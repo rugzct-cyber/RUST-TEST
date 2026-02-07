@@ -1,26 +1,28 @@
-//! Orderbook monitoring task for automatic spread detection (Story 6.2, 7.3, 5.3)
+//! Orderbook monitoring task for automatic spread detection
 //!
 //! This module provides the polling-based monitoring task that continuously
 //! reads orderbooks from shared storage (lock-free), calculates spreads, and emits
 //! SpreadOpportunity messages when thresholds are exceeded.
 //!
-//! # Architecture (V1 HFT optimized - Story 7.3)
+//! # Architecture (V1 HFT optimized)
 //! - Polls orderbooks every 25ms using `tokio::time::interval`
 //! - Reads directly from SharedOrderbooks (RwLock) - NO Mutex locks!
 //! - Calculates spreads using `SpreadCalculator`
 //! - Emits `SpreadOpportunity` via mpsc channel to execution_task
 //! - Shutdown-aware via broadcast receiver
 //!
-//! # Logging (Story 5.3)
+//! # Logging
 //! - Uses structured SPREAD_DETECTED events for opportunity logging
 //! - Events include entry_spread, spread_threshold, direction, pair
 
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, current_timestamp_ms, format_pct};
+use crate::core::events::{
+    current_timestamp_ms, format_pct, log_event, log_system_event, SystemEvent, TradingEvent,
+};
 use crate::core::spread::SpreadCalculator;
 
 use crate::core::channels::SharedOrderbooks;
@@ -47,7 +49,7 @@ pub struct MonitoringConfig {
 
 /// Lock-free monitoring task that reads shared orderbooks directly
 ///
-/// # Story 7.3 Optimization: Lock-Free Design
+/// # Lock-Free Design
 /// - NO Mutex locks - reads directly from Arc<RwLock<...>>
 /// - Polls every 25ms (4x faster than original 100ms)
 /// - WebSocket handlers write to SharedOrderbooks asynchronously
@@ -70,12 +72,12 @@ pub async fn monitoring_task(
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
     log_system_event(&SystemEvent::task_started("monitoring"));
-    
+
     let calculator = SpreadCalculator::new("vest", "paradex");
     let mut poll_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
     let mut poll_count: u64 = 0;
     let mut warn_counter: u32 = 0;
-    
+
     loop {
         tokio::select! {
             // Shutdown takes priority
@@ -86,18 +88,18 @@ pub async fn monitoring_task(
             // Poll orderbooks on interval
             _ = poll_interval.tick() => {
                 poll_count += 1;
-                
+
                 // Read directly from shared storage - NO Mutex contention!
                 let vest_ob = {
                     let books = vest_orderbooks.read().await;
                     books.get(&vest_symbol).cloned()
                 };
-                
+
                 let paradex_ob = {
                     let books = paradex_orderbooks.read().await;
                     books.get(&paradex_symbol).cloned()
                 };
-                
+
                 // Only calculate spread if both orderbooks are available
                 if let (Some(vest_orderbook), Some(paradex_orderbook)) = (vest_ob, paradex_ob) {
                     if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
@@ -112,11 +114,11 @@ pub async fn monitoring_task(
                                 "Monitoring spread"
                             );
                         }
-                        
+
                         // Only send opportunity if threshold exceeded
                         if spread_result.spread_pct >= config.spread_entry {
                             let now_ms = current_timestamp_ms();
-                            
+
                             let opportunity = SpreadOpportunity {
                                 pair: config.pair.clone(),
                                 dex_a: "vest".to_string(),
@@ -130,11 +132,11 @@ pub async fn monitoring_task(
                                 dex_b_ask: paradex_orderbook.best_ask().unwrap_or(0.0),
                                 dex_b_bid: paradex_orderbook.best_bid().unwrap_or(0.0),
                             };
-                            
+
                             // Non-blocking send to avoid blocking monitoring loop
                             match opportunity_tx.try_send(opportunity) {
                                 Ok(_) => {
-                                    // W-2 fix: Only log SPREAD_DETECTED when opportunity
+                                    // Only log SPREAD_DETECTED when opportunity
                                     // is actually sent (not when position is open/channel full)
                                     if poll_count % LOG_THROTTLE_POLLS == 0 {
                                         let direction_str = format!("{:?}", spread_result.direction);
@@ -176,32 +178,32 @@ pub async fn monitoring_task(
             }
         }
     }
-    
+
     log_system_event(&SystemEvent::task_stopped("monitoring"));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::collections::HashMap;
-    use tokio::sync::RwLock;
     use crate::adapters::types::{Orderbook, OrderbookLevel};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
     use tokio::time::timeout;
-    
+
     #[tokio::test]
     async fn test_monitoring_task_shutdown() {
         let vest_orderbooks = Arc::new(RwLock::new(HashMap::new()));
         let paradex_orderbooks = Arc::new(RwLock::new(HashMap::new()));
         let (opportunity_tx, _opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-        
+
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
             spread_entry: 0.30,
             spread_exit: 0.05,
         };
-        
+
         // Spawn monitoring task
         let handle = tokio::spawn(monitoring_task(
             vest_orderbooks,
@@ -212,16 +214,16 @@ mod tests {
             config,
             shutdown_rx,
         ));
-        
+
         // Wait a bit then send shutdown
         tokio::time::sleep(Duration::from_millis(50)).await;
         shutdown_tx.send(()).unwrap();
-        
+
         // Task should complete cleanly
         let result = timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "Monitoring task should shutdown cleanly");
     }
-    
+
     #[tokio::test]
     async fn test_monitoring_task_sends_opportunity_when_threshold_exceeded() {
         // Create orderbooks with spread > threshold
@@ -233,23 +235,23 @@ mod tests {
         vest_ob.bids.push(OrderbookLevel::new(98.5, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
-        
+
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
         paradex_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
         paradex_ob.bids.push(OrderbookLevel::new(100.5, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
-        
+
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-        
+
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
-            spread_entry: 0.30,  // 0.30% threshold
+            spread_entry: 0.30, // 0.30% threshold
             spread_exit: 0.05,
         };
-        
+
         // Spawn monitoring task
         tokio::spawn(monitoring_task(
             vest_orderbooks,
@@ -260,20 +262,23 @@ mod tests {
             config,
             shutdown_rx,
         ));
-        
+
         // Wait for opportunity to be received
         let result = timeout(Duration::from_millis(500), opportunity_rx.recv()).await;
-        
+
         // Shutdown monitoring task
         let _ = shutdown_tx.send(());
-        
+
         // Verify opportunity was received
         assert!(result.is_ok(), "Should receive opportunity within timeout");
         let opportunity = result.unwrap().expect("Should receive SpreadOpportunity");
         assert_eq!(opportunity.pair, "BTC-PERP");
-        assert!(opportunity.spread_percent >= 0.30, "Spread should exceed threshold");
+        assert!(
+            opportunity.spread_percent >= 0.30,
+            "Spread should exceed threshold"
+        );
     }
-    
+
     #[tokio::test]
     async fn test_monitoring_task_no_opportunity_below_threshold() {
         // Create orderbooks with spread below threshold
@@ -283,23 +288,23 @@ mod tests {
         vest_ob.bids.push(OrderbookLevel::new(100.0, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
-        
+
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
         paradex_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
         paradex_ob.bids.push(OrderbookLevel::new(99.95, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
-        
+
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-        
+
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
-            spread_entry: 0.30,  // 0.30% threshold
+            spread_entry: 0.30, // 0.30% threshold
             spread_exit: 0.05,
         };
-        
+
         // Spawn monitoring task
         tokio::spawn(monitoring_task(
             vest_orderbooks,
@@ -310,14 +315,17 @@ mod tests {
             config,
             shutdown_rx,
         ));
-        
+
         // Wait briefly - no opportunity should arrive
         let result = timeout(Duration::from_millis(200), opportunity_rx.recv()).await;
-        
+
         // Shutdown monitoring task
         let _ = shutdown_tx.send(());
-        
+
         // Should timeout because no opportunity exceeds threshold
-        assert!(result.is_err(), "Should NOT receive opportunity when spread below threshold");
+        assert!(
+            result.is_err(),
+            "Should NOT receive opportunity when spread below threshold"
+        );
     }
 }

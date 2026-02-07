@@ -21,8 +21,8 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
 use crate::adapters::types::{
-    ConnectionHealth, ConnectionState, create_http_client, next_subscription_id, Orderbook, OrderRequest, OrderResponse, OrderStatus,
-    PositionInfo,
+    create_http_client, next_subscription_id, ConnectionHealth, ConnectionState, OrderRequest,
+    OrderResponse, OrderStatus, Orderbook, PositionInfo,
 };
 
 // Import from sub-modules
@@ -31,8 +31,8 @@ use super::signing::{
     current_time_ms, sign_cancel_order, sign_leverage_request, sign_order, sign_registration_proof,
 };
 use super::types::{
-    ListenKeyResponse, PreSignedOrder, RegisterResponse, VestAccountResponse,
-    VestLeverageResponse, VestOrderResponse, VestPositionData, VestWsMessage,
+    ListenKeyResponse, PreSignedOrder, RegisterResponse, VestAccountResponse, VestLeverageResponse,
+    VestOrderResponse, VestPositionData, VestWsMessage,
 };
 
 // =============================================================================
@@ -56,12 +56,12 @@ pub(crate) type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 pub(crate) type WsWriter = SplitSink<WsStream, Message>;
 pub(crate) type WsReader = SplitStream<WsStream>;
-/// Thread-safe shared orderbooks storage for lock-free monitoring (Story 7.3)
+/// Thread-safe shared orderbooks storage for lock-free monitoring
 pub use crate::core::channels::SharedOrderbooks;
 
 // next_subscription_id() imported from crate::adapters::types (shared counter)
 
-// ConnectionHealth imported from crate::adapters::types (Story 2.6)
+// ConnectionHealth imported from crate::adapters::types
 
 // =============================================================================
 // VestAdapter Implementation
@@ -87,8 +87,8 @@ pub struct VestAdapter {
 
 impl VestAdapter {
     /// Create a new VestAdapter with the given configuration
-    /// 
-    /// HTTP connection pooling configured for latency optimization (Story 7.2):
+    ///
+    /// HTTP connection pooling configured for latency optimization:
     /// - pool_max_idle_per_host(2): Keep 2 idle connections per host
     /// - pool_idle_timeout(60s): Keep connections warm for 60 seconds
     /// - tcp_keepalive(30s): TCP keepalive every 30 seconds
@@ -137,8 +137,8 @@ impl VestAdapter {
         format!("restserver{}", self.config.account_group)
     }
 
-    /// Get shared orderbooks for lock-free monitoring (Story 7.3)
-    /// 
+    /// Get shared orderbooks for lock-free monitoring
+    ///
     /// Returns Arc<RwLock<...>> that can be read directly without acquiring
     /// the adapter's Mutex. This enables high-frequency orderbook polling
     /// without blocking execution.
@@ -176,34 +176,39 @@ impl VestAdapter {
     }
 
     // =========================================================================
-    // HTTP Connection Warm-up (Story 7.2)
+    // HTTP Connection Warm-up
     // =========================================================================
 
     /// Warm up HTTP connection pool by making a lightweight request
-    /// 
+    ///
     /// This establishes TCP/TLS connections upfront to avoid handshake latency
     /// on the first real request. Uses the Vest /account endpoint with a
     /// minimal request to establish the connection.
-    /// 
+    ///
     /// Called during connect() flow to ensure the first order request
     /// benefits from pre-established connections.
     pub async fn warm_up_http(&self) -> ExchangeResult<()> {
         // Use a simple request to the REST base URL to establish TCP/TLS
         // Vest requires the xrestservermm header for routing
-        let url = format!("{}/account?time={}", self.config.rest_base_url(), current_time_ms());
+        let url = format!(
+            "{}/account?time={}",
+            self.config.rest_base_url(),
+            current_time_ms()
+        );
         let start = std::time::Instant::now();
-        
-        let response = self.http_client
+
+        let response = self
+            .http_client
             .get(&url)
             .header("xrestservermm", self.rest_server_header())
             .send()
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(format!("HTTP warm-up failed: {}", e)))?;
-        
+
         let elapsed = start.elapsed();
-        
+
         // Log success regardless of response status (we just want to establish the connection)
-        // W-4 fix: 401/403 are expected without auth — connection is still established
+        // 401/403 are expected without auth — connection is still established
         let status_code = response.status().as_u16();
         if response.status().is_success() || status_code == 401 || status_code == 403 {
             tracing::info!(
@@ -222,7 +227,7 @@ impl VestAdapter {
                 "HTTP warm-up returned unexpected status (connection still established)"
             );
         }
-        
+
         Ok(())
     }
 
@@ -235,11 +240,9 @@ impl VestAdapter {
         use ethers::abi::{encode, Token};
         use ethers::core::utils::keccak256;
 
-        let signing_wallet: LocalWallet = self
-            .config
-            .signing_key
-            .parse()
-            .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid signing key: {}", e)))?;
+        let signing_wallet: LocalWallet = self.config.signing_key.parse().map_err(|e| {
+            ExchangeError::AuthenticationFailed(format!("Invalid signing key: {}", e))
+        })?;
 
         let time = current_time_ms();
         let nonce: u64 = time;
@@ -250,10 +253,10 @@ impl VestAdapter {
         };
 
         let is_buy = matches!(order.side, crate::adapters::types::OrderSide::Buy);
-        let size_str = format!("{:.3}", order.quantity);  // Vest requires exactly 3 decimal places
+        let size_str = format!("{:.3}", order.quantity); // Vest requires exactly 3 decimal places
         let price_str = order
             .price
-            .map(|p| format!("{:.3}", p))  // Vest requires exactly 3 decimal places
+            .map(|p| format!("{:.3}", p)) // Vest requires exactly 3 decimal places
             .unwrap_or_else(|| "0.000".to_string());
         let reduce_only = order.reduce_only;
 
@@ -269,10 +272,9 @@ impl VestAdapter {
         ]);
 
         let msg_hash = keccak256(&encoded);
-        let signature = signing_wallet
-            .sign_message(msg_hash)
-            .await
-            .map_err(|e| ExchangeError::AuthenticationFailed(format!("Order signing failed: {}", e)))?;
+        let signature = signing_wallet.sign_message(msg_hash).await.map_err(|e| {
+            ExchangeError::AuthenticationFailed(format!("Order signing failed: {}", e))
+        })?;
 
         let sig_hex = format!("0x{}", hex::encode(signature.to_vec()));
 
@@ -288,7 +290,10 @@ impl VestAdapter {
     }
 
     /// Send a pre-signed order (skips signing step for lower latency)
-    pub async fn send_presigned_order(&self, presigned: PreSignedOrder) -> ExchangeResult<OrderResponse> {
+    pub async fn send_presigned_order(
+        &self,
+        presigned: PreSignedOrder,
+    ) -> ExchangeResult<OrderResponse> {
         if !presigned.is_valid() {
             return Err(ExchangeError::OrderRejected(format!(
                 "Pre-signed order expired ({:.1}s old)",
@@ -335,14 +340,18 @@ impl VestAdapter {
             .http_client
             .post(&url)
             .header("X-API-Key", api_key)
-            .header("xrestservermm", format!("restserver{}", self.config.account_group))
+            .header(
+                "xrestservermm",
+                format!("restserver{}", self.config.account_group),
+            )
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
             .map_err(|e| ExchangeError::OrderRejected(format!("Order request failed: {}", e)))?;
 
-        self.parse_order_response(response, &order.client_order_id).await
+        self.parse_order_response(response, &order.client_order_id)
+            .await
     }
 
     /// Parse order response from Vest API
@@ -352,10 +361,9 @@ impl VestAdapter {
         client_order_id: &str,
     ) -> ExchangeResult<OrderResponse> {
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        let text = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
 
         if !status.is_success() {
             return Err(ExchangeError::OrderRejected(format!(
@@ -364,8 +372,9 @@ impl VestAdapter {
             )));
         }
 
-        let result: VestOrderResponse = serde_json::from_str(&text)
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text)))?;
+        let result: VestOrderResponse = serde_json::from_str(&text).map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text))
+        })?;
 
         if let Some(code) = result.code {
             if code != 0 {
@@ -384,7 +393,10 @@ impl VestAdapter {
             Some("CANCELLED") => OrderStatus::Cancelled,
             Some("REJECTED") => OrderStatus::Rejected,
             Some(unknown) => {
-                tracing::warn!(status = unknown, "Unknown order status from Vest, treating as pending");
+                tracing::warn!(
+                    status = unknown,
+                    "Unknown order status from Vest, treating as pending"
+                );
                 OrderStatus::Pending
             }
             None => {
@@ -422,7 +434,10 @@ impl VestAdapter {
         let order_id = match result.id {
             Some(id) => id,
             None => {
-                tracing::warn!(client_order_id = client_order_id, "Vest response missing id, cancel may fail");
+                tracing::warn!(
+                    client_order_id = client_order_id,
+                    "Vest response missing id, cancel may fail"
+                );
                 format!("vest-{}", client_order_id)
             }
         };
@@ -486,13 +501,14 @@ impl VestAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("Register request failed: {}", e)))?;
+            .map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("Register request failed: {}", e))
+            })?;
 
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        let text = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
 
         if !status.is_success() {
             return Err(ExchangeError::AuthenticationFailed(format!(
@@ -501,8 +517,9 @@ impl VestAdapter {
             )));
         }
 
-        let result: RegisterResponse = serde_json::from_str(&text)
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text)))?;
+        let result: RegisterResponse = serde_json::from_str(&text).map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text))
+        })?;
 
         if let Some(code) = result.code {
             return Err(ExchangeError::AuthenticationFailed(format!(
@@ -533,13 +550,14 @@ impl VestAdapter {
             .header("X-API-KEY", api_key)
             .send()
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("ListenKey request failed: {}", e)))?;
+            .map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("ListenKey request failed: {}", e))
+            })?;
 
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        let text = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
 
         if !status.is_success() {
             return Err(ExchangeError::AuthenticationFailed(format!(
@@ -548,8 +566,9 @@ impl VestAdapter {
             )));
         }
 
-        let result: ListenKeyResponse = serde_json::from_str(&text)
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text)))?;
+        let result: ListenKeyResponse = serde_json::from_str(&text).map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text))
+        })?;
 
         if let Some(code) = result.code {
             return Err(ExchangeError::AuthenticationFailed(format!(
@@ -607,8 +626,9 @@ impl VestAdapter {
                 let msg = msg_result.map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
 
                 if let Message::Text(text) = msg {
-                    let response: serde_json::Value = serde_json::from_str(&text)
-                        .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid PONG: {}", e)))?;
+                    let response: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+                        ExchangeError::InvalidResponse(format!("Invalid PONG: {}", e))
+                    })?;
 
                     if response.get("data").and_then(|d| d.as_str()) != Some("PONG") {
                         return Err(ExchangeError::ConnectionFailed(format!(
@@ -619,7 +639,9 @@ impl VestAdapter {
                 }
             }
             None => {
-                return Err(ExchangeError::ConnectionFailed("No response to PING".into()));
+                return Err(ExchangeError::ConnectionFailed(
+                    "No response to PING".into(),
+                ));
             }
         }
 
@@ -628,10 +650,9 @@ impl VestAdapter {
 
     /// Split WebSocket stream and spawn background message reader
     fn split_and_spawn_reader(&mut self) -> ExchangeResult<()> {
-        let ws_stream_mutex = self
-            .ws_stream
-            .take()
-            .ok_or_else(|| ExchangeError::ConnectionFailed("No WebSocket stream to split".into()))?;
+        let ws_stream_mutex = self.ws_stream.take().ok_or_else(|| {
+            ExchangeError::ConnectionFailed("No WebSocket stream to split".into())
+        })?;
 
         let ws_stream = ws_stream_mutex.into_inner();
         let (ws_sender, ws_receiver) = ws_stream.split();
@@ -721,30 +742,28 @@ impl VestAdapter {
                 Ok(Message::Pong(data)) => {
                     tracing::debug!("Pong WS frame received: {:?}", data);
                 }
-                Ok(Message::Binary(data)) => {
-                    match String::from_utf8(data.clone()) {
-                        Ok(text) => {
-                            tracing::debug!("Binary->Text: {}", text);
-                            if let Ok(VestWsMessage::Depth(depth_msg)) =
-                                serde_json::from_str::<VestWsMessage>(&text)
-                            {
-                                let symbol = depth_msg
-                                    .channel
-                                    .strip_suffix("@depth")
-                                    .unwrap_or(&depth_msg.channel)
-                                    .to_string();
+                Ok(Message::Binary(data)) => match String::from_utf8(data.clone()) {
+                    Ok(text) => {
+                        tracing::debug!("Binary->Text: {}", text);
+                        if let Ok(VestWsMessage::Depth(depth_msg)) =
+                            serde_json::from_str::<VestWsMessage>(&text)
+                        {
+                            let symbol = depth_msg
+                                .channel
+                                .strip_suffix("@depth")
+                                .unwrap_or(&depth_msg.channel)
+                                .to_string();
 
-                                if let Ok(orderbook) = depth_msg.data.to_orderbook() {
-                                    let mut books = shared_orderbooks.write().await;
-                                    books.insert(symbol, orderbook);
-                                }
+                            if let Ok(orderbook) = depth_msg.data.to_orderbook() {
+                                let mut books = shared_orderbooks.write().await;
+                                books.insert(symbol, orderbook);
                             }
                         }
-                        Err(e) => {
-                            tracing::debug!("Binary message not UTF-8: {} ({} bytes)", e, data.len());
-                        }
                     }
-                }
+                    Err(e) => {
+                        tracing::debug!("Binary message not UTF-8: {} ({} bytes)", e, data.len());
+                    }
+                },
                 Ok(Message::Frame(_)) => {
                     tracing::trace!("Raw frame received");
                 }
@@ -818,7 +837,9 @@ impl VestAdapter {
         last_pong.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(crate::adapters::types::WS_PING_INTERVAL_SECS));
+            let mut interval = tokio::time::interval(Duration::from_secs(
+                crate::adapters::types::WS_PING_INTERVAL_SECS,
+            ));
             interval.tick().await;
 
             loop {
@@ -886,16 +907,20 @@ impl VestAdapter {
             .http_client
             .get(&url)
             .header("X-API-Key", api_key)
-            .header("xrestservermm", format!("restserver{}", self.config.account_group))
+            .header(
+                "xrestservermm",
+                format!("restserver{}", self.config.account_group),
+            )
             .send()
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("Account request failed: {}", e)))?;
+            .map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("Account request failed: {}", e))
+            })?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        let body = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
 
         tracing::debug!("Vest account response: status={}, body={}", status, body);
 
@@ -909,7 +934,10 @@ impl VestAdapter {
         }
 
         let account: VestAccountResponse = serde_json::from_str(&body).map_err(|e| {
-            ExchangeError::InvalidResponse(format!("Failed to parse account: {} - body: {}", e, body))
+            ExchangeError::InvalidResponse(format!(
+                "Failed to parse account: {} - body: {}",
+                e, body
+            ))
         })?;
 
         Ok(account)
@@ -958,20 +986,28 @@ impl VestAdapter {
             .http_client
             .post(&url)
             .header("X-API-Key", api_key)
-            .header("xrestservermm", format!("restserver{}", self.config.account_group))
+            .header(
+                "xrestservermm",
+                format!("restserver{}", self.config.account_group),
+            )
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("Leverage request failed: {}", e)))?;
+            .map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("Leverage request failed: {}", e))
+            })?;
 
         let status = response.status();
-        let response_body = response
-            .text()
-            .await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        let response_body = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
 
-        tracing::debug!("Vest leverage response: status={}, body={}", status, response_body);
+        tracing::debug!(
+            "Vest leverage response: status={}, body={}",
+            status,
+            response_body
+        );
 
         if !status.is_success() {
             return Err(ExchangeError::InvalidResponse(format!(
@@ -982,12 +1018,13 @@ impl VestAdapter {
             )));
         }
 
-        let leverage_response: VestLeverageResponse = serde_json::from_str(&response_body).map_err(|e| {
-            ExchangeError::InvalidResponse(format!(
-                "Failed to parse leverage response: {} - body: {}",
-                e, response_body
-            ))
-        })?;
+        let leverage_response: VestLeverageResponse = serde_json::from_str(&response_body)
+            .map_err(|e| {
+                ExchangeError::InvalidResponse(format!(
+                    "Failed to parse leverage response: {} - body: {}",
+                    e, response_body
+                ))
+            })?;
 
         leverage_response
             .value
@@ -1008,12 +1045,12 @@ impl VestAdapter {
 #[async_trait]
 impl ExchangeAdapter for VestAdapter {
     async fn connect(&mut self) -> ExchangeResult<()> {
-        // Warm up HTTP connection pool (Story 7.2 - latency optimization)
+        // Warm up HTTP connection pool (latency optimization)
         // This pre-establishes TCP/TLS connections before the first real request
         if let Err(e) = self.warm_up_http().await {
             tracing::warn!("HTTP warm-up failed (non-fatal): {}", e);
         }
-        
+
         let api_key = self.register().await?;
         self.api_key = Some(api_key);
 
@@ -1077,7 +1114,8 @@ impl ExchangeAdapter for VestAdapter {
         }
 
         let sub_id = self.send_subscribe_request(symbol).await?;
-        self.pending_subscriptions.insert(sub_id, symbol.to_string());
+        self.pending_subscriptions
+            .insert(sub_id, symbol.to_string());
         self.subscriptions.push(symbol.to_string());
 
         {
@@ -1107,7 +1145,10 @@ impl ExchangeAdapter for VestAdapter {
 
     async fn place_order(&self, order: OrderRequest) -> ExchangeResult<OrderResponse> {
         if let Some(err) = order.validate() {
-            return Err(ExchangeError::OrderRejected(format!("Invalid order: {}", err)));
+            return Err(ExchangeError::OrderRejected(format!(
+                "Invalid order: {}",
+                err
+            )));
         }
 
         if !self.connected {
@@ -1179,7 +1220,9 @@ impl ExchangeAdapter for VestAdapter {
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(format!("Order request failed: {}", e)))?;
 
-        let order_response = self.parse_order_response(response, &order.client_order_id).await?;
+        let order_response = self
+            .parse_order_response(response, &order.client_order_id)
+            .await?;
 
         let side_log = match order.side {
             crate::adapters::types::OrderSide::Buy => "long",
@@ -1226,13 +1269,14 @@ impl ExchangeAdapter for VestAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(format!("Cancel request failed: {}", e)))?;
+            .map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("Cancel request failed: {}", e))
+            })?;
 
         let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+        let text = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
 
         if !status.is_success() {
             return Err(ExchangeError::OrderRejected(format!(
@@ -1241,8 +1285,9 @@ impl ExchangeAdapter for VestAdapter {
             )));
         }
 
-        let result: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text)))?;
+        let result: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Invalid JSON: {} - {}", e, text))
+        })?;
 
         if let Some(code) = result.get("code").and_then(|c| c.as_i64()) {
             if code != 0 {
@@ -1279,7 +1324,7 @@ impl ExchangeAdapter for VestAdapter {
         }
 
         let now = current_time_ms();
-        const STALE_THRESHOLD_MS: u64 = 30_000;
+        use crate::adapters::types::STALE_THRESHOLD_MS;
 
         now.saturating_sub(last_data) > STALE_THRESHOLD_MS
     }
@@ -1352,8 +1397,9 @@ impl ExchangeAdapter for VestAdapter {
             *state = ConnectionState::Disconnected;
         }
 
-        Err(last_error
-            .unwrap_or_else(|| ExchangeError::ConnectionFailed("Reconnection failed after max attempts".into())))
+        Err(last_error.unwrap_or_else(|| {
+            ExchangeError::ConnectionFailed("Reconnection failed after max attempts".into())
+        }))
     }
 
     async fn get_position(&self, symbol: &str) -> ExchangeResult<Option<PositionInfo>> {
@@ -1363,7 +1409,7 @@ impl ExchangeAdapter for VestAdapter {
 
         // Use get_positions() to find the position for this symbol
         let positions = self.get_positions().await?;
-        
+
         for pos in positions {
             let pos_symbol = pos.symbol.as_deref().unwrap_or("");
             if pos_symbol == symbol {
@@ -1374,17 +1420,19 @@ impl ExchangeAdapter for VestAdapter {
                     raw_size = raw_size_str,
                     "Vest raw position size from API"
                 );
-                
+
                 // Parse size - negative = short, positive = long
-                let size = pos.size.as_ref()
+                let size = pos
+                    .size
+                    .as_ref()
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
-                
+
                 // Skip if no position (size is 0)
                 if size.abs() < 0.0000001 {
                     continue;
                 }
-                
+
                 // Use isLong field from API (size is always positive)
                 // Debug: Log raw values from API to diagnose
                 tracing::debug!(
@@ -1393,7 +1441,7 @@ impl ExchangeAdapter for VestAdapter {
                     raw_size = %pos.size.as_deref().unwrap_or("null"),
                     "Vest position raw data"
                 );
-                
+
                 let side = match pos.is_long {
                     Some(true) => "long",
                     Some(false) => "short",
@@ -1403,17 +1451,20 @@ impl ExchangeAdapter for VestAdapter {
                     }
                 };
                 let quantity = size.abs();
-                
-                let entry_price = pos.entry_price.as_ref()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                    
-                let unrealized_pnl = pos.unrealized_pnl.as_ref()
+
+                let entry_price = pos
+                    .entry_price
+                    .as_ref()
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
 
-                let mark_price = pos.mark_price.as_ref()
-                    .and_then(|s| s.parse::<f64>().ok());
+                let unrealized_pnl = pos
+                    .unrealized_pnl
+                    .as_ref()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0);
+
+                let mark_price = pos.mark_price.as_ref().and_then(|s| s.parse::<f64>().ok());
 
                 tracing::debug!(
                     symbol = symbol,
@@ -1434,7 +1485,7 @@ impl ExchangeAdapter for VestAdapter {
                 }));
             }
         }
-        
+
         tracing::debug!(symbol = symbol, "Vest: No position found for symbol");
         Ok(None)
     }
@@ -1445,40 +1496,44 @@ impl ExchangeAdapter for VestAdapter {
 }
 
 // =============================================================================
-// Tests (Story 7.2)
+// Tests
 // =============================================================================
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::VestConfig;
+    use super::*;
 
     /// Test warm_up_http() functionality
-    /// Story 7.2 AC#2: Unit test for connection warm-up functionality
+    /// Unit test for connection warm-up functionality
     /// Note: warm_up_http() uses the HTTP client which works independently of WS connection
     #[tokio::test]
     async fn test_warm_up_http_makes_request() {
         let config = VestConfig::default();
         let adapter = VestAdapter::new(config);
-        
+
         // warm_up_http makes a GET request to /account endpoint
         // This should succeed even without WebSocket connection established
         // because the HTTP client is configured independently
-        // Note: Will return 401 without auth, but that's expected - we just 
+        // Note: Will return 401 without auth, but that's expected - we just
         // want to establish TCP/TLS connection
         let result = adapter.warm_up_http().await;
-        
+
         // Should succeed - HTTP client can reach Vest
-        assert!(result.is_ok(), "warm_up_http should succeed with default config: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "warm_up_http should succeed with default config: {:?}",
+            result
+        );
     }
-    
+
     /// Test HTTP client pooling configuration
-    /// Story 7.2 AC#3: Verify pooling parameters are configured
+    /// Verify pooling parameters are configured
     #[test]
     fn test_http_client_configured_with_pooling() {
         let config = VestConfig::default();
         let adapter = VestAdapter::new(config);
-        
+
         // Verify the adapter was created successfully with pooled HTTP client
         // The builder configuration is validated at build time
         assert!(!adapter.connected, "New adapter should not be connected");

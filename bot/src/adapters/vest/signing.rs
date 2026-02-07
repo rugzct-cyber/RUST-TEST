@@ -2,10 +2,10 @@
 //!
 //! EIP-712 signing logic for Vest authentication and order signing.
 
+use ethers::contract::EthAbiType;
+use ethers::core::types::transaction::eip712::{EIP712Domain, Eip712};
 use ethers::core::types::{Address, U256};
 use ethers::signers::{LocalWallet, Signer};
-use ethers::contract::EthAbiType;
-use ethers::core::types::transaction::eip712::{Eip712, EIP712Domain};
 use serde::Serialize;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
@@ -52,13 +52,15 @@ impl Eip712 for SignerProof {
     fn type_hash() -> Result<[u8; 32], Self::Error> {
         // keccak256("SignerProof(address approvedSigner,uint256 signerExpiry)")
         use ethers::core::utils::keccak256;
-        Ok(keccak256("SignerProof(address approvedSigner,uint256 signerExpiry)"))
+        Ok(keccak256(
+            "SignerProof(address approvedSigner,uint256 signerExpiry)",
+        ))
     }
 
     fn struct_hash(&self) -> Result<[u8; 32], Self::Error> {
         use ethers::abi::{encode, Token};
         use ethers::core::utils::keccak256;
-        
+
         let type_hash = Self::type_hash()?;
         let encoded = encode(&[
             Token::FixedBytes(type_hash.to_vec()),
@@ -74,17 +76,19 @@ impl Eip712 for SignerProof {
 // =============================================================================
 
 /// Generate EIP-712 signature for registration
-/// 
+///
 /// Signs the SignerProof struct with the PRIMARY key to authorize
 /// the signing key as a delegate using proper EIP-712 typed data signing.
 pub async fn sign_registration_proof(config: &VestConfig) -> ExchangeResult<(String, String, u64)> {
     // Parse the signing key to get its address
-    let signing_wallet: LocalWallet = config.signing_key
+    let signing_wallet: LocalWallet = config
+        .signing_key
         .parse()
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid signing key: {}", e)))?;
-    
+
     // Parse the primary key for signing
-    let primary_wallet: LocalWallet = config.primary_key
+    let primary_wallet: LocalWallet = config
+        .primary_key
         .parse()
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid primary key: {}", e)))?;
 
@@ -98,18 +102,17 @@ pub async fn sign_registration_proof(config: &VestConfig) -> ExchangeResult<(Str
     };
 
     // Build EIP-712 domain with verifying contract
-    let verifying_contract: Address = config.verifying_contract()
-        .parse()
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid verifying contract: {}", e)))?;
+    let verifying_contract: Address = config.verifying_contract().parse().map_err(|e| {
+        ExchangeError::AuthenticationFailed(format!("Invalid verifying contract: {}", e))
+    })?;
 
     // Compute the EIP-712 hash manually
     use ethers::abi::{encode, Token};
     use ethers::core::utils::keccak256;
 
     // Domain separator hash
-    let domain_type_hash = keccak256(
-        "EIP712Domain(string name,string version,address verifyingContract)"
-    );
+    let domain_type_hash =
+        keccak256("EIP712Domain(string name,string version,address verifyingContract)");
     let domain_encoded = encode(&[
         Token::FixedBytes(domain_type_hash.to_vec()),
         Token::FixedBytes(keccak256("VestRouterV2").to_vec()),
@@ -119,7 +122,8 @@ pub async fn sign_registration_proof(config: &VestConfig) -> ExchangeResult<(Str
     let domain_separator = keccak256(&domain_encoded);
 
     // Struct hash
-    let struct_hash = proof.struct_hash()
+    let struct_hash = proof
+        .struct_hash()
         .map_err(|_| ExchangeError::AuthenticationFailed("Failed to compute struct hash".into()))?;
 
     // EIP-712 final hash: keccak256("\x19\x01" + domainSeparator + structHash)
@@ -131,16 +135,17 @@ pub async fn sign_registration_proof(config: &VestConfig) -> ExchangeResult<(Str
     let final_hash = keccak256(&data);
 
     // Sign the EIP-712 hash with primary wallet
-    let signature = primary_wallet
-        .sign_hash(final_hash.into())
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("EIP-712 signing failed: {}", e)))?;
+    let signature = primary_wallet.sign_hash(final_hash.into()).map_err(|e| {
+        ExchangeError::AuthenticationFailed(format!("EIP-712 signing failed: {}", e))
+    })?;
 
     // Signature should be exactly 65 bytes (r: 32, s: 32, v: 1)
     let mut sig_bytes = signature.to_vec();
     if sig_bytes.len() != 65 {
-        return Err(ExchangeError::AuthenticationFailed(
-            format!("Invalid signature length: {} (expected 65)", sig_bytes.len())
-        ));
+        return Err(ExchangeError::AuthenticationFailed(format!(
+            "Invalid signature length: {} (expected 65)",
+            sig_bytes.len()
+        )));
     }
 
     // Normalize v value: ethers-rs may return 0/1, but Vest expects 27/28
@@ -148,9 +153,10 @@ pub async fn sign_registration_proof(config: &VestConfig) -> ExchangeResult<(Str
     if v == 0 || v == 1 {
         sig_bytes[64] = v + 27;
     } else if !matches!(v, 27 | 28) {
-        return Err(ExchangeError::AuthenticationFailed(
-            format!("Invalid signature v value: {} (expected 0, 1, 27, or 28)", v)
-        ));
+        return Err(ExchangeError::AuthenticationFailed(format!(
+            "Invalid signature v value: {} (expected 0, 1, 27, or 28)",
+            v
+        )));
     }
 
     let sig_hex = format!("0x{}", hex::encode(sig_bytes));
@@ -161,16 +167,20 @@ pub async fn sign_registration_proof(config: &VestConfig) -> ExchangeResult<(Str
 
 /// Sign an order using Vest's signature format
 /// Returns (signature_hex, time, nonce)
-/// 
+///
 /// Vest format: keccak256(encode([time, nonce, orderType, symbol, isBuy, size, limitPrice, reduceOnly]))
 /// Then sign with personal_sign (encode_defunct)
-pub async fn sign_order(config: &VestConfig, order: &OrderRequest) -> ExchangeResult<(String, u64, u64)> {
+pub async fn sign_order(
+    config: &VestConfig,
+    order: &OrderRequest,
+) -> ExchangeResult<(String, u64, u64)> {
+    use crate::adapters::types::{OrderSide, OrderType};
     use ethers::abi::{encode, Token};
     use ethers::core::utils::keccak256;
-    use crate::adapters::types::{OrderType, OrderSide};
 
     // Parse the signing key (delegate signer for orders)
-    let signing_wallet: LocalWallet = config.signing_key
+    let signing_wallet: LocalWallet = config
+        .signing_key
         .parse()
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid signing key: {}", e)))?;
 
@@ -190,7 +200,10 @@ pub async fn sign_order(config: &VestConfig, order: &OrderRequest) -> ExchangeRe
     // Size and price as strings - MUST match exactly with place_order payload format
     // Vest requires exactly 3 decimal places for both size and limitPrice
     let size_str = format!("{:.3}", order.quantity);
-    let limit_price_str = order.price.map(|p| format!("{:.3}", p)).unwrap_or_else(|| "0.000".to_string());
+    let limit_price_str = order
+        .price
+        .map(|p| format!("{:.3}", p))
+        .unwrap_or_else(|| "0.000".to_string());
 
     // reduceOnly - from order request (true for closing positions)
     let reduce_only = order.reduce_only;
@@ -219,9 +232,10 @@ pub async fn sign_order(config: &VestConfig, order: &OrderRequest) -> ExchangeRe
 
     let sig_bytes = signature.to_vec();
     if sig_bytes.len() != 65 {
-        return Err(ExchangeError::AuthenticationFailed(
-            format!("Invalid signature length: {} (expected 65)", sig_bytes.len())
-        ));
+        return Err(ExchangeError::AuthenticationFailed(format!(
+            "Invalid signature length: {} (expected 65)",
+            sig_bytes.len()
+        )));
     }
 
     let sig_hex = format!("0x{}", hex::encode(sig_bytes));
@@ -229,11 +243,16 @@ pub async fn sign_order(config: &VestConfig, order: &OrderRequest) -> ExchangeRe
 }
 
 /// Sign a cancel order request with EIP-712
-pub async fn sign_cancel_order(config: &VestConfig, order_id: &str, nonce: u64) -> ExchangeResult<String> {
+pub async fn sign_cancel_order(
+    config: &VestConfig,
+    order_id: &str,
+    nonce: u64,
+) -> ExchangeResult<String> {
     use ethers::abi::{encode, Token};
     use ethers::core::utils::keccak256;
 
-    let signing_wallet: LocalWallet = config.signing_key
+    let signing_wallet: LocalWallet = config
+        .signing_key
         .parse()
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid signing key: {}", e)))?;
 
@@ -248,13 +267,12 @@ pub async fn sign_cancel_order(config: &VestConfig, order_id: &str, nonce: u64) 
     let struct_hash = keccak256(&struct_encoded);
 
     // Domain separator
-    let verifying_contract: Address = config.verifying_contract()
-        .parse()
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid verifying contract: {}", e)))?;
+    let verifying_contract: Address = config.verifying_contract().parse().map_err(|e| {
+        ExchangeError::AuthenticationFailed(format!("Invalid verifying contract: {}", e))
+    })?;
 
-    let domain_type_hash = keccak256(
-        "EIP712Domain(string name,string version,address verifyingContract)"
-    );
+    let domain_type_hash =
+        keccak256("EIP712Domain(string name,string version,address verifyingContract)");
     let domain_encoded = encode(&[
         Token::FixedBytes(domain_type_hash.to_vec()),
         Token::FixedBytes(keccak256("VestRouterV2").to_vec()),
@@ -271,16 +289,17 @@ pub async fn sign_cancel_order(config: &VestConfig, order_id: &str, nonce: u64) 
     data.extend_from_slice(&struct_hash);
     let final_hash = keccak256(&data);
 
-    let signature = signing_wallet
-        .sign_hash(final_hash.into())
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Cancel signing failed: {}", e)))?;
+    let signature = signing_wallet.sign_hash(final_hash.into()).map_err(|e| {
+        ExchangeError::AuthenticationFailed(format!("Cancel signing failed: {}", e))
+    })?;
 
     // Validate signature length
     let sig_bytes = signature.to_vec();
     if sig_bytes.len() != 65 {
-        return Err(ExchangeError::AuthenticationFailed(
-            format!("Invalid cancel signature length: {} (expected 65)", sig_bytes.len())
-        ));
+        return Err(ExchangeError::AuthenticationFailed(format!(
+            "Invalid cancel signature length: {} (expected 65)",
+            sig_bytes.len()
+        )));
     }
 
     let sig_hex = format!("0x{}", hex::encode(sig_bytes));
@@ -289,11 +308,16 @@ pub async fn sign_cancel_order(config: &VestConfig, order_id: &str, nonce: u64) 
 
 /// Sign a leverage request using Vest's signature format
 /// Returns (signature_hex, time, nonce)
-pub async fn sign_leverage_request(config: &VestConfig, symbol: &str, leverage: u32) -> ExchangeResult<(String, u64, u64)> {
+pub async fn sign_leverage_request(
+    config: &VestConfig,
+    symbol: &str,
+    leverage: u32,
+) -> ExchangeResult<(String, u64, u64)> {
     use ethers::abi::{encode, Token};
     use ethers::core::utils::keccak256;
 
-    let signing_wallet: LocalWallet = config.signing_key
+    let signing_wallet: LocalWallet = config
+        .signing_key
         .parse()
         .map_err(|e| ExchangeError::AuthenticationFailed(format!("Invalid signing key: {}", e)))?;
 
@@ -311,16 +335,16 @@ pub async fn sign_leverage_request(config: &VestConfig, symbol: &str, leverage: 
 
     let msg_hash = keccak256(&encoded);
 
-    let signature = signing_wallet
-        .sign_message(msg_hash)
-        .await
-        .map_err(|e| ExchangeError::AuthenticationFailed(format!("Leverage signing failed: {}", e)))?;
+    let signature = signing_wallet.sign_message(msg_hash).await.map_err(|e| {
+        ExchangeError::AuthenticationFailed(format!("Leverage signing failed: {}", e))
+    })?;
 
     let sig_bytes = signature.to_vec();
     if sig_bytes.len() != 65 {
-        return Err(ExchangeError::AuthenticationFailed(
-            format!("Invalid signature length: {} (expected 65)", sig_bytes.len())
-        ));
+        return Err(ExchangeError::AuthenticationFailed(format!(
+            "Invalid signature length: {} (expected 65)",
+            sig_bytes.len()
+        )));
     }
 
     let sig_hex = format!("0x{}", hex::encode(sig_bytes));
@@ -330,8 +354,8 @@ pub async fn sign_leverage_request(config: &VestConfig, symbol: &str, leverage: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::vest::config::{TEST_PRIMARY_KEY, TEST_SIGNING_KEY, TEST_PRIMARY_ADDR};
-    use crate::adapters::types::{OrderType, OrderSide};
+    use crate::adapters::types::{OrderSide, OrderType};
+    use crate::adapters::vest::config::{TEST_PRIMARY_ADDR, TEST_PRIMARY_KEY, TEST_SIGNING_KEY};
 
     #[test]
     fn test_current_time_ms() {

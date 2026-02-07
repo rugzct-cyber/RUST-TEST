@@ -46,11 +46,7 @@ pub fn load_config(path: &Path) -> Result<AppConfig, AppError> {
 
     // Parse YAML
     let config: AppConfig = serde_yaml::from_reader(reader).map_err(|e| {
-        AppError::Config(format!(
-            "YAML parse error in '{}': {}",
-            path.display(),
-            e
-        ))
+        AppError::Config(format!("YAML parse error in '{}': {}", path.display(), e))
     })?;
 
     // Validate configuration rules
@@ -68,9 +64,8 @@ pub fn load_config(path: &Path) -> Result<AppConfig, AppError> {
 /// * `Ok(AppConfig)` - Successfully parsed and validated configuration
 /// * `Err(AppError)` - Parse error or validation failure
 pub fn load_config_from_str(yaml_content: &str) -> Result<AppConfig, AppError> {
-    let config: AppConfig = serde_yaml::from_str(yaml_content).map_err(|e| {
-        AppError::Config(format!("YAML parse error: {}", e))
-    })?;
+    let config: AppConfig = serde_yaml::from_str(yaml_content)
+        .map_err(|e| AppError::Config(format!("YAML parse error: {}", e)))?;
 
     config.validate()?;
 
@@ -136,14 +131,20 @@ api:
 "#;
         let result = load_config_from_str(invalid_config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("dex_a and dex_b cannot be the same"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("dex_a and dex_b cannot be the same"));
     }
 
     #[test]
     fn test_load_config_file_not_found() {
         let result = load_config(Path::new("/nonexistent/path/config.yaml"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Configuration file not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Configuration file not found"));
     }
 
     #[test]

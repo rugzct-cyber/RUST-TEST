@@ -10,11 +10,13 @@ use crate::adapters::errors::{ExchangeError, ExchangeResult};
 
 /// Hardhat account #1 private key (well-known, public test key)
 #[cfg(test)]
-pub const TEST_PRIMARY_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+pub const TEST_PRIMARY_KEY: &str =
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 /// Hardhat account #2 private key (well-known, public test key)  
 #[cfg(test)]
-pub const TEST_SIGNING_KEY: &str = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
+pub const TEST_SIGNING_KEY: &str =
+    "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 
 /// Hardhat account #1 address
 #[cfg(test)]
@@ -45,21 +47,27 @@ impl VestConfig {
         let primary_addr = std::env::var("VEST_PRIMARY_ADDR")
             .map_err(|_| ExchangeError::AuthenticationFailed("VEST_PRIMARY_ADDR not set".into()))?;
         if primary_addr.is_empty() {
-            return Err(ExchangeError::AuthenticationFailed("VEST_PRIMARY_ADDR is empty".into()));
+            return Err(ExchangeError::AuthenticationFailed(
+                "VEST_PRIMARY_ADDR is empty".into(),
+            ));
         }
-        
+
         let primary_key = std::env::var("VEST_PRIMARY_KEY")
             .map_err(|_| ExchangeError::AuthenticationFailed("VEST_PRIMARY_KEY not set".into()))?;
         if primary_key.is_empty() {
-            return Err(ExchangeError::AuthenticationFailed("VEST_PRIMARY_KEY is empty".into()));
+            return Err(ExchangeError::AuthenticationFailed(
+                "VEST_PRIMARY_KEY is empty".into(),
+            ));
         }
-        
+
         let signing_key = std::env::var("VEST_SIGNING_KEY")
             .map_err(|_| ExchangeError::AuthenticationFailed("VEST_SIGNING_KEY not set".into()))?;
         if signing_key.is_empty() {
-            return Err(ExchangeError::AuthenticationFailed("VEST_SIGNING_KEY is empty".into()));
+            return Err(ExchangeError::AuthenticationFailed(
+                "VEST_SIGNING_KEY is empty".into(),
+            ));
         }
-        
+
         let account_group: u8 = std::env::var("VEST_ACCOUNT_GROUP")
             .unwrap_or_else(|_| "0".to_string())
             .parse()
@@ -131,11 +139,17 @@ mod tests {
 
     #[test]
     fn test_vest_config_urls() {
-        let config = VestConfig { production: true, ..Default::default() };
+        let config = VestConfig {
+            production: true,
+            ..Default::default()
+        };
         assert!(config.rest_base_url().contains("prod"));
         assert!(config.ws_base_url().contains("prod"));
 
-        let config = VestConfig { production: false, ..Default::default() };
+        let config = VestConfig {
+            production: false,
+            ..Default::default()
+        };
         assert!(config.rest_base_url().contains("dev"));
         assert!(config.ws_base_url().contains("dev"));
     }

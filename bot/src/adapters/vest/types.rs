@@ -2,11 +2,11 @@
 //!
 //! API response types and data structures for Vest exchange.
 
-use std::time::Instant;
 use serde::Deserialize;
+use std::time::Instant;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
-use crate::adapters::types::{Orderbook, OrderbookLevel, OrderRequest};
+use crate::adapters::types::{OrderRequest, Orderbook, OrderbookLevel};
 
 // =============================================================================
 // REST API Response Types
@@ -104,7 +104,7 @@ pub struct VestPositionData {
 
 /// Balance data from Vest API
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]  // Fields used by serde for parsing
+#[allow(dead_code)] // Fields used by serde for parsing
 pub struct VestBalanceData {
     /// Asset symbol (e.g., "USDC")
     pub asset: Option<String>,
@@ -188,38 +188,54 @@ pub struct VestDepthData {
 
 impl VestDepthData {
     /// Convert to Orderbook type, taking only top 10 levels
-    /// 
+    ///
     /// Parses all levels, sorts by price, then truncates to top 10.
     /// Bids: sorted descending (highest first = best bid)
     /// Asks: sorted ascending (lowest first = best ask)
     pub fn to_orderbook(&self) -> ExchangeResult<Orderbook> {
         // Parse ALL bids first, then sort and truncate
-        let mut bids: Vec<OrderbookLevel> = self.bids.iter()
+        let mut bids: Vec<OrderbookLevel> = self
+            .bids
+            .iter()
             .map(|[price, qty]| {
-                let p = price.parse::<f64>().map_err(|e| 
-                    ExchangeError::InvalidResponse(format!("Invalid bid price: {}", e)))?;
-                let q = qty.parse::<f64>().map_err(|e| 
-                    ExchangeError::InvalidResponse(format!("Invalid bid quantity: {}", e)))?;
+                let p = price.parse::<f64>().map_err(|e| {
+                    ExchangeError::InvalidResponse(format!("Invalid bid price: {}", e))
+                })?;
+                let q = qty.parse::<f64>().map_err(|e| {
+                    ExchangeError::InvalidResponse(format!("Invalid bid quantity: {}", e))
+                })?;
                 Ok(OrderbookLevel::new(p, q))
             })
             .collect::<ExchangeResult<Vec<_>>>()?;
-        
+
         // Parse ALL asks first, then sort and truncate
-        let mut asks: Vec<OrderbookLevel> = self.asks.iter()
+        let mut asks: Vec<OrderbookLevel> = self
+            .asks
+            .iter()
             .map(|[price, qty]| {
-                let p = price.parse::<f64>().map_err(|e| 
-                    ExchangeError::InvalidResponse(format!("Invalid ask price: {}", e)))?;
-                let q = qty.parse::<f64>().map_err(|e| 
-                    ExchangeError::InvalidResponse(format!("Invalid ask quantity: {}", e)))?;
+                let p = price.parse::<f64>().map_err(|e| {
+                    ExchangeError::InvalidResponse(format!("Invalid ask price: {}", e))
+                })?;
+                let q = qty.parse::<f64>().map_err(|e| {
+                    ExchangeError::InvalidResponse(format!("Invalid ask quantity: {}", e))
+                })?;
                 Ok(OrderbookLevel::new(p, q))
             })
             .collect::<ExchangeResult<Vec<_>>>()?;
-        
+
         // Sort bids descending (highest price first = best bid)
-        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+        bids.sort_by(|a, b| {
+            b.price
+                .partial_cmp(&a.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         // Sort asks ascending (lowest price first = best ask)
-        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
-        
+        asks.sort_by(|a, b| {
+            a.price
+                .partial_cmp(&b.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         // Take only top N levels after sorting
         let depth = crate::adapters::types::MAX_ORDERBOOK_DEPTH;
         if bids.len() > depth || asks.len() > depth {
@@ -233,14 +249,14 @@ impl VestDepthData {
         }
         bids.truncate(depth);
         asks.truncate(depth);
-        
+
         let orderbook = Orderbook {
             bids,
             asks,
             timestamp: super::signing::current_time_ms(),
         };
 
-        // Story 1.3: DEBUG log when orderbook is parsed
+        // DEBUG log when orderbook is parsed
         tracing::debug!(
             exchange = "vest",
             bids_count = orderbook.bids.len(),
@@ -284,8 +300,8 @@ mod tests {
 
     #[test]
     fn test_presigned_order_validity() {
-        use crate::adapters::types::{OrderType, OrderSide};
-        
+        use crate::adapters::types::{OrderSide, OrderType};
+
         let order = OrderRequest {
             symbol: "BTC-PERP".to_string(),
             side: OrderSide::Buy,
@@ -296,7 +312,7 @@ mod tests {
             client_order_id: "test-123".to_string(),
             time_in_force: crate::adapters::types::TimeInForce::Gtc,
         };
-        
+
         let presigned = PreSignedOrder {
             order,
             signature: "0x123".to_string(),
@@ -306,7 +322,7 @@ mod tests {
             size_str: "0.001".to_string(),
             price_str: "50000.00".to_string(),
         };
-        
+
         assert!(presigned.is_valid());
     }
 
@@ -322,7 +338,7 @@ mod tests {
                 ["50002.00".to_string(), "0.5".to_string()],
             ],
         };
-        
+
         let orderbook = data.to_orderbook().unwrap();
         assert_eq!(orderbook.bids.len(), 2);
         assert_eq!(orderbook.asks.len(), 2);
@@ -334,7 +350,7 @@ mod tests {
     fn test_vest_pong_parsing() {
         let pong_json = r#"{"data": "PONG"}"#;
         let result: Result<VestWsMessage, _> = serde_json::from_str(pong_json);
-        
+
         match result {
             Ok(VestWsMessage::Pong { .. }) => {
                 // Success - PONG was parsed correctly

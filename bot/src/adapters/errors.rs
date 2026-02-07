@@ -94,6 +94,9 @@ mod tests {
     #[test]
     fn test_invalid_order_display() {
         let err = ExchangeError::InvalidOrder("Limit orders require a price".to_string());
-        assert_eq!(err.to_string(), "Invalid order: Limit orders require a price");
+        assert_eq!(
+            err.to_string(),
+            "Invalid order: Limit orders require a price"
+        );
     }
 }

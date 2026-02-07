@@ -4,23 +4,21 @@
 //! various cryptocurrency exchanges via WebSocket.
 
 pub mod errors;
-pub mod types;
-pub mod traits;
-pub mod vest;
 pub mod paradex;
 pub mod shared;
+pub mod traits;
+pub mod types;
+pub mod vest;
 
 #[cfg(test)]
 pub mod test_utils;
 
 // Re-export commonly used types for convenience
 pub use errors::{ExchangeError, ExchangeResult};
-pub use types::{
-    Orderbook, OrderbookLevel, OrderbookUpdate,
-    OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderType, TimeInForce,
-    PositionInfo, OrderBuilder,
-};
-pub use traits::ExchangeAdapter;
-pub use vest::{VestAdapter, VestConfig, SharedOrderbooks};
 pub use paradex::{ParadexAdapter, ParadexConfig};
-
+pub use traits::ExchangeAdapter;
+pub use types::{
+    OrderBuilder, OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderType, Orderbook,
+    OrderbookLevel, OrderbookUpdate, PositionInfo, TimeInForce,
+};
+pub use vest::{SharedOrderbooks, VestAdapter, VestConfig};

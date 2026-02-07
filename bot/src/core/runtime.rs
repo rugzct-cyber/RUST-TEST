@@ -1,4 +1,4 @@
-//! Runtime execution tasks (Story 2.3, Story 6.2, Story 7.3, Story 5.3)
+//! Runtime execution tasks
 //!
 //! This module provides the async task loops for the execution pipeline.
 //! The execution task consumes SpreadOpportunity messages and triggers
@@ -6,19 +6,19 @@
 //!
 //! V1 HFT Mode: No persistence (Supabase removed for latency optimization)
 //!
-//! # Logging (Story 5.3)
+//! # Logging
 //! - Uses structured trading events (TRADE_ENTRY, TRADE_EXIT, POSITION_MONITORING)
 //! - Distinct entry_spread vs exit_spread fields for slippage analysis
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::adapters::ExchangeAdapter;
 use crate::core::channels::SpreadOpportunity;
-use crate::core::events::{TradingEvent, SystemEvent, log_event, log_system_event, format_pct};
-use crate::core::execution::{DeltaNeutralExecutor, log_successful_trade};
+use crate::core::events::{format_pct, log_event, log_system_event, SystemEvent, TradingEvent};
+use crate::core::execution::{log_successful_trade, DeltaNeutralExecutor};
 use crate::core::spread::{SpreadCalculator, SpreadDirection};
 
 // TUI State type for optional TUI updates
@@ -31,8 +31,8 @@ use crate::core::channels::SharedOrderbooks;
 // Constants
 // =============================================================================
 
-/// Exit monitoring polling interval in milliseconds (25ms for V1 HFT)
-const EXIT_POLL_INTERVAL_MS: u64 = 25;
+/// Exit monitoring uses same polling interval as monitoring task (single source of truth)
+use super::monitoring::POLL_INTERVAL_MS;
 
 /// Delay after trade entry to let exchange APIs settle before verifying positions (milliseconds)
 const API_SETTLE_DELAY_MS: u64 = 500;
@@ -63,29 +63,44 @@ struct ExitResult {
     execution_latency_ms: u64,
 }
 
-/// Exit monitoring loop - polls orderbooks until exit condition or shutdown
-/// 
-/// Returns: (poll_count, Option<ExitResult>) - None for shutdown, Some for normal exit
-#[allow(clippy::too_many_arguments)]
-async fn exit_monitoring_loop<V, P>(
-    executor: &DeltaNeutralExecutor<V, P>,
+/// Bundled parameters for exit monitoring (replaces 7 loose arguments)
+struct ExitMonitoringParams {
     vest_orderbooks: SharedOrderbooks,
     paradex_orderbooks: SharedOrderbooks,
-    vest_symbol: &str,
-    paradex_symbol: &str,
-    pair: &str,
+    vest_symbol: String,
+    paradex_symbol: String,
+    pair: String,
     entry_spread: f64,
     exit_spread_target: f64,
     direction: SpreadDirection,
+}
+
+/// Exit monitoring loop - polls orderbooks until exit condition or shutdown
+///
+/// Returns: (poll_count, Option<ExitResult>) - None for shutdown, Some for normal exit
+async fn exit_monitoring_loop<V, P>(
+    executor: &DeltaNeutralExecutor<V, P>,
+    params: ExitMonitoringParams,
     shutdown_rx: &mut broadcast::Receiver<()>,
 ) -> (u64, Option<ExitResult>)
 where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
 {
-    let mut exit_interval = interval(Duration::from_millis(EXIT_POLL_INTERVAL_MS));
+    let ExitMonitoringParams {
+        vest_orderbooks,
+        paradex_orderbooks,
+        vest_symbol,
+        paradex_symbol,
+        pair,
+        entry_spread,
+        exit_spread_target,
+        direction,
+    } = params;
+
+    let mut exit_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
     let mut poll_count: u64 = 0;
-    
+
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
@@ -94,7 +109,7 @@ where
             }
             _ = exit_interval.tick() => {
                 poll_count += 1;
-                
+
                 // Proactively refresh JWT every ~2 min so close_position has zero delay
                 const JWT_REFRESH_POLLS: u64 = 4800; // 4800 × 25ms ≈ 2 min
                 if poll_count % JWT_REFRESH_POLLS == 0 {
@@ -102,18 +117,18 @@ where
                         warn!(event_type = "JWT_REFRESH_FAILED", error = %e, "Adapter refresh failed during monitoring");
                     }
                 }
-                
+
                 // Read orderbooks
-                let vest_ob = vest_orderbooks.read().await.get(vest_symbol).cloned();
-                let paradex_ob = paradex_orderbooks.read().await.get(paradex_symbol).cloned();
-                
+                let vest_ob = vest_orderbooks.read().await.get(&vest_symbol).cloned();
+                let paradex_ob = paradex_orderbooks.read().await.get(&paradex_symbol).cloned();
+
                 if let (Some(v_ob), Some(p_ob)) = (vest_ob, paradex_ob) {
                     // Get best prices
                     let vest_bid = v_ob.best_bid().unwrap_or(0.0);
                     let vest_ask = v_ob.best_ask().unwrap_or(0.0);
                     let paradex_bid = p_ob.best_bid().unwrap_or(0.0);
                     let paradex_ask = p_ob.best_ask().unwrap_or(0.0);
-                    
+
                     // Calculate exit spread based on entry direction
                     let exit_spread = match direction {
                         SpreadDirection::AOverB => {
@@ -127,11 +142,11 @@ where
                             SpreadCalculator::calculate_exit_spread(paradex_bid, vest_ask)
                         }
                     };
-                    
+
                     // Log POSITION_MONITORING event (throttled - every ~1 second)
                     if poll_count % LOG_THROTTLE_POLLS == 0 {
                         let event = TradingEvent::position_monitoring(
-                            pair,
+                            &pair,
                             entry_spread,    // entry_spread (original)
                             exit_spread,     // exit_spread (current)
                             exit_spread_target,
@@ -139,9 +154,9 @@ where
                         );
                         log_event(&event);
                     }
-                    
+
                     // DEBUG: Log near-exit conditions (throttled - every ~1 second)
-                    // W-3 fix: was logging at info! 40x/sec → now debug! throttled
+                    // Was logging at info! 40x/sec → now debug! throttled
                     if exit_spread >= exit_spread_target - 0.02 && poll_count % LOG_THROTTLE_POLLS == 0 {
                         debug!(
                             event_type = "EXIT_CHECK",
@@ -151,14 +166,14 @@ where
                             "Near exit threshold"
                         );
                     }
-                    
+
                     if exit_spread >= exit_spread_target {
                         // Calculate profit
                         let profit = entry_spread + exit_spread;
-                        
-                        // Log TRADE_EXIT event (Story 5.3)
+
+                        // Log TRADE_EXIT event
                         let event = TradingEvent::trade_exit(
-                            pair,
+                            &pair,
                             entry_spread,    // entry_spread
                             exit_spread,     // exit_spread
                             exit_spread_target,
@@ -166,27 +181,27 @@ where
                             poll_count,
                         );
                         log_event(&event);
-                        
-                        // CR-2: Retry close with backoff instead of abandoning
+
+                        // Retry close with backoff instead of abandoning
                         const MAX_CLOSE_RETRIES: u32 = 3;
                         const CLOSE_RETRY_DELAY_SECS: u64 = 5;
                         let mut close_retries = 0u32;
                         let close_start = std::time::Instant::now();
-                        
+
                         loop {
                             match executor.close_position(exit_spread, vest_bid, vest_ask).await {
                                 Ok(close_result) => {
                                     let execution_latency_ms = close_start.elapsed().as_millis() as u64;
-                                    
+
                                     // Log POSITION_CLOSED event
                                     let closed_event = TradingEvent::position_closed(
-                                        pair,
+                                        &pair,
                                         entry_spread,
                                         exit_spread,
                                         profit,
                                     );
                                     log_event(&closed_event);
-                                    
+
                                     // Return exit fill prices for real-price PnL calculation
                                     return (poll_count, Some(ExitResult {
                                         exit_spread,
@@ -205,7 +220,7 @@ where
                                         "Failed to close position - retrying in {}s",
                                         CLOSE_RETRY_DELAY_SECS
                                     );
-                                    
+
                                     if close_retries >= MAX_CLOSE_RETRIES {
                                         let execution_latency_ms = close_start.elapsed().as_millis() as u64;
                                         error!(
@@ -220,7 +235,7 @@ where
                                             execution_latency_ms,
                                         }));
                                     }
-                                    
+
                                     tokio::time::sleep(Duration::from_secs(CLOSE_RETRY_DELAY_SECS)).await;
                                 }
                             }
@@ -242,7 +257,7 @@ where
 // Functions
 // =============================================================================
 
-/// Execution task that processes spread opportunities (Story 6.2, Story 7.3)
+/// Execution task that processes spread opportunities
 ///
 /// Listens for `SpreadOpportunity` messages on the channel and executes
 /// delta-neutral trades. After entry, polls orderbooks for exit condition.
@@ -273,7 +288,7 @@ pub async fn execution_task<V, P>(
     P: ExchangeAdapter + Send + Sync,
 {
     log_system_event(&SystemEvent::task_started("execution"));
-    
+
     // Track execution statistics
     let mut execution_count: u64 = 0;
 
@@ -288,7 +303,7 @@ pub async fn execution_task<V, P>(
             Some(opportunity) = opportunity_rx.recv() => {
                 let spread_pct = opportunity.spread_percent;
                 let pair = opportunity.pair.clone();
-                
+
                 execution_count += 1;
                 debug!(
                     pair = %pair,
@@ -311,8 +326,8 @@ pub async fn execution_task<V, P>(
                             // Add small delay to let Vest API update entry price
                             tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
                             let (vest_entry, paradex_entry) = executor.verify_positions(spread_pct, exit_spread_target).await;
-                            
-                            // C-1/C-2/W-1 fix: Log TRADE_ENTRY + SLIPPAGE_ANALYSIS AFTER
+
+                            // Log TRADE_ENTRY + SLIPPAGE_ANALYSIS AFTER
                             // verify_positions() with real fill prices (not 0.0 from IOC response)
                             if let Some(timings) = result.timings.as_ref() {
                                 log_successful_trade(
@@ -323,7 +338,7 @@ pub async fn execution_task<V, P>(
                                     paradex_entry.unwrap_or(0.0),
                                 );
                             }
-                            
+
                             // Update TUI state with entry prices from position data
                             if let Some(ref tui) = tui_state {
                                 match tui.lock() {
@@ -338,7 +353,7 @@ pub async fn execution_task<V, P>(
                                         }
                                         _ => spread_pct, // fallback to detected spread
                                     };
-                                    
+
                                     state.record_entry(
                                         actual_spread,
                                         opportunity.direction,
@@ -351,10 +366,10 @@ pub async fn execution_task<V, P>(
                                     }
                                 }
                             }
-                            
+
                             // Start exit monitoring via extracted function
                             let entry_direction = executor.get_entry_direction();
-                            
+
                             if let Some(direction) = entry_direction {
                                 debug!(
                                     event_type = "POSITION_OPENED",
@@ -362,28 +377,30 @@ pub async fn execution_task<V, P>(
                                     exit_target = %format_pct(exit_spread_target),
                                     "Starting exit monitoring"
                                 );
-                                
+
                                 let (_poll_count, maybe_exit_result) = exit_monitoring_loop(
                                     &executor,
-                                    vest_orderbooks.clone(),
-                                    paradex_orderbooks.clone(),
-                                    &vest_symbol,
-                                    &paradex_symbol,
-                                    &pair,
-                                    spread_pct,
-                                    exit_spread_target,
-                                    direction,
+                                    ExitMonitoringParams {
+                                        vest_orderbooks: vest_orderbooks.clone(),
+                                        paradex_orderbooks: paradex_orderbooks.clone(),
+                                        vest_symbol: vest_symbol.clone(),
+                                        paradex_symbol: paradex_symbol.clone(),
+                                        pair: pair.clone(),
+                                        entry_spread: spread_pct,
+                                        exit_spread_target,
+                                        direction,
+                                    },
                                     &mut shutdown_rx,
                                 ).await;
-                                
+
                                 log_system_event(&SystemEvent::task_stopped("exit_monitoring"));
-                                
+
                                 // Update TUI trade history (AC1: record_exit after close_position)
                                 if let (Some(exit_result), Some(ref tui)) = (maybe_exit_result, &tui_state) {
                                     match tui.lock() {
                                         Ok(mut state) => {
                                         let position_size = executor.get_default_quantity();
-                                        
+
                                         // PnL from real prices: profit on each leg
                                         // Vest leg PnL: depends on whether vest was long or short
                                         // Paradex leg PnL: depends on whether paradex was long or short
@@ -407,7 +424,7 @@ pub async fn execution_task<V, P>(
                                                 long_pnl + short_pnl
                                             }
                                         };
-                                        
+
                                         state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms);
                                         }
                                         Err(e) => {
@@ -427,7 +444,7 @@ pub async fn execution_task<V, P>(
                                 "Delta-neutral trade partially failed"
                             );
                         }
-                        
+
                         // Drain any stale opportunities that accumulated during execution
                         drain_channel(&mut opportunity_rx, "opportunity queue");
                     }
@@ -452,59 +469,20 @@ pub async fn execution_task<V, P>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::test_utils::TestMockAdapter;
+    use crate::adapters::types::Orderbook;
+    use crate::core::spread::SpreadDirection;
     use std::collections::HashMap;
     use tokio::sync::RwLock;
-    use crate::adapters::ExchangeResult;
-    use crate::adapters::types::{OrderRequest, OrderResponse, OrderStatus, Orderbook, PositionInfo};
-    use crate::core::spread::SpreadDirection;
-    use async_trait::async_trait;
     use tokio::time::{timeout, Duration};
-
-    /// Simple mock adapter for runtime tests
-    struct RuntimeMockAdapter {
-        name: &'static str,
-    }
-
-    impl RuntimeMockAdapter {
-        fn new(name: &'static str) -> Self {
-            Self { name }
-        }
-    }
-
-    #[async_trait]
-    impl ExchangeAdapter for RuntimeMockAdapter {
-        async fn connect(&mut self) -> ExchangeResult<()> { Ok(()) }
-        async fn disconnect(&mut self) -> ExchangeResult<()> { Ok(()) }
-        async fn subscribe_orderbook(&mut self, _symbol: &str) -> ExchangeResult<()> { Ok(()) }
-        async fn unsubscribe_orderbook(&mut self, _symbol: &str) -> ExchangeResult<()> { Ok(()) }
-        
-        async fn place_order(&self, order: OrderRequest) -> ExchangeResult<OrderResponse> {
-            Ok(OrderResponse {
-                order_id: format!("{}-{}", self.name, order.client_order_id),
-                client_order_id: order.client_order_id,
-                status: OrderStatus::Filled,
-                filled_quantity: order.quantity,
-                avg_price: Some(42000.0),
-            })
-        }
-        
-        async fn cancel_order(&self, _order_id: &str) -> ExchangeResult<()> { Ok(()) }
-        fn get_orderbook(&self, _symbol: &str) -> Option<&Orderbook> { None }
-        fn is_connected(&self) -> bool { true }
-        fn is_stale(&self) -> bool { false }
-        async fn sync_orderbooks(&mut self) {}
-        async fn reconnect(&mut self) -> ExchangeResult<()> { Ok(()) }
-        async fn get_position(&self, _symbol: &str) -> ExchangeResult<Option<PositionInfo>> { Ok(None) }
-        fn exchange_name(&self) -> &'static str { self.name }
-    }
 
     #[tokio::test]
     async fn test_execution_task_processes_opportunity() {
         let (opportunity_tx, opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
-        let vest = RuntimeMockAdapter::new("vest");
-        let paradex = RuntimeMockAdapter::new("paradex");
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
         let executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
@@ -515,17 +493,23 @@ mod tests {
 
         // Create SharedOrderbooks with data that triggers exit (spread = 0 >= -0.05)
         let mut vest_books = HashMap::new();
-        vest_books.insert("BTC-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
-            timestamp: 1706000000000,
-        });
+        vest_books.insert(
+            "BTC-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
+                timestamp: 1706000000000,
+            },
+        );
         let mut paradex_books = HashMap::new();
-        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],  // Same as vest_bid => spread ~0%
-            timestamp: 1706000000000,
-        });
+        paradex_books.insert(
+            "BTC-USD-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)], // Same as vest_bid => spread ~0%
+                timestamp: 1706000000000,
+            },
+        );
         let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
         let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
 
@@ -539,9 +523,10 @@ mod tests {
                 "BTC-PERP".to_string(),
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
-                -0.05,  // exit_spread_target: exit when spread >= -0.05%
-                None,   // No TUI state in tests
-            ).await;
+                -0.05, // exit_spread_target: exit when spread >= -0.05%
+                None,  // No TUI state in tests
+            )
+            .await;
         });
 
         // Send an opportunity
@@ -575,8 +560,8 @@ mod tests {
         let (_opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
-        let vest = RuntimeMockAdapter::new("vest");
-        let paradex = RuntimeMockAdapter::new("paradex");
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
         let executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
@@ -599,9 +584,10 @@ mod tests {
                 "BTC-PERP".to_string(),
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
-                -0.05,  // exit_spread_target
-                None,   // No TUI state in tests
-            ).await;
+                -0.05, // exit_spread_target
+                None,  // No TUI state in tests
+            )
+            .await;
         });
 
         // Send shutdown immediately
@@ -615,8 +601,8 @@ mod tests {
     #[tokio::test]
     async fn test_exit_monitoring_loop_exits_on_spread_condition() {
         // Create mock executor
-        let vest = RuntimeMockAdapter::new("vest");
-        let paradex = RuntimeMockAdapter::new("paradex");
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
         let executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
@@ -624,57 +610,75 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
         );
-        
+
         // Create SharedOrderbooks with prices that produce exit_spread >= target
         // For AOverB: exit_spread = (vest_bid - paradex_ask) / paradex_ask * 100
         // vest_bid = 42000, paradex_ask = 42000 => spread = 0%
         // Target = -0.05%, so 0% >= -0.05% triggers exit
         let mut vest_books = HashMap::new();
-        vest_books.insert("BTC-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
-            timestamp: 1706000000000,
-        });
+        vest_books.insert(
+            "BTC-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
+                timestamp: 1706000000000,
+            },
+        );
         let mut paradex_books = HashMap::new();
-        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)], // Same as vest_bid
-            timestamp: 1706000000000,
-        });
+        paradex_books.insert(
+            "BTC-USD-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)], // Same as vest_bid
+                timestamp: 1706000000000,
+            },
+        );
         let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
         let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
-        
+
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-        
-        // CR-1 fix: simulate open position so close_position can work
+
+        // Simulate open position so close_position can work
         executor.simulate_open_position(SpreadDirection::AOverB);
-        
+
         // Call the extracted function directly
-        let result = timeout(Duration::from_secs(5), exit_monitoring_loop(
-            &executor,
-            vest_orderbooks,
-            paradex_orderbooks,
-            "BTC-PERP",
-            "BTC-USD-PERP",
-            "BTC-PERP",
-            0.35,       // entry_spread
-            -0.05,      // exit_spread_target
-            SpreadDirection::AOverB,
-            &mut shutdown_rx,
-        )).await;
-        
+        let result = timeout(
+            Duration::from_secs(5),
+            exit_monitoring_loop(
+                &executor,
+                ExitMonitoringParams {
+                    vest_orderbooks,
+                    paradex_orderbooks,
+                    vest_symbol: "BTC-PERP".to_string(),
+                    paradex_symbol: "BTC-USD-PERP".to_string(),
+                    pair: "BTC-PERP".to_string(),
+                    entry_spread: 0.35,
+                    exit_spread_target: -0.05,
+                    direction: SpreadDirection::AOverB,
+                },
+                &mut shutdown_rx,
+            ),
+        )
+        .await;
+
         // Should complete (not timeout) and return poll_count >= 1 with Some(exit_spread)
-        assert!(result.is_ok(), "Exit monitoring should complete on exit condition");
+        assert!(
+            result.is_ok(),
+            "Exit monitoring should complete on exit condition"
+        );
         let (poll_count, exit_spread) = result.unwrap();
         assert!(poll_count >= 1, "Should have polled at least once");
-        assert!(exit_spread.is_some(), "Should return Some(exit_spread) on normal exit");
+        assert!(
+            exit_spread.is_some(),
+            "Should return Some(exit_spread) on normal exit"
+        );
     }
 
     #[tokio::test]
     async fn test_exit_monitoring_loop_responds_to_shutdown() {
         // Create mock executor
-        let vest = RuntimeMockAdapter::new("vest");
-        let paradex = RuntimeMockAdapter::new("paradex");
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
         let executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
@@ -682,60 +686,72 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
         );
-        
+
         // Create orderbooks with prices that will NEVER trigger exit
         // vest_bid = 40000, paradex_ask = 42000 => spread = -4.76% (never >= -0.05%)
         let mut vest_books = HashMap::new();
-        vest_books.insert("BTC-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(40000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(40001.0, 1.0)],
-            timestamp: 1706000000000,
-        });
+        vest_books.insert(
+            "BTC-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(40000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(40001.0, 1.0)],
+                timestamp: 1706000000000,
+            },
+        );
         let mut paradex_books = HashMap::new();
-        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            timestamp: 1706000000000,
-        });
+        paradex_books.insert(
+            "BTC-USD-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                timestamp: 1706000000000,
+            },
+        );
         let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
         let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
-        
+
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-        
+
         // Spawn the monitoring loop in background
         let handle = tokio::spawn(async move {
             exit_monitoring_loop(
                 &executor,
-                vest_orderbooks,
-                paradex_orderbooks,
-                "BTC-PERP",
-                "BTC-USD-PERP",
-                "BTC-PERP",
-                0.35,
-                -0.05,
-                SpreadDirection::AOverB,
+                ExitMonitoringParams {
+                    vest_orderbooks,
+                    paradex_orderbooks,
+                    vest_symbol: "BTC-PERP".to_string(),
+                    paradex_symbol: "BTC-USD-PERP".to_string(),
+                    pair: "BTC-PERP".to_string(),
+                    entry_spread: 0.35,
+                    exit_spread_target: -0.05,
+                    direction: SpreadDirection::AOverB,
+                },
                 &mut shutdown_rx,
-            ).await
+            )
+            .await
         });
-        
+
         // Give it a moment to start polling
         tokio::time::sleep(Duration::from_millis(50)).await;
-        
+
         // Send shutdown
         let _ = shutdown_tx.send(());
-        
+
         // Should complete quickly
         let result = timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "Exit monitoring should respond to shutdown");
         let (_, exit_spread) = result.unwrap().unwrap();
-        assert!(exit_spread.is_none(), "Should return None exit_spread on shutdown (AC3)");
+        assert!(
+            exit_spread.is_none(),
+            "Should return None exit_spread on shutdown (AC3)"
+        );
     }
 
     #[tokio::test]
     async fn test_exit_monitoring_loop_b_over_a_direction() {
         // Create mock executor
-        let vest = RuntimeMockAdapter::new("vest");
-        let paradex = RuntimeMockAdapter::new("paradex");
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
         let executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
@@ -743,47 +759,65 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
         );
-        
+
         // For BOverA: exit_spread = (paradex_bid - vest_ask) / vest_ask * 100
         // paradex_bid = 42000, vest_ask = 42000 => spread = 0%
         // Target = -0.05%, so 0% >= -0.05% triggers exit
         let mut vest_books = HashMap::new();
-        vest_books.insert("BTC-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            timestamp: 1706000000000,
-        });
+        vest_books.insert(
+            "BTC-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                timestamp: 1706000000000,
+            },
+        );
         let mut paradex_books = HashMap::new();
-        paradex_books.insert("BTC-USD-PERP".to_string(), Orderbook {
-            bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-            asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
-            timestamp: 1706000000000,
-        });
+        paradex_books.insert(
+            "BTC-USD-PERP".to_string(),
+            Orderbook {
+                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
+                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
+                timestamp: 1706000000000,
+            },
+        );
         let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
         let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
-        
+
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
-        
-        // CR-1 fix: simulate open position so close_position can work
+
+        // Simulate open position so close_position can work
         executor.simulate_open_position(SpreadDirection::BOverA);
-        
+
         // Call with BOverA direction
-        let result = timeout(Duration::from_secs(5), exit_monitoring_loop(
-            &executor,
-            vest_orderbooks,
-            paradex_orderbooks,
-            "BTC-PERP",
-            "BTC-USD-PERP",
-            "BTC-PERP",
-            0.35,
-            -0.05,
-            SpreadDirection::BOverA,  // <-- Testing BOverA
-            &mut shutdown_rx,
-        )).await;
-        
-        assert!(result.is_ok(), "Exit monitoring should complete on exit condition");
+        let result = timeout(
+            Duration::from_secs(5),
+            exit_monitoring_loop(
+                &executor,
+                ExitMonitoringParams {
+                    vest_orderbooks,
+                    paradex_orderbooks,
+                    vest_symbol: "BTC-PERP".to_string(),
+                    paradex_symbol: "BTC-USD-PERP".to_string(),
+                    pair: "BTC-PERP".to_string(),
+                    entry_spread: 0.35,
+                    exit_spread_target: -0.05,
+                    direction: SpreadDirection::BOverA, // <-- Testing BOverA
+                },
+                &mut shutdown_rx,
+            ),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "Exit monitoring should complete on exit condition"
+        );
         let (poll_count, exit_spread) = result.unwrap();
         assert!(poll_count >= 1, "Should have polled at least once");
-        assert!(exit_spread.is_some(), "Should return Some(exit_spread) on normal exit");
+        assert!(
+            exit_spread.is_some(),
+            "Should return Some(exit_spread) on normal exit"
+        );
     }
 }

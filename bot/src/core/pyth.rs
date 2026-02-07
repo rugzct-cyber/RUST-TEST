@@ -21,7 +21,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 /// Pyth Hermes API endpoint for USDC/USD price
-const PYTH_USDC_USD_URL: &str = 
+const PYTH_USDC_USD_URL: &str =
     "https://hermes.pyth.network/v2/updates/price/latest?ids[]=eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a";
 
 /// Rate refresh interval: 15 minutes
@@ -175,7 +175,7 @@ pub async fn fetch_usdc_rate(client: &reqwest::Client) -> Result<f64, String> {
         .price
         .parse()
         .map_err(|e| format!("Invalid price value: {}", e))?;
-    
+
     let expo = parsed.price.expo;
     let rate = price_int as f64 * 10f64.powi(expo);
 
@@ -212,7 +212,10 @@ pub async fn fetch_with_retry(client: &reqwest::Client) -> Result<f64, String> {
         }
     }
 
-    Err(format!("Pyth fetch failed after 3 attempts: {}", last_error))
+    Err(format!(
+        "Pyth fetch failed after 3 attempts: {}",
+        last_error
+    ))
 }
 
 /// Spawn background task to refresh the rate every 15 minutes
@@ -222,7 +225,10 @@ pub async fn fetch_with_retry(client: &reqwest::Client) -> Result<f64, String> {
 /// 2. Update cache every 15 minutes
 /// 3. Log WARN if rate changes >0.5%
 /// 4. Continue using last known rate on failure
-pub fn spawn_rate_refresh_task(cache: Arc<UsdcRateCache>, client: reqwest::Client) -> tokio::task::JoinHandle<()> {
+pub fn spawn_rate_refresh_task(
+    cache: Arc<UsdcRateCache>,
+    client: reqwest::Client,
+) -> tokio::task::JoinHandle<()> {
     let handle = tokio::spawn(async move {
         // Initial fetch with retry
         match fetch_with_retry(&client).await {
@@ -324,43 +330,61 @@ mod tests {
     fn test_rate_cache_default_is_one() {
         let cache = UsdcRateCache::new();
         let rate = cache.get_rate();
-        assert!((rate - 1.0).abs() < 0.000001, "Default rate should be 1.0, got {}", rate);
+        assert!(
+            (rate - 1.0).abs() < 0.000001,
+            "Default rate should be 1.0, got {}",
+            rate
+        );
     }
 
     #[test]
     fn test_rate_cache_update_and_get() {
         let cache = UsdcRateCache::new();
-        
+
         // Update with valid rate
         assert!(cache.update(0.9997));
         let rate = cache.get_rate();
-        assert!((rate - 0.9997).abs() < 0.000001, "Rate should be 0.9997, got {}", rate);
-        
+        assert!(
+            (rate - 0.9997).abs() < 0.000001,
+            "Rate should be 0.9997, got {}",
+            rate
+        );
+
         // Update again
         assert!(cache.update(1.0003));
         let rate = cache.get_rate();
-        assert!((rate - 1.0003).abs() < 0.000001, "Rate should be 1.0003, got {}", rate);
+        assert!(
+            (rate - 1.0003).abs() < 0.000001,
+            "Rate should be 1.0003, got {}",
+            rate
+        );
     }
 
     #[test]
     fn test_rate_cache_rejects_out_of_bounds() {
         let cache = UsdcRateCache::new();
-        
+
         // Set a known value first
         assert!(cache.update(0.9997));
-        
+
         // Try to update with rate < 0.90 (should reject)
         assert!(!cache.update(0.50));
-        assert!((cache.get_rate() - 0.9997).abs() < 0.000001, "Rate should remain 0.9997 after rejected update");
-        
+        assert!(
+            (cache.get_rate() - 0.9997).abs() < 0.000001,
+            "Rate should remain 0.9997 after rejected update"
+        );
+
         // Try to update with rate > 1.10 (should reject)
         assert!(!cache.update(1.50));
-        assert!((cache.get_rate() - 0.9997).abs() < 0.000001, "Rate should remain 0.9997 after rejected update");
-        
+        assert!(
+            (cache.get_rate() - 0.9997).abs() < 0.000001,
+            "Rate should remain 0.9997 after rejected update"
+        );
+
         // Edge cases: exactly at bounds should be accepted
         assert!(cache.update(0.90));
         assert!((cache.get_rate() - 0.90).abs() < 0.000001);
-        
+
         assert!(cache.update(1.10));
         assert!((cache.get_rate() - 1.10).abs() < 0.000001);
     }
@@ -370,13 +394,16 @@ mod tests {
         // Given: USDC rate is 0.9997 (1 USDC = 0.9997 USD)
         // When: We have a price of 42000 USD
         // Then: Converting to USDC = 42000 / 0.9997 = 42012.60 USDC
-        
+
         let usd_price = 42000.0;
         let usdc_rate = 0.9997;
         let usdc_price = usd_price / usdc_rate;
-        
+
         // Expected: 42012.60378... (allowing some floating point tolerance)
-        assert!((usdc_price - 42012.6037811_f64).abs() < 0.001, 
-            "USDC price should be ~42012.60, got {}", usdc_price);
+        assert!(
+            (usdc_price - 42012.6037811_f64).abs() < 0.001,
+            "USDC price should be ~42012.60, got {}",
+            usdc_price
+        );
     }
 }

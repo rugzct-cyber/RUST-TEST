@@ -5,11 +5,8 @@
 
 use async_trait::async_trait;
 
-
 use crate::adapters::errors::ExchangeResult;
-use crate::adapters::types::{Orderbook, OrderRequest, OrderResponse, PositionInfo};
-
-
+use crate::adapters::types::{OrderRequest, OrderResponse, Orderbook, PositionInfo};
 
 /// Common trait for all exchange adapters
 ///
@@ -92,37 +89,37 @@ pub trait ExchangeAdapter: Send + Sync {
 
     /// Check if adapter is currently connected to the exchange
     fn is_connected(&self) -> bool;
-    
+
     /// Check if connection is stale (no data received in last 30 seconds)
-    /// 
+    ///
     /// A stale connection indicates that while the WebSocket may still be
     /// technically connected, no data has been received recently, which
     /// suggests the connection may be unhealthy.
-    /// 
-    /// # Story 2.6: Heartbeat Monitoring
+    ///
+    /// # Heartbeat Monitoring
     fn is_stale(&self) -> bool;
-    
+
     /// Sync local orderbook cache from shared storage
-    /// 
+    ///
     /// This method copies orderbooks from the shared arc-rwlock storage
     /// (updated by background reader) to the local cache (used by get_orderbook).
     /// Call this before get_orderbook to ensure up-to-date data.
-    /// 
-    /// # Story 10.3: Required for spread calculation with dual adapters
+    ///
+    /// # Required for spread calculation with dual adapters
     async fn sync_orderbooks(&mut self);
-    
+
     /// Attempt to reconnect to the exchange
-    /// 
+    ///
     /// This method should:
     /// 1. Clean up existing connection resources
     /// 2. Re-establish WebSocket connection
     /// 3. Re-authenticate if necessary
     /// 4. Re-subscribe to all previously subscribed symbols
-    /// 
-    /// # Story 2.6: Auto-Reconnect
+    ///
+    /// # Auto-Reconnect
     async fn reconnect(&mut self) -> ExchangeResult<()>;
 
-    /// Get current position for a symbol (Story 5.3 - Reconciliation)
+    /// Get current position for a symbol (used for reconciliation)
     ///
     /// Fetches position data from the exchange via REST API.
     /// Returns None if no position exists for the symbol.
@@ -147,7 +144,7 @@ pub mod tests {
     use super::*;
     use crate::adapters::types::{OrderSide, OrderStatus};
 
-    // Use shared TestMockAdapter (CR-4) — alias for minimal test changes
+    // Use shared TestMockAdapter — alias for minimal test changes
     use crate::adapters::test_utils::TestMockAdapter;
 
     /// Create a disconnected mock adapter (matching old MockAdapter::new() behaviour)

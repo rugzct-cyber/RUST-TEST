@@ -12,47 +12,39 @@
 //! - VEST_API_KEY, VEST_API_SECRET, VEST_SIGNER_KEY, VEST_SIGNER_ADDRESS
 //! - PARADEX_PRIVATE_KEY, PARADEX_ACCOUNT_ADDRESS (optional for public channels)
 //!
-//! # Logging (Story 5.1)
+//! # Logging
 //! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 //! - For human-readable output, set LOG_FORMAT=pretty
 
-use std::path::Path;
 use std::time::Duration;
 use tokio::signal;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use hft_bot::adapters::{
-    vest::{VestAdapter, VestConfig},
     paradex::{ParadexAdapter, ParadexConfig},
     traits::ExchangeAdapter,
+    vest::{VestAdapter, VestConfig},
 };
-use hft_bot::config;
 use hft_bot::core::spread::SpreadCalculator;
 
-/// Polling interval in milliseconds (100ms = 10 fps)
-const POLL_INTERVAL_MS: u64 = 100;
+/// Display refresh interval in milliseconds (100ms = 10 fps, distinct from HFT 25ms polling)
+const DISPLAY_POLL_INTERVAL_MS: u64 = 100;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load environment variables
-    dotenvy::dotenv().ok();
-    
-    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
-    config::init_logging();
-
-    // Load pairs from config.yaml (same source of truth as main bot)
-    let cfg = config::load_config(Path::new("config.yaml"))
-        .expect("Failed to load config.yaml");
-    let bot = cfg.bots.first().expect("config.yaml must have at least one bot entry");
-    let vest_pair = bot.pair.to_string();
-    let paradex_pair = format!("{}-USD-PERP",
-        vest_pair.split('-').next().unwrap_or("BTC"));
+    // Shared init (dotenv + logging + config)
+    let boot = hft_bot::bin_utils::boot();
+    let vest_pair = boot.vest_pair;
+    let paradex_pair = boot.paradex_pair;
 
     info!("═══════════════════════════════════════════════════════════");
     info!("🔍 HFT Arbitrage Bot - LIVE MONITOR MODE");
     info!("═══════════════════════════════════════════════════════════");
-    info!("📊 Vest pair: {} | Paradex pair: {}", vest_pair, paradex_pair);
-    info!("⏱️  Poll interval: {}ms", POLL_INTERVAL_MS);
+    info!(
+        "📊 Vest pair: {} | Paradex pair: {}",
+        vest_pair, paradex_pair
+    );
+    info!("⏱️  Poll interval: {}ms", DISPLAY_POLL_INTERVAL_MS);
     info!("Press Ctrl+C to exit");
     info!("═══════════════════════════════════════════════════════════\n");
 
@@ -66,15 +58,13 @@ async fn main() -> anyhow::Result<()> {
             info!("Connecting to Vest...");
             let mut adapter = VestAdapter::new(config);
             match adapter.connect().await {
-                Ok(()) => {
-                    match adapter.subscribe_orderbook(&vest_pair).await {
-                        Ok(()) => {
-                            info!("✅ Vest connected and subscribed to {}", vest_pair);
-                            vest = Some(adapter);
-                        }
-                        Err(e) => warn!("⚠️  Vest subscription failed: {}", e),
+                Ok(()) => match adapter.subscribe_orderbook(&vest_pair).await {
+                    Ok(()) => {
+                        info!("✅ Vest connected and subscribed to {}", vest_pair);
+                        vest = Some(adapter);
                     }
-                }
+                    Err(e) => warn!("⚠️  Vest subscription failed: {}", e),
+                },
                 Err(e) => warn!("⚠️  Vest connection failed: {}", e),
             }
         }
@@ -88,15 +78,13 @@ async fn main() -> anyhow::Result<()> {
             info!("Connecting to Paradex...");
             let mut adapter = ParadexAdapter::new(config);
             match adapter.connect().await {
-                Ok(()) => {
-                    match adapter.subscribe_orderbook(&paradex_pair).await {
-                        Ok(()) => {
-                            info!("✅ Paradex connected and subscribed to {}", paradex_pair);
-                            paradex = Some(adapter);
-                        }
-                        Err(e) => warn!("⚠️  Paradex subscription failed: {}", e),
+                Ok(()) => match adapter.subscribe_orderbook(&paradex_pair).await {
+                    Ok(()) => {
+                        info!("✅ Paradex connected and subscribed to {}", paradex_pair);
+                        paradex = Some(adapter);
                     }
-                }
+                    Err(e) => warn!("⚠️  Paradex subscription failed: {}", e),
+                },
                 Err(e) => warn!("⚠️  Paradex connection failed: {}", e),
             }
         }
@@ -110,7 +98,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!("\n🚀 Starting live monitoring...\n");
-    info!("{:<12} {:<12} {:>12} {:>12}", "EXCHANGE", "SYMBOL", "BID", "ASK");
+    info!(
+        "{:<12} {:<12} {:>12} {:>12}",
+        "EXCHANGE", "SYMBOL", "BID", "ASK"
+    );
     info!("{}", "─".repeat(52));
 
     // Main loop
@@ -120,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
                 info!("\n\n🛑 Shutdown signal received. Disconnecting...");
                 break;
             }
-            _ = tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)) => {
+            _ = tokio::time::sleep(Duration::from_millis(DISPLAY_POLL_INTERVAL_MS)) => {
                 // Get Vest orderbook (sync from shared storage first)
                 let vest_ob = if let Some(ref mut adapter) = vest {
                     adapter.sync_orderbooks().await;

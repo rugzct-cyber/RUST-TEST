@@ -13,19 +13,18 @@
 //! - VEST_PRIMARY_ADDR, VEST_PRIMARY_KEY, VEST_SIGNING_KEY, VEST_ACCOUNT_GROUP
 //! - VEST_PRODUCTION=true (for mainnet)
 //!
-//! # Logging (Story 5.1)
+//! # Logging
 //! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
 use std::env;
-use tracing::{info, error};
+use tracing::{error, info};
 use uuid::Uuid;
 
 use hft_bot::adapters::{
-    vest::{VestAdapter, VestConfig},
     traits::ExchangeAdapter,
     types::{OrderRequest, OrderSide, OrderType, TimeInForce},
+    vest::{VestAdapter, VestConfig},
 };
-use hft_bot::config;
 
 /// Trading pair for Vest
 const VEST_PAIR: &str = "BTC-PERP";
@@ -35,11 +34,8 @@ const ORDER_USD_SIZE: f64 = 10.0;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load environment variables
-    dotenvy::dotenv().ok();
-    
-    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
-    config::init_logging();
+    // Shared init (dotenv + logging only, no config.yaml needed)
+    hft_bot::bin_utils::boot_minimal();
 
     info!("═══════════════════════════════════════════════════════════");
     info!("⚠️  HFT Bot - ORDER PLACEMENT TEST (MAINNET)");
@@ -118,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     // NEW: Test Leverage APIs
     // =========================================================================
     info!("\n⚙️  Testing Leverage APIs...");
-    
+
     // Get current leverage
     match adapter.get_leverage(VEST_PAIR).await {
         Ok(Some(lev)) => info!("   Current leverage: {}x", lev),
@@ -148,7 +144,10 @@ async fn main() -> anyhow::Result<()> {
                 let size = pos.size.as_deref().unwrap_or("0");
                 let entry = pos.entry_price.as_deref().unwrap_or("?");
                 let pnl = pos.unrealized_pnl.as_deref().unwrap_or("0");
-                info!("   {} | Size: {} | Entry: ${} | PnL: ${}", symbol, size, entry, pnl);
+                info!(
+                    "   {} | Size: {} | Entry: ${} | PnL: ${}",
+                    symbol, size, entry, pnl
+                );
             }
         }
         Err(e) => info!("   ⚠️ Get positions error: {}", e),
@@ -175,33 +174,36 @@ async fn main() -> anyhow::Result<()> {
     // Create MARKET order request (taker order - executes immediately)
     // For market BUY, use limit price ABOVE ask to allow slippage
     let buy_limit_price = best_ask * 1.005; // 0.5% slippage tolerance
-    
+
     let order = OrderRequest {
         client_order_id: client_order_id.clone(),
         symbol: VEST_PAIR.to_string(),
         side: OrderSide::Buy,
         order_type: OrderType::Market, // MARKET order = taker
-        price: Some(buy_limit_price), // Allow 5% slippage up
+        price: Some(buy_limit_price),  // Allow 5% slippage up
         quantity: btc_quantity,
         time_in_force: TimeInForce::Ioc, // Immediate or Cancel for market orders
-        reduce_only: false, // Opening a new position
+        reduce_only: false,              // Opening a new position
     };
 
     // Confirm before placing
     info!("\n⚠️  ABOUT TO PLACE REAL ORDER ON MAINNET!");
     info!("   Press Ctrl+C within 5 seconds to cancel...\n");
-    
+
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
     // Place the BUY order using PRE-SIGNED method (opening long)
     info!("🚀 Placing BUY order using PRE-SIGNING (opening long)...");
-    
+
     // Step 1: Pre-sign (this can be done in advance while waiting for opportunity)
     let sign_start = std::time::Instant::now();
     let presigned = match adapter.pre_sign_order(&order).await {
         Ok(p) => {
             let sign_elapsed = sign_start.elapsed();
-            info!("   ⏱️  Pre-sign time: {:.2}ms", sign_elapsed.as_secs_f64() * 1000.0);
+            info!(
+                "   ⏱️  Pre-sign time: {:.2}ms",
+                sign_elapsed.as_secs_f64() * 1000.0
+            );
             p
         }
         Err(e) => {
@@ -210,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    
+
     // Step 2: Send pre-signed order (the fast part)
     let send_start = std::time::Instant::now();
     match adapter.send_presigned_order(presigned).await {
@@ -225,7 +227,10 @@ async fn main() -> anyhow::Result<()> {
                 info!("   Avg Price: ${:.2}", avg);
             }
             let send_elapsed = send_start.elapsed();
-            info!("   ⏱️  Send time (without signing): {:.2}ms", send_elapsed.as_secs_f64() * 1000.0);
+            info!(
+                "   ⏱️  Send time (without signing): {:.2}ms",
+                send_elapsed.as_secs_f64() * 1000.0
+            );
             info!("═══════════════════════════════════════════════════════════");
 
             // Show positions after BUY (should show the new position)
@@ -240,7 +245,10 @@ async fn main() -> anyhow::Result<()> {
                         let size = pos.size.as_deref().unwrap_or("0");
                         let entry = pos.entry_price.as_deref().unwrap_or("?");
                         let pnl = pos.unrealized_pnl.as_deref().unwrap_or("0");
-                        info!("   ✅ {} | Size: {} | Entry: ${} | PnL: ${}", symbol, size, entry, pnl);
+                        info!(
+                            "   ✅ {} | Size: {} | Entry: ${} | PnL: ${}",
+                            symbol, size, entry, pnl
+                        );
                     }
                 }
                 Err(e) => info!("   ⚠️ Get positions error: {}", e),
@@ -252,18 +260,18 @@ async fn main() -> anyhow::Result<()> {
 
             // Now close the position with a SELL order (same quantity)
             info!("\n🔄 Placing SELL order (closing position)...");
-            
+
             // For market SELL, use a limit price LOWER than best_bid to allow for slippage
             // Vest rejects if executed price < limitPrice for sells
             let sell_limit_price = best_bid * 0.995; // 0.5% slippage tolerance
-            
+
             let close_order = OrderRequest {
                 client_order_id: format!("close-{}", &Uuid::new_v4().to_string()[..8]),
                 symbol: VEST_PAIR.to_string(),
                 side: OrderSide::Sell, // SELL to close long position
                 order_type: OrderType::Market,
                 price: Some(sell_limit_price), // Allow 1% slippage
-                quantity: btc_quantity, // Same quantity to fully close
+                quantity: btc_quantity,        // Same quantity to fully close
                 time_in_force: TimeInForce::Ioc,
                 reduce_only: false, // Vest rejects reduce_only - use correct side+qty instead
             };
@@ -276,7 +284,10 @@ async fn main() -> anyhow::Result<()> {
                     info!("═══════════════════════════════════════════════════════════");
                     info!("   Order ID: {}", close_response.order_id);
                     info!("   Status: {:?}", close_response.status);
-                    info!("   ⏱️  Execution time: {:.2}ms", sell_elapsed.as_secs_f64() * 1000.0);
+                    info!(
+                        "   ⏱️  Execution time: {:.2}ms",
+                        sell_elapsed.as_secs_f64() * 1000.0
+                    );
                     info!("═══════════════════════════════════════════════════════════");
                     info!("\n🎉 Round-trip trade complete!");
                 }

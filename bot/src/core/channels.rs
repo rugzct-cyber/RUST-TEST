@@ -2,22 +2,21 @@
 //!
 //! Minimal inter-task communication without complex dependencies.
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::adapters::Orderbook;
 
 /// Type alias for shared orderbooks used across all modules
-/// 
+///
 /// Single source of truth — imported by adapters, runtime, and monitoring.
 pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
-
 
 // Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
 pub use super::spread::SpreadDirection;
 
-// Import OrderbookUpdate for orderbook streaming channel (Story 1.3)
+// Import OrderbookUpdate for orderbook streaming channel
 use crate::adapters::types::OrderbookUpdate;
 
 /// Default channel capacity for bounded channels
@@ -46,19 +45,17 @@ pub struct SpreadOpportunity {
     pub dex_b_bid: f64,
 }
 
-
-
 /// Bundle of all inter-task communication channels
 #[derive(Debug)]
 pub struct ChannelBundle {
     /// SpreadCalculator -> Executor: spread opportunities
     pub opportunity_tx: mpsc::Sender<SpreadOpportunity>,
     pub opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
-    
-    /// Adapters -> SpreadCalculator: orderbook updates (Story 1.3)
+
+    /// Adapters -> SpreadCalculator: orderbook updates
     pub orderbook_tx: mpsc::Sender<OrderbookUpdate>,
     pub orderbook_rx: mpsc::Receiver<OrderbookUpdate>,
-    
+
     /// Shutdown broadcast: main -> all tasks
     pub shutdown_tx: broadcast::Sender<()>,
 }
@@ -68,7 +65,7 @@ impl ChannelBundle {
         let (opportunity_tx, opportunity_rx) = mpsc::channel(capacity);
         let (orderbook_tx, orderbook_rx) = mpsc::channel(capacity);
         let (shutdown_tx, _) = broadcast::channel(1);
-        
+
         Self {
             opportunity_tx,
             opportunity_rx,
@@ -77,7 +74,7 @@ impl ChannelBundle {
             shutdown_tx,
         }
     }
-    
+
     pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
         self.shutdown_tx.subscribe()
     }
@@ -88,7 +85,6 @@ impl Default for ChannelBundle {
         Self::new(DEFAULT_CHANNEL_CAPACITY)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -106,7 +102,7 @@ mod tests {
     async fn test_shutdown_signal() {
         let bundle = ChannelBundle::default();
         let mut rx = bundle.subscribe_shutdown();
-        
+
         assert!(bundle.shutdown_tx.send(()).is_ok());
         assert!(rx.recv().await.is_ok());
     }
@@ -134,7 +130,7 @@ mod tests {
         // Receive and verify
         let received = rx.recv().await.unwrap();
         assert_eq!(received.symbol, "BTC-PERP");
-        assert_eq!(received.exchange, "vest"); // Story 1.4: Verify exchange field
+        assert_eq!(received.exchange, "vest"); // Verify exchange field
         assert_eq!(received.orderbook.bids.len(), 1);
         assert_eq!(received.orderbook.asks.len(), 1);
         assert_eq!(received.orderbook.bids[0].price, 100.0);

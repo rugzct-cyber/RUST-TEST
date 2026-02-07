@@ -1,7 +1,7 @@
 //! Shared test utilities for adapter testing
 //!
 //! Provides a configurable `TestMockAdapter` that consolidates duplicated mock
-//! implementations from `traits.rs` and `execution.rs` test modules (CR-4).
+//! implementations from `traits.rs` and `execution.rs` test modules.
 
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -11,10 +11,10 @@ use std::sync::Arc;
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
 use crate::adapters::types::{
-    Orderbook, OrderRequest, OrderResponse, OrderSide, OrderStatus, PositionInfo,
+    OrderRequest, OrderResponse, OrderSide, OrderStatus, Orderbook, PositionInfo,
 };
 
-/// Unified mock adapter for testing — replaces per-module duplicates (CR-4)
+/// Unified mock adapter for testing — replaces per-module duplicates
 ///
 /// Configurable to support both connection-state tests (stale flag, reconnect
 /// tracking, orderbook storage) and execution tests (should_fail, order counting).
@@ -91,7 +91,8 @@ impl ExchangeAdapter for TestMockAdapter {
 
     async fn subscribe_orderbook(&mut self, symbol: &str) -> ExchangeResult<()> {
         self.subscriptions.push(symbol.to_string());
-        self.orderbooks.insert(symbol.to_string(), Orderbook::default());
+        self.orderbooks
+            .insert(symbol.to_string(), Orderbook::default());
         Ok(())
     }
 

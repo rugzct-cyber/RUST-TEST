@@ -88,9 +88,7 @@ impl BotConfig {
     pub fn validate(&self) -> Result<(), AppError> {
         // Rule: bot ID cannot be empty
         if self.id.trim().is_empty() {
-            return Err(AppError::Config(
-                "Bot ID cannot be empty".to_string()
-            ));
+            return Err(AppError::Config("Bot ID cannot be empty".to_string()));
         }
 
         // Rule: spread values must be in valid range (0% to 100%)
@@ -155,7 +153,6 @@ impl BotConfig {
     }
 }
 
-
 /// Root application configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -169,7 +166,7 @@ impl AppConfig {
         // Rule: At least one bot must be configured
         if self.bots.is_empty() {
             return Err(AppError::Config(
-                "Configuration must contain at least one bot".to_string()
+                "Configuration must contain at least one bot".to_string(),
             ));
         }
 
@@ -177,8 +174,6 @@ impl AppConfig {
         for bot in &self.bots {
             bot.validate()?;
         }
-
-
 
         Ok(())
     }
@@ -188,8 +183,6 @@ impl AppConfig {
         Arc::new(RwLock::new(self))
     }
 }
-
-
 
 // ============================================================================
 // Tests
@@ -218,34 +211,38 @@ mod tests {
         assert!(bot.validate().is_ok());
     }
 
-
-
     #[test]
     fn test_same_dex_fails() {
         let mut bot = create_valid_bot_config();
         bot.dex_a = Dex::Vest;
         bot.dex_b = Dex::Vest;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("dex_a and dex_b cannot be the same"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("dex_a and dex_b cannot be the same"));
     }
 
     #[test]
     fn test_leverage_too_low_fails() {
         let mut bot = create_valid_bot_config();
         bot.leverage = 0;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("leverage must be 1-100"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("leverage must be 1-100"));
     }
 
     #[test]
     fn test_leverage_too_high_fails() {
         let mut bot = create_valid_bot_config();
         bot.leverage = 101;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
     }
@@ -254,17 +251,20 @@ mod tests {
     fn test_position_size_zero_fails() {
         let mut bot = create_valid_bot_config();
         bot.position_size = 0.0;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("position_size must be > 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("position_size must be > 0"));
     }
 
     #[test]
     fn test_position_size_negative_fails() {
         let mut bot = create_valid_bot_config();
         bot.position_size = -0.001;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
     }
@@ -306,31 +306,40 @@ bots:
     fn test_empty_bot_id_fails() {
         let mut bot = create_valid_bot_config();
         bot.id = "".to_string();
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Bot ID cannot be empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Bot ID cannot be empty"));
     }
 
     #[test]
     fn test_whitespace_only_bot_id_fails() {
         let mut bot = create_valid_bot_config();
         bot.id = "   ".to_string();
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Bot ID cannot be empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Bot ID cannot be empty"));
     }
 
     #[test]
     fn test_negative_spread_entry_fails() {
         let mut bot = create_valid_bot_config();
         bot.spread_entry = -0.30;
-        bot.spread_exit = -0.50;  // Still less than entry, but both negative
-        
+        bot.spread_exit = -0.50; // Still less than entry, but both negative
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_entry must be > 0 and < 100%"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("spread_entry must be > 0 and < 100%"));
     }
 
     #[test]
@@ -338,18 +347,19 @@ bots:
         // Negative spread_exit is now VALID - allows profit-taking when spread inverts
         let mut bot = create_valid_bot_config();
         bot.spread_entry = 0.30;
-        bot.spread_exit = -0.05;  // Exit when spread >= -0.05% (profit-taking)
-        
+        bot.spread_exit = -0.05; // Exit when spread >= -0.05% (profit-taking)
+
         let result = bot.validate();
-        assert!(result.is_ok(), "Negative spread_exit should be valid for profit-taking");
+        assert!(
+            result.is_ok(),
+            "Negative spread_exit should be valid for profit-taking"
+        );
     }
 
     #[test]
     fn test_empty_bots_array_fails() {
-        let config = AppConfig {
-            bots: vec![],
-        };
-        
+        let config = AppConfig { bots: vec![] };
+
         let result = config.validate();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("at least one bot"));
@@ -357,10 +367,8 @@ bots:
 
     #[test]
     fn test_into_shared() {
-        let config = AppConfig {
-            bots: vec![],
-        };
-        
+        let config = AppConfig { bots: vec![] };
+
         let shared = config.into_shared();
         // Verify it compiles and creates Arc<RwLock<AppConfig>>
         assert!(Arc::strong_count(&shared) == 1);
@@ -370,49 +378,61 @@ bots:
     fn test_spread_entry_zero_fails() {
         let mut bot = create_valid_bot_config();
         bot.spread_entry = 0.0;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_entry must be > 0 and < 100%"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("spread_entry must be > 0 and < 100%"));
     }
 
     #[test]
     fn test_spread_entry_above_100_fails() {
         let mut bot = create_valid_bot_config();
         bot.spread_entry = 100.5;
-        bot.spread_exit = 0.05;  // Valid exit
-        
+        bot.spread_exit = 0.05; // Valid exit
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_entry must be > 0 and < 100%"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("spread_entry must be > 0 and < 100%"));
     }
 
     #[test]
     fn test_spread_exit_above_100_fails() {
         let mut bot = create_valid_bot_config();
-        bot.spread_entry = 0.30;  // Valid entry
+        bot.spread_entry = 0.30; // Valid entry
         bot.spread_exit = 150.0;
-        
+
         let result = bot.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("spread_exit must be between -100% and 100%"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("spread_exit must be between -100% and 100%"));
     }
 
     #[test]
     fn test_spread_thresholds_at_boundaries() {
         let mut bot = create_valid_bot_config();
-        bot.spread_entry = 99.99;  // Just below 100%
-        bot.spread_exit = 0.01;    // Just above 0%
-        
+        bot.spread_entry = 99.99; // Just below 100%
+        bot.spread_exit = 0.01; // Just above 0%
+
         let result = bot.validate();
-        assert!(result.is_ok(), "Valid boundary values should pass validation");
+        assert!(
+            result.is_ok(),
+            "Valid boundary values should pass validation"
+        );
     }
 
     #[test]
     fn test_nan_spread_entry_fails() {
         let mut bot = create_valid_bot_config();
         bot.spread_entry = f64::NAN;
-        
+
         let result = bot.validate();
         assert!(result.is_err(), "NaN spread_entry should fail validation");
     }
@@ -421,17 +441,23 @@ bots:
     fn test_infinity_position_size_fails() {
         let mut bot = create_valid_bot_config();
         bot.position_size = f64::INFINITY;
-        
+
         let result = bot.validate();
-        assert!(result.is_err(), "Infinity position_size should fail validation");
+        assert!(
+            result.is_err(),
+            "Infinity position_size should fail validation"
+        );
     }
 
     #[test]
     fn test_neg_infinity_spread_exit_fails() {
         let mut bot = create_valid_bot_config();
         bot.spread_exit = f64::NEG_INFINITY;
-        
+
         let result = bot.validate();
-        assert!(result.is_err(), "NEG_INFINITY spread_exit should fail validation");
+        assert!(
+            result.is_err(),
+            "NEG_INFINITY spread_exit should fail validation"
+        );
     }
 }

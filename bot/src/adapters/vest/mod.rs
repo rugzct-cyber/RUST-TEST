@@ -9,14 +9,14 @@
 //! - `signing` - EIP-712 signing logic
 //! - `adapter` - Main VestAdapter implementation
 
-mod config;
-mod types;
-mod signing;
 mod adapter;
+mod config;
+mod signing;
+mod types;
 
 // Re-export public items
+pub use adapter::{SharedOrderbooks, VestAdapter};
 pub use config::VestConfig;
-pub use types::{VestDepthMessage, VestDepthData, VestPositionData, PreSignedOrder};
-pub use adapter::{VestAdapter, SharedOrderbooks};
+pub use types::{PreSignedOrder, VestDepthData, VestDepthMessage, VestPositionData};
 
 // Test constants available in config module for test use

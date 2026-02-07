@@ -1,44 +1,44 @@
 //! Simple script to display Paradex wallet address
 //! Derives the Starknet account address from private key
 //!
-//! # Logging (Story 5.1)
+//! # Logging
 //! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 
 use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use hft_bot::adapters::traits::ExchangeAdapter;
 use hft_bot::config;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    
-    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+
+    // Initialize logging (JSON/Pretty configurable via LOG_FORMAT)
     config::init_logging();
-    
-    println!("🔐 Paradex Wallet Address Derivation");
-    println!("════════════════════════════════════════════");
-    
+
+    info!("🔐 Paradex Wallet Address Derivation");
+    info!("════════════════════════════════════════════");
+
     // Load config
     let config = ParadexConfig::from_env()?;
-    println!("\n.env private key: {}...{}", 
-        &config.private_key[..10], 
-        &config.private_key[config.private_key.len()-4..]
-    );
-    
+    // Security: only show last 4 characters of private key
+    let key_suffix = &config.private_key[config.private_key.len().saturating_sub(4)..];
+    info!(key_hint = %format!("***...{}", key_suffix), "Private key loaded from .env");
+
     // Create adapter and connect (this will derive the address and log signing details)
     let mut adapter = ParadexAdapter::new(config);
-    
-    println!("\n📡 Connecting to derive address from system config...\n");
+
+    info!("📡 Connecting to derive address from system config...");
     match adapter.connect().await {
         Ok(()) => {
-            println!("\n✅ Connected!");
+            info!("✅ Connected!");
         }
         Err(e) => {
-            println!("\n❌ Error: {}", e);
+            error!(error = %e, "❌ Connection failed");
         }
     }
-    
+
     let _ = adapter.disconnect().await;
-    
+
     Ok(())
 }

@@ -114,33 +114,40 @@ pub struct ParadexOrderbookLevel {
 
 impl ParadexOrderbookData {
     /// Convert to Orderbook type, taking only top 10 levels per side
-    /// 
+    ///
     /// If `usdc_rate` is provided, prices are converted from USD to USDC:
     /// `usdc_price = usd_price / usdc_rate`
-    /// 
+    ///
     /// Example: If USDC rate is 0.9997, then 42000 USD = 42012.60 USDC
     pub fn to_orderbook(&self, usdc_rate: Option<f64>) -> ExchangeResult<Orderbook> {
         let mut bids: Vec<OrderbookLevel> = Vec::new();
         let mut asks: Vec<OrderbookLevel> = Vec::new();
-        
+
         for level in &self.inserts {
-            let mut price = level.price.parse::<f64>().map_err(|e| 
-                ExchangeError::InvalidResponse(format!("Invalid price: {}", e)))?;
-            
+            let mut price = level
+                .price
+                .parse::<f64>()
+                .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid price: {}", e)))?;
+
             // Convert USD → USDC if rate provided and within sane bounds
             if let Some(rate) = usdc_rate {
                 if rate <= 0.0 || rate > 2.0 {
-                    tracing::warn!("Paradex: suspicious USD/USDC rate {:.6}, skipping conversion", rate);
+                    tracing::warn!(
+                        "Paradex: suspicious USD/USDC rate {:.6}, skipping conversion",
+                        rate
+                    );
                 } else {
                     price = price / rate;
                 }
             }
-            
-            let quantity = level.size.parse::<f64>().map_err(|e| 
-                ExchangeError::InvalidResponse(format!("Invalid quantity: {}", e)))?;
-            
+
+            let quantity = level
+                .size
+                .parse::<f64>()
+                .map_err(|e| ExchangeError::InvalidResponse(format!("Invalid quantity: {}", e)))?;
+
             let book_level = OrderbookLevel::new(price, quantity);
-            
+
             match level.side.to_uppercase().as_str() {
                 "BID" | "BUY" => bids.push(book_level),
                 "ASK" | "SELL" => asks.push(book_level),
@@ -149,12 +156,20 @@ impl ParadexOrderbookData {
                 }
             }
         }
-        
+
         // Sort: bids descending (best bid = highest price first),
         //        asks ascending  (best ask = lowest price first)
-        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
-        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
-        
+        bids.sort_by(|a, b| {
+            b.price
+                .partial_cmp(&a.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        asks.sort_by(|a, b| {
+            a.price
+                .partial_cmp(&b.price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         // Take only top N levels after sorting
         let depth = crate::adapters::types::MAX_ORDERBOOK_DEPTH;
         if bids.len() > depth || asks.len() > depth {
@@ -168,14 +183,14 @@ impl ParadexOrderbookData {
         }
         bids.truncate(depth);
         asks.truncate(depth);
-        
+
         let orderbook = Orderbook {
             bids,
             asks,
             timestamp: self.last_updated_at,
         };
 
-        // Story 1.3: DEBUG log when orderbook is parsed
+        // DEBUG log when orderbook is parsed
         tracing::debug!(
             exchange = "paradex",
             pair = %self.market,
@@ -254,13 +269,7 @@ pub(crate) struct ParadexErrorResponse {
     pub message: Option<String>,
 }
 
-/// Order error response (alternate format)
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)] // May be used for error parsing
-pub(crate) struct ParadexOrderError {
-    pub code: i32,
-    pub message: String,
-}
+
 
 /// Position data from Paradex API
 #[derive(Debug, Clone, Deserialize)]
@@ -418,15 +427,22 @@ mod tests {
         // When: Convert with USDC rate of 0.9997
         // Expected: 42000 / 0.9997 = 42012.6037811...
         let orderbook = data.to_orderbook(Some(0.9997)).unwrap();
-        
+
         // Then: Prices should be converted
         let expected_bid = 42000.0 / 0.9997;
         let expected_ask = 42010.0 / 0.9997;
-        
-        assert!((orderbook.bids[0].price - expected_bid).abs() < 0.01,
-            "Bid should be ~{:.2}, got {:.2}", expected_bid, orderbook.bids[0].price);
-        assert!((orderbook.asks[0].price - expected_ask).abs() < 0.01,
-            "Ask should be ~{:.2}, got {:.2}", expected_ask, orderbook.asks[0].price);
+
+        assert!(
+            (orderbook.bids[0].price - expected_bid).abs() < 0.01,
+            "Bid should be ~{:.2}, got {:.2}",
+            expected_bid,
+            orderbook.bids[0].price
+        );
+        assert!(
+            (orderbook.asks[0].price - expected_ask).abs() < 0.01,
+            "Ask should be ~{:.2}, got {:.2}",
+            expected_ask,
+            orderbook.asks[0].price
+        );
     }
 }
-

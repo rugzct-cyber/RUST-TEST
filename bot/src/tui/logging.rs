@@ -7,13 +7,17 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::app::{AppState, LogEntry};
 
 /// Tracks whether DEBUG logs are enabled. Updated from AppState to avoid
-/// acquiring the lock just to check the flag (CR-17).
+/// acquiring the lock just to check the flag.
 static SHOW_DEBUG: AtomicBool = AtomicBool::new(false);
+
+/// Atomic counter for logs dropped due to lock contention.
+/// Synced into `AppState.dropped_logs_count` when the lock is next acquired.
+static DROPPED_LOGS: AtomicU64 = AtomicU64::new(0);
 
 /// Update the global DEBUG filter flag (call from event.rs when toggling).
 pub fn set_show_debug(enabled: bool) {
@@ -39,13 +43,13 @@ impl TuiLayer {
 impl<S: Subscriber> Layer<S> for TuiLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let level = event.metadata().level();
-        
-        // CR-17: Filter DEBUG before acquiring lock
+
+        // Filter DEBUG before acquiring lock
         if *level == tracing::Level::DEBUG && !SHOW_DEBUG.load(Ordering::Relaxed) {
             return;
         }
-        
-        // CR-18: Extract message + key structured fields
+
+        // Extract message + key structured fields
         let mut message = String::new();
         let mut extra_fields = Vec::new();
         let mut visitor = MessageVisitor {
@@ -53,34 +57,36 @@ impl<S: Subscriber> Layer<S> for TuiLayer {
             extra_fields: &mut extra_fields,
         };
         event.record(&mut visitor);
-        
+
         // Append structured fields to message for richer TUI display
         if !extra_fields.is_empty() {
             message.push_str(" [");
             message.push_str(&extra_fields.join(", "));
             message.push(']');
         }
-        
+
         let level_str = level.to_string();
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
-        
+
         let entry = LogEntry {
             timestamp,
             level: level_str,
             message,
         };
-        
-        // CR-16: Count dropped logs instead of silent loss
+
+        // Count dropped logs instead of silent loss
         match self.app_state.try_lock() {
             Ok(mut state) => {
+                // Sync any previously dropped log count into AppState
+                let dropped = DROPPED_LOGS.swap(0, Ordering::Relaxed);
+                if dropped > 0 {
+                    state.dropped_logs_count += dropped;
+                }
                 state.push_log(entry);
             }
             Err(_) => {
-                // Lock contended — increment dropped counter via another try
-                // (best effort, acceptable to lose this increment too)
-                if let Ok(mut state) = self.app_state.try_lock() {
-                    state.dropped_logs_count += 1;
-                }
+                // Lock contended — atomically count the drop (always succeeds)
+                DROPPED_LOGS.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -97,15 +103,17 @@ impl<'a> tracing::field::Visit for MessageVisitor<'a> {
         if field.name() == "message" {
             *self.message = format!("{:?}", value).trim_matches('"').to_string();
         } else if matches!(field.name(), "event_type" | "pair" | "direction" | "error") {
-            self.extra_fields.push(format!("{}={:?}", field.name(), value));
+            self.extra_fields
+                .push(format!("{}={:?}", field.name(), value));
         }
     }
-    
+
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             *self.message = value.to_string();
         } else if matches!(field.name(), "event_type" | "pair" | "direction" | "error") {
-            self.extra_fields.push(format!("{}={}", field.name(), value));
+            self.extra_fields
+                .push(format!("{}={}", field.name(), value));
         }
     }
 }
@@ -113,17 +121,21 @@ impl<'a> tracing::field::Visit for MessageVisitor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_tui_layer_creation() {
         let state = Arc::new(Mutex::new(AppState::new(
-            "BTC".into(), 0.1, 0.05, 0.001, 10,
+            "BTC".into(),
+            0.1,
+            0.05,
+            0.001,
+            10,
         )));
         let layer = TuiLayer::new(Arc::clone(&state));
         // Layer created successfully - verify reference count
         assert_eq!(Arc::strong_count(&layer.app_state), 2);
     }
-    
+
     #[test]
     fn test_log_entry_creation() {
         let entry = LogEntry {

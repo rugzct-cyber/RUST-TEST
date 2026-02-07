@@ -5,7 +5,7 @@
 //! This script connects to Vest and polls GET /account every 5 seconds,
 //! displaying the raw entry price and all position details.
 //!
-//! # Logging (Story 5.1)
+//! # Logging
 //! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
 //! - For human-readable output, set LOG_FORMAT=pretty
 
@@ -14,31 +14,29 @@ use tokio::time::sleep;
 
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::ExchangeAdapter;
-use hft_bot::config;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env file
-    dotenvy::dotenv().ok();
-    
-    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
-    config::init_logging();
+    // Shared init (dotenv + logging only, no config.yaml needed)
+    hft_bot::bin_utils::boot_minimal();
 
-    info!(event_type = "TEST_START", "=== Vest Account Test Script ===");
-    
+    info!(
+        event_type = "TEST_START",
+        "=== Vest Account Test Script ==="
+    );
+
     // Create Vest adapter from .env
-    let vest_config = VestConfig::from_env()
-        .expect("VEST credentials must be configured in .env");
-    
+    let vest_config = VestConfig::from_env().expect("VEST credentials must be configured in .env");
+
     let mut vest_adapter = VestAdapter::new(vest_config);
-    
+
     info!("Connecting to Vest...");
     vest_adapter.connect().await?;
     info!("Connected to Vest");
-    
+
     info!("Polling GET /account every 5 seconds. Press Ctrl+C to stop.");
-    
+
     loop {
         match vest_adapter.get_account_info().await {
             Ok(account) => {
@@ -53,13 +51,13 @@ async fn main() -> anyhow::Result<()> {
                         let is_long = pos.is_long;
                         let unrealized_pnl = pos.unrealized_pnl.as_deref().unwrap_or("0");
                         let liquidation_price = pos.liquidation_price.as_deref().unwrap_or("null");
-                        
+
                         let side = match is_long {
                             Some(true) => "LONG",
-                            Some(false) => "SHORT", 
+                            Some(false) => "SHORT",
                             None => "?",
                         };
-                        
+
                         info!(
                             event_type = "POSITION",
                             symbol = %symbol,
@@ -78,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!(error = %e, "Error fetching account");
             }
         }
-        
+
         sleep(Duration::from_secs(5)).await;
     }
 }

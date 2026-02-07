@@ -3,8 +3,7 @@
 //! Provides TLS-enabled WebSocket connection utilities used by all adapters.
 
 use tokio_tungstenite::{
-    connect_async_tls_with_config,
-    Connector, MaybeTlsStream, WebSocketStream,
+    connect_async_tls_with_config, Connector, MaybeTlsStream, WebSocketStream,
 };
 
 use crate::adapters::errors::ExchangeError;
@@ -29,14 +28,10 @@ pub async fn connect_tls(url: &str) -> Result<TlsWebSocketStream, ExchangeError>
         .build()
         .map_err(|e| ExchangeError::ConnectionFailed(format!("TLS error: {}", e)))?;
 
-    let (ws_stream, _response) = connect_async_tls_with_config(
-        url,
-        None,
-        false,
-        Some(Connector::NativeTls(tls))
-    )
-    .await
-    .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
+    let (ws_stream, _response) =
+        connect_async_tls_with_config(url, None, false, Some(Connector::NativeTls(tls)))
+            .await
+            .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
 
     Ok(ws_stream)
 }

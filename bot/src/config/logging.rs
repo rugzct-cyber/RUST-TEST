@@ -1,6 +1,6 @@
 //! Logging configuration module for HFT Bot
 //!
-//! Story 5.1: Provides configurable JSON/Pretty/TUI logging output
+//! Provides configurable JSON/Pretty/TUI logging output
 //!
 //! # Usage
 //! ```rust
@@ -15,7 +15,7 @@
 use tracing_subscriber::EnvFilter;
 
 /// Check if TUI mode is requested
-/// 
+///
 /// Returns true if LOG_FORMAT=tui, false otherwise.
 /// When TUI mode is requested, caller should initialize logging manually
 /// with the TuiLayer.
@@ -35,8 +35,7 @@ pub fn is_tui_mode() -> bool {
 /// Also respects `RUST_LOG` for log level filtering (default: `info`)
 pub fn init_logging() {
     let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".to_string());
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     match log_format.as_str() {
         "pretty" => {
@@ -65,7 +64,6 @@ pub fn init_logging() {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -114,11 +112,10 @@ mod tests {
     #[test]
     fn test_env_filter_fallback() {
         use tracing_subscriber::EnvFilter;
-        
+
         // When RUST_LOG is not set, should create a valid filter with default
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info"));
-        
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
         // Filter should be valid (not panic)
         assert!(format!("{:?}", filter).contains("info") || !format!("{:?}", filter).is_empty());
     }

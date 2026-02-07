@@ -4,8 +4,8 @@
 //! orderbook representation and order management.
 
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // =============================================================================
@@ -27,7 +27,7 @@ pub fn next_subscription_id() -> u64 {
 use std::time::Duration;
 
 // =============================================================================
-// HTTP Client Constants (Story 7.2)
+// HTTP Client Constants
 // =============================================================================
 
 /// HTTP request timeout (seconds)
@@ -41,7 +41,7 @@ const HTTP_TCP_KEEPALIVE_SECS: u64 = 30;
 
 /// Create an optimized HTTP client for HFT operations
 ///
-/// Connection pooling configured for latency optimization (Story 7.2)
+/// Connection pooling configured for latency optimization
 pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -71,8 +71,11 @@ pub const VEST_RECV_WINDOW_MS: u64 = 60_000;
 /// WebSocket ping / health-check interval (seconds)
 pub const WS_PING_INTERVAL_SECS: u64 = 30;
 
+/// Threshold in milliseconds after which adapter data is considered stale (30 seconds)
+pub const STALE_THRESHOLD_MS: u64 = 30_000;
+
 // =============================================================================
-// Connection Health Types (Story 2.6)
+// Connection Health Types
 // =============================================================================
 
 /// Connection state for WebSocket health monitoring
@@ -88,7 +91,7 @@ pub enum ConnectionState {
 }
 
 /// Shared connection health state for tracking WebSocket health
-/// 
+///
 /// This struct contains atomic/lockable fields that can be shared
 /// across tasks (heartbeat task, reader loop, adapter methods).
 #[derive(Debug)]
@@ -110,7 +113,7 @@ impl ConnectionHealth {
             last_data: Arc::new(AtomicU64::new(0)),
         }
     }
-    
+
     /// Clone the Arc references for sharing with other tasks
     pub fn clone_refs(&self) -> Self {
         Self {
@@ -136,7 +139,6 @@ impl Clone for ConnectionHealth {
 // =============================================================================
 // Orderbook Types
 // =============================================================================
-
 
 /// A single level in the orderbook (price + quantity)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -286,7 +288,14 @@ impl OrderRequest {
         price: f64,
         quantity: f64,
     ) -> Self {
-        Self::limit(client_order_id, symbol, side, price, quantity, TimeInForce::Ioc)
+        Self::limit(
+            client_order_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            TimeInForce::Ioc,
+        )
     }
 }
 
@@ -295,13 +304,13 @@ impl OrderRequest {
 // =============================================================================
 
 /// Builder for OrderRequest with sensible defaults for HFT
-/// 
+///
 /// Defaults:
 /// - `time_in_force`: `TimeInForce::Ioc` (Immediate-or-Cancel)
 /// - `order_type`: `OrderType::Limit`
 /// - `reduce_only`: `false`
 /// - `client_order_id`: Empty (must be set)
-/// 
+///
 /// # Examples
 /// ```ignore
 /// let order = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
@@ -324,7 +333,7 @@ pub struct OrderBuilder {
 
 impl OrderBuilder {
     /// Create a new OrderBuilder with required fields and HFT defaults
-    /// 
+    ///
     /// Defaults:
     /// - `time_in_force`: `Ioc`
     /// - `order_type`: `Limit`
@@ -362,13 +371,13 @@ impl OrderBuilder {
     }
 
     /// Set price without changing order type
-    /// 
+    ///
     /// # Warning: Exchange-Specific Behavior
     /// This is primarily for **Vest MARKET orders** which require a `limitPrice`
     /// as slippage protection. Most exchanges don't support price on MARKET orders.
-    /// 
+    ///
     /// For standard limit orders, prefer `.limit(price)` instead.
-    /// 
+    ///
     /// # Example (Vest slippage protection)
     /// ```ignore
     /// OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
@@ -389,7 +398,7 @@ impl OrderBuilder {
     }
 
     /// Build the OrderRequest with validation
-    /// 
+    ///
     /// # Errors
     /// - `"client_order_id is required"` if client_order_id is empty
     /// - `"Limit orders require a price"` if order_type is Limit but no price set
@@ -458,10 +467,10 @@ pub struct OrderbookUpdate {
 }
 
 // =============================================================================
-// Position Types (Story 5.3 - Reconciliation)
+// Position Types
 // =============================================================================
 
-/// Position data fetched from an exchange (Story 5.3)
+/// Position data fetched from an exchange
 ///
 /// Used by the reconciliation loop to compare local state with exchange state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,7 +505,7 @@ mod tests {
         let level = OrderbookLevel::new(42150.5, 1.5);
         let json = serde_json::to_string(&level).unwrap();
         assert!(json.contains("42150.5"));
-        
+
         let deserialized: OrderbookLevel = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.price, level.price);
         assert_eq!(deserialized.quantity, level.quantity);
@@ -657,7 +666,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Connection Health Tests (Story 2.6)
+    // Connection Health Tests
     // =========================================================================
 
     #[test]
@@ -678,7 +687,7 @@ mod tests {
         let state = ConnectionState::Connected;
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("Connected"));
-        
+
         let deserialized: ConnectionState = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized, ConnectionState::Connected);
     }
@@ -690,22 +699,28 @@ mod tests {
         let state = health.state.try_read().unwrap();
         assert_eq!(*state, ConnectionState::Disconnected);
         drop(state);
-        
+
         // Initial timestamps should be 0
-        assert_eq!(health.last_pong.load(std::sync::atomic::Ordering::Relaxed), 0);
-        assert_eq!(health.last_data.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            health.last_pong.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            health.last_data.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]
     fn test_connection_health_clone_refs() {
         use std::sync::atomic::Ordering;
-        
+
         let health = ConnectionHealth::new();
         let cloned = health.clone_refs();
-        
+
         // Modify through original
         health.last_pong.store(12345, Ordering::Relaxed);
-        
+
         // Should be visible through clone (same Arc)
         assert_eq!(cloned.last_pong.load(Ordering::Relaxed), 12345);
     }
@@ -718,51 +733,58 @@ mod tests {
     }
 
     // =========================================================================
-    // Story 2.6: Heartbeat Monitoring Tests
+    // Heartbeat Monitoring Tests
     // =========================================================================
 
     #[test]
     fn test_stale_detection_threshold_30_seconds() {
         use std::sync::atomic::Ordering;
         use std::time::{SystemTime, UNIX_EPOCH};
-        
+
         let health = ConnectionHealth::new();
-        
+
         // Get current time in ms
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        
+
         // Set last_data to 31 seconds ago (should be stale)
-        health.last_data.store(now_ms.saturating_sub(31_000), Ordering::Relaxed);
-        
+        health
+            .last_data
+            .store(now_ms.saturating_sub(31_000), Ordering::Relaxed);
+
         let last_data = health.last_data.load(Ordering::Relaxed);
         let elapsed = now_ms.saturating_sub(last_data);
         const STALE_THRESHOLD_MS: u64 = 30_000;
-        
+
         assert!(elapsed > STALE_THRESHOLD_MS, "31s old data should be stale");
-        
+
         // Set last_data to 29 seconds ago (should NOT be stale)
-        health.last_data.store(now_ms.saturating_sub(29_000), Ordering::Relaxed);
+        health
+            .last_data
+            .store(now_ms.saturating_sub(29_000), Ordering::Relaxed);
         let last_data = health.last_data.load(Ordering::Relaxed);
         let elapsed = now_ms.saturating_sub(last_data);
-        
-        assert!(elapsed < STALE_THRESHOLD_MS, "29s old data should NOT be stale");
+
+        assert!(
+            elapsed < STALE_THRESHOLD_MS,
+            "29s old data should NOT be stale"
+        );
     }
 
     #[test]
     fn test_connection_state_transitions() {
         use std::sync::atomic::Ordering;
-        
+
         let health = ConnectionHealth::new();
-        
+
         // Initial state should be Disconnected
         {
             let state = health.state.try_read().unwrap();
             assert_eq!(*state, ConnectionState::Disconnected);
         }
-        
+
         // Simulate state transitions like reconnect() does
         {
             let mut state = health.state.try_write().unwrap();
@@ -772,7 +794,7 @@ mod tests {
             let state = health.state.try_read().unwrap();
             assert_eq!(*state, ConnectionState::Reconnecting);
         }
-        
+
         {
             let mut state = health.state.try_write().unwrap();
             *state = ConnectionState::Connected;
@@ -781,7 +803,7 @@ mod tests {
             let state = health.state.try_read().unwrap();
             assert_eq!(*state, ConnectionState::Connected);
         }
-        
+
         // Test that timestamps can be updated during transitions
         health.last_pong.store(12345, Ordering::Relaxed);
         health.last_data.store(67890, Ordering::Relaxed);
@@ -794,17 +816,17 @@ mod tests {
         // Test the exponential backoff formula used in reconnect()
         // Formula: min(500 * 2^attempt, 5000)
         // Expected: 500ms, 1000ms, 2000ms, 4000ms, 5000ms (capped)
-        
+
         let backoffs: Vec<u64> = (0..5)
             .map(|attempt| std::cmp::min(500 * (1u64 << attempt), 5000))
             .collect();
-        
+
         assert_eq!(backoffs[0], 500, "Attempt 0: 500ms");
         assert_eq!(backoffs[1], 1000, "Attempt 1: 1000ms");
         assert_eq!(backoffs[2], 2000, "Attempt 2: 2000ms");
         assert_eq!(backoffs[3], 4000, "Attempt 3: 4000ms");
         assert_eq!(backoffs[4], 5000, "Attempt 4: capped at 5000ms");
-        
+
         // Verify cap works for higher attempts
         let attempt_10 = std::cmp::min(500 * (1u64 << 10), 5000);
         assert_eq!(attempt_10, 5000, "High attempt should cap at 5000ms");
@@ -820,7 +842,7 @@ mod tests {
             .client_order_id("test-123")
             .limit(42000.0)
             .build();
-        
+
         assert!(order.is_ok());
         let order = order.unwrap();
         assert_eq!(order.symbol, "BTC-PERP");
@@ -838,7 +860,7 @@ mod tests {
         let result = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
             .limit(42000.0)
             .build();
-        
+
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "client_order_id is required");
     }
@@ -850,7 +872,7 @@ mod tests {
         let result = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
             .client_order_id("test-123")
             .build();
-        
+
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Limit orders require a price");
     }
@@ -861,7 +883,7 @@ mod tests {
             .client_order_id("market-456")
             .market()
             .build();
-        
+
         assert!(order.is_ok());
         let order = order.unwrap();
         assert_eq!(order.order_type, OrderType::Market);
@@ -876,7 +898,7 @@ mod tests {
             .market()
             .reduce_only()
             .build();
-        
+
         assert!(order.is_ok());
         let order = order.unwrap();
         assert!(order.reduce_only);
@@ -889,9 +911,9 @@ mod tests {
         let order = OrderBuilder::new("BTC-PERP", OrderSide::Buy, 0.1)
             .client_order_id("vest-123")
             .market()
-            .price(42100.0)  // Slippage protection price
+            .price(42100.0) // Slippage protection price
             .build();
-        
+
         assert!(order.is_ok());
         let order = order.unwrap();
         assert_eq!(order.order_type, OrderType::Market);

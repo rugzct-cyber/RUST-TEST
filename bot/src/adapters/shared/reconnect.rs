@@ -69,12 +69,15 @@ where
         let jitter = rand::random::<u64>() % 200;
         let backoff_ms = std::cmp::min(
             config.initial_delay_ms * (1u64 << attempt),
-            config.max_delay_ms
+            config.max_delay_ms,
         ) + jitter;
 
         tracing::info!(
             "{}: Reconnect attempt {} of {}, waiting {}ms...",
-            exchange_name, attempt + 1, config.max_attempts, backoff_ms
+            exchange_name,
+            attempt + 1,
+            config.max_attempts,
+            backoff_ms
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
@@ -82,13 +85,18 @@ where
         match connect_fn().await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                tracing::warn!("{}: Reconnect attempt {} failed: {}", exchange_name, attempt + 1, e);
+                tracing::warn!(
+                    "{}: Reconnect attempt {} failed: {}",
+                    exchange_name,
+                    attempt + 1,
+                    e
+                );
                 last_error = Some(e);
             }
         }
     }
 
-    Err(last_error.unwrap_or_else(||
+    Err(last_error.unwrap_or_else(|| {
         ExchangeError::ConnectionFailed("Reconnection failed after max attempts".into())
-    ))
+    }))
 }

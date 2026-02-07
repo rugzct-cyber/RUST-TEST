@@ -1,11 +1,12 @@
 //! HFT Arbitrage Bot - MVP
-//! 
+//!
 //! Minimal implementation focusing on:
 //! - Exchange adapters (Vest, Paradex)
-//! - Spread calculation with VWAP
+//! - Spread calculation engine
 //! - Entry/Exit spread differentiation
 
 pub mod adapters;
+pub mod bin_utils;
 pub mod config;
 pub mod core;
 pub mod error;

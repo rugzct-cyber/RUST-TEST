@@ -10,11 +10,13 @@ use crate::adapters::errors::{ExchangeError, ExchangeResult};
 
 /// Test private key for Starknet signing (well-known public test key)
 #[cfg(test)]
-pub const TEST_PRIVATE_KEY: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
+pub const TEST_PRIVATE_KEY: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
 
 /// Test account address
 #[cfg(test)]
-pub const TEST_ACCOUNT_ADDRESS: &str = "0x0000000000000000000000000000000000000000000000000000000000000001";
+pub const TEST_ACCOUNT_ADDRESS: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
 
 // =============================================================================
 // Configuration
@@ -34,11 +36,12 @@ pub struct ParadexConfig {
 impl ParadexConfig {
     /// Create configuration from environment variables
     pub fn from_env() -> ExchangeResult<Self> {
-        let private_key = std::env::var("PARADEX_PRIVATE_KEY")
-            .map_err(|_| ExchangeError::AuthenticationFailed("PARADEX_PRIVATE_KEY not set".into()))?;
+        let private_key = std::env::var("PARADEX_PRIVATE_KEY").map_err(|_| {
+            ExchangeError::AuthenticationFailed("PARADEX_PRIVATE_KEY not set".into())
+        })?;
         // Account address is optional - it will be derived from private key if not provided
-        let account_address = std::env::var("PARADEX_ACCOUNT_ADDRESS")
-            .unwrap_or_else(|_| "0x0".to_string()); // Placeholder, will be derived in authenticate()
+        let account_address =
+            std::env::var("PARADEX_ACCOUNT_ADDRESS").unwrap_or_else(|_| "0x0".to_string()); // Placeholder, will be derived in authenticate()
         let production = std::env::var("PARADEX_PRODUCTION")
             .map(|v| v == "true" || v == "1")
             .unwrap_or(true);
@@ -127,11 +130,17 @@ mod tests {
 
     #[test]
     fn test_paradex_config_urls() {
-        let prod_config = ParadexConfig { production: true, ..Default::default() };
+        let prod_config = ParadexConfig {
+            production: true,
+            ..Default::default()
+        };
         assert!(prod_config.rest_base_url().contains("prod"));
         assert!(prod_config.ws_base_url().contains("prod"));
-        
-        let test_config = ParadexConfig { production: false, ..Default::default() };
+
+        let test_config = ParadexConfig {
+            production: false,
+            ..Default::default()
+        };
         assert!(test_config.rest_base_url().contains("testnet"));
         assert!(test_config.ws_base_url().contains("testnet"));
     }
