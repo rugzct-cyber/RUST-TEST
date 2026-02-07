@@ -436,7 +436,6 @@ pub fn derive_account_address(
     let address = compute_starknet_address(proxy_hash, public_key, &calldata);
     
     tracing::debug!(
-        private_key_prefix = %&private_key[..std::cmp::min(10, private_key.len())],
         public_key = %format!("0x{:x}", public_key),
         derived_address = %format!("0x{:x}", address),
         "Address derivation completed"

@@ -869,18 +869,18 @@ impl VestAdapter {
             .header("xrestservermm", format!("restserver{}", self.config.account_group))
             .send()
             .await
-            .map_err(|e| ExchangeError::OrderRejected(format!("Account request failed: {}", e)))?;
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("Account request failed: {}", e)))?;
 
         let status = response.status();
         let body = response
             .text()
             .await
-            .map_err(|e| ExchangeError::OrderRejected(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
 
         tracing::debug!("Vest account response: status={}, body={}", status, body);
 
         if !status.is_success() {
-            return Err(ExchangeError::OrderRejected(format!(
+            return Err(ExchangeError::InvalidResponse(format!(
                 "Account failed ({} {}): {}",
                 status.as_u16(),
                 status,
@@ -889,7 +889,7 @@ impl VestAdapter {
         }
 
         let account: VestAccountResponse = serde_json::from_str(&body).map_err(|e| {
-            ExchangeError::OrderRejected(format!("Failed to parse account: {} - body: {}", e, body))
+            ExchangeError::InvalidResponse(format!("Failed to parse account: {} - body: {}", e, body))
         })?;
 
         Ok(account)
@@ -943,18 +943,18 @@ impl VestAdapter {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ExchangeError::OrderRejected(format!("Leverage request failed: {}", e)))?;
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("Leverage request failed: {}", e)))?;
 
         let status = response.status();
         let response_body = response
             .text()
             .await
-            .map_err(|e| ExchangeError::OrderRejected(format!("Failed to read response: {}", e)))?;
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
 
         tracing::debug!("Vest leverage response: status={}, body={}", status, response_body);
 
         if !status.is_success() {
-            return Err(ExchangeError::OrderRejected(format!(
+            return Err(ExchangeError::InvalidResponse(format!(
                 "Set leverage failed ({} {}): {}",
                 status.as_u16(),
                 status,
@@ -963,7 +963,7 @@ impl VestAdapter {
         }
 
         let leverage_response: VestLeverageResponse = serde_json::from_str(&response_body).map_err(|e| {
-            ExchangeError::OrderRejected(format!(
+            ExchangeError::InvalidResponse(format!(
                 "Failed to parse leverage response: {} - body: {}",
                 e, response_body
             ))
@@ -1122,10 +1122,12 @@ impl ExchangeAdapter for VestAdapter {
             "size": format!("{:.3}", order.quantity),  // Vest requires exactly 3 decimal places
             // Vest requires limitPrice for ALL orders (including MARKET) as a slippage protection
             // If price is None, this will fail - caller must provide a price
-            "limitPrice": order.price.map(|p| format!("{:.3}", p)).unwrap_or_else(|| {  // Vest requires exactly 3 decimal places
-                tracing::error!("Vest requires limitPrice for all orders! Order rejected due to missing price.");
-                "0.000".to_string() // Will be rejected by Vest with "Limit price must be positive"
-            }),
+            "limitPrice": match order.price {
+                Some(p) => format!("{:.3}", p),
+                None => return Err(ExchangeError::InvalidOrder(
+                    "Vest requires limitPrice for all orders - price must not be None".into()
+                )),
+            },
             "reduceOnly": order.reduce_only,
         });
 

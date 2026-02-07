@@ -437,7 +437,7 @@ pub fn log_event(event: &TradingEvent) {
             let msg = log_compact("SCAN", &[("LiveEntrySpread", live_entry_spread)]);
             info!(
                 event_type = %event_type,
-                timestamp = timestamp,
+                event_ts_ms = timestamp,
                 pair = ?event.pair,
                 direction = ?event.direction,
                 "{}", msg
@@ -460,7 +460,7 @@ pub fn log_event(event: &TradingEvent) {
             ]);
             info!(
                 event_type = %event_type,
-                timestamp = timestamp,
+                event_ts_ms = timestamp,
                 pair = ?event.pair,
                 long_exchange = ?event.long_exchange,
                 short_exchange = ?event.short_exchange,
@@ -473,7 +473,7 @@ pub fn log_event(event: &TradingEvent) {
             let msg = log_compact("HOLD", &[("LiveExitSpread", live_exit_spread)]);
             debug!(
                 event_type = %event_type,
-                timestamp = timestamp,
+                event_ts_ms = timestamp,
                 pair = ?event.pair,
                 polls = ?event.polls,
                 "{}", msg
@@ -495,7 +495,7 @@ pub fn log_event(event: &TradingEvent) {
             ]);
             info!(
                 event_type = %event_type,
-                timestamp = timestamp,
+                event_ts_ms = timestamp,
                 pair = ?event.pair,
                 polls = ?event.polls,
                 profit = ?event.profit.map(format_pct),
@@ -507,7 +507,7 @@ pub fn log_event(event: &TradingEvent) {
             let timing = event.timing.as_ref();
             info!(
                 event_type = %event_type,
-                timestamp = timestamp,
+                event_ts_ms = timestamp,
                 pair = ?event.pair,
                 detection_spread_pct = ?event.detection_spread,
                 execution_spread_pct = ?event.execution_spread,
@@ -530,7 +530,7 @@ pub fn log_event(event: &TradingEvent) {
             let profit_str = event.profit.map(format_pct);
             info!(
                 event_type = %event_type,
-                timestamp = timestamp,
+                event_ts_ms = timestamp,
                 pair = ?event.pair,
                 exchange = ?event.exchange,
                 entry_spread = ?entry_spread_str,

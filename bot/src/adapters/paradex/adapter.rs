@@ -1114,8 +1114,6 @@ impl ExchangeAdapter for ParadexAdapter {
         
         tracing::debug!("Paradex order response ({}): {}", status_code, text);
         
-        tracing::debug!("Paradex order response ({}): {}", status_code, text);
-        
         if !status_code.is_success() {
             // H3 Fix: Check for auth errors (401/403) separately from order rejections
             if status_code.as_u16() == 401 || status_code.as_u16() == 403 {
@@ -1413,16 +1411,15 @@ impl ExchangeAdapter for ParadexAdapter {
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(format!("Request failed: {}", e)))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
+        let status = response.status();
+        let text = response.text().await
+            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
+
+        if !status.is_success() {
             return Err(ExchangeError::InvalidResponse(
                 format!("GET /positions failed ({}): {}", status, text)
             ));
         }
-
-        let text = response.text().await
-            .map_err(|e| ExchangeError::InvalidResponse(format!("Failed to read response: {}", e)))?;
         
         // Parse response - Paradex returns { "results": [...] }
         #[derive(Debug, Deserialize)]
