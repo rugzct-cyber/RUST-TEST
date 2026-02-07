@@ -150,6 +150,11 @@ impl ParadexOrderbookData {
             }
         }
         
+        // Sort: bids descending (best bid = highest price first),
+        //        asks ascending  (best ask = lowest price first)
+        bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+        asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
+        
         // Take only top N levels after sorting
         let depth = crate::adapters::types::MAX_ORDERBOOK_DEPTH;
         if bids.len() > depth || asks.len() > depth {
