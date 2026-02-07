@@ -222,8 +222,8 @@ pub async fn fetch_with_retry(client: &reqwest::Client) -> Result<f64, String> {
 /// 2. Update cache every 15 minutes
 /// 3. Log WARN if rate changes >0.5%
 /// 4. Continue using last known rate on failure
-pub fn spawn_rate_refresh_task(cache: Arc<UsdcRateCache>, client: reqwest::Client) {
-    tokio::spawn(async move {
+pub fn spawn_rate_refresh_task(cache: Arc<UsdcRateCache>, client: reqwest::Client) -> tokio::task::JoinHandle<()> {
+    let handle = tokio::spawn(async move {
         // Initial fetch with retry
         match fetch_with_retry(&client).await {
             Ok(rate) => {
@@ -308,6 +308,8 @@ pub fn spawn_rate_refresh_task(cache: Arc<UsdcRateCache>, client: reqwest::Clien
         interval_mins = REFRESH_INTERVAL_SECS / 60,
         "Pyth rate refresh task spawned"
     );
+
+    handle
 }
 
 // =============================================================================

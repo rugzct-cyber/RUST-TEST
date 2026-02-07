@@ -19,6 +19,8 @@ use super::app::AppState;
 /// Main draw function - renders the entire UI
 pub fn draw(frame: &mut Frame, state: &AppState) {
     // Create main layout: header, orderbooks, trade history, stats, logs
+    // Minimum terminal height: 3+6+5+4+8 = 26 rows. Below this, logs panel clips to 0 height.
+    // No panic risk (saturating_sub handles it), but UI becomes unreadable.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -164,8 +166,8 @@ fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         Color::White
     };
-    let exit_color = if state.live_exit_spread >= state.spread_exit_threshold {
-        Color::Green  // Above threshold = exit opportunity!
+    let exit_color = if state.position_open && state.live_exit_spread >= state.spread_exit_threshold {
+        Color::Green  // Above threshold + position open = exit opportunity!
     } else {
         Color::White
     };

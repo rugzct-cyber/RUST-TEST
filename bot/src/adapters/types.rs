@@ -474,6 +474,8 @@ pub struct PositionInfo {
     pub side: String,
     /// Entry price
     pub entry_price: f64,
+    /// Current mark/market price (if available from exchange)
+    pub mark_price: Option<f64>,
     /// Unrealized PnL
     pub unrealized_pnl: f64,
 }

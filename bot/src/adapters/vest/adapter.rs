@@ -1410,11 +1410,15 @@ impl ExchangeAdapter for VestAdapter {
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
 
+                let mark_price = pos.mark_price.as_ref()
+                    .and_then(|s| s.parse::<f64>().ok());
+
                 tracing::debug!(
                     symbol = symbol,
                     side = side,
                     quantity = quantity,
                     entry_price = entry_price,
+                    mark_price = ?mark_price,
                     "Vest position found"
                 );
 
@@ -1423,6 +1427,7 @@ impl ExchangeAdapter for VestAdapter {
                     side: side.to_string(),
                     quantity,
                     entry_price,
+                    mark_price,
                     unrealized_pnl,
                 }));
             }

@@ -1473,6 +1473,7 @@ impl ExchangeAdapter for ParadexAdapter {
                         quantity: size.abs(),
                         side: side.to_string(),
                         entry_price,
+                        mark_price: None,
                         unrealized_pnl,
                     }));
                 }

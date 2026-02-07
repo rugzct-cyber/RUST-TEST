@@ -73,7 +73,3 @@ mockito = "1.7"
 [[bin]]
 name = "monitor"
 path = "src/bin/monitor.rs"
-
-[[bin]]
-name = "test_paradex_order"
-path = "src/bin/test_paradex_order.rs"

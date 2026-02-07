@@ -4,24 +4,28 @@
 //!
 //! This script connects to Vest and polls GET /account every 5 seconds,
 //! displaying the raw entry price and all position details.
+//!
+//! # Logging (Story 5.1)
+//! - Uses LOG_FORMAT env var: `json` (default) or `pretty`
+//! - For human-readable output, set LOG_FORMAT=pretty
 
 use std::time::Duration;
 use tokio::time::sleep;
 
 use hft_bot::adapters::vest::{VestAdapter, VestConfig};
 use hft_bot::adapters::ExchangeAdapter;
+use hft_bot::config;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load .env file
     dotenvy::dotenv().ok();
     
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    // Initialize logging (Story 5.1: JSON/Pretty configurable via LOG_FORMAT)
+    config::init_logging();
 
-    println!("=== Vest Account Test Script ===\n");
+    info!(event_type = "TEST_START", "=== Vest Account Test Script ===");
     
     // Create Vest adapter from .env
     let vest_config = VestConfig::from_env()
@@ -29,22 +33,17 @@ async fn main() -> anyhow::Result<()> {
     
     let mut vest_adapter = VestAdapter::new(vest_config);
     
-    println!("Connecting to Vest...");
+    info!("Connecting to Vest...");
     vest_adapter.connect().await?;
-    println!("✓ Connected to Vest!\n");
+    info!("Connected to Vest");
     
-    println!("Polling GET /account every 5 seconds. Press Ctrl+C to stop.\n");
-    println!("Take a position on Vest UI, then watch the entry_price here.\n");
-    println!("{}", "=".repeat(80));
+    info!("Polling GET /account every 5 seconds. Press Ctrl+C to stop.");
     
     loop {
         match vest_adapter.get_account_info().await {
             Ok(account) => {
-                println!("\n📊 Account Info at {}", chrono::Local::now().format("%H:%M:%S"));
-                println!("{}", "-".repeat(60));
-                
                 if account.positions.is_empty() {
-                    println!("  No positions found");
+                    info!(event_type = "ACCOUNT_POLL", "No positions found");
                 } else {
                     for pos in &account.positions {
                         let symbol = pos.symbol.as_deref().unwrap_or("?");
@@ -61,21 +60,22 @@ async fn main() -> anyhow::Result<()> {
                             None => "?",
                         };
                         
-                        println!("\n  📈 Position: {} ({})", symbol, side);
-                        println!("  ┌─────────────────────────────────────────────────");
-                        println!("  │ 🎯 Entry Price:       {}", entry_price);
-                        println!("  │ 📍 Mark Price:        {}", mark_price);
-                        println!("  │ 📦 Size:              {}", size);
-                        println!("  │ 💰 Unrealized PnL:    {}", unrealized_pnl);
-                        println!("  │ ⚠️  Liquidation:       {}", liquidation_price);
-                        println!("  └─────────────────────────────────────────────────");
+                        info!(
+                            event_type = "POSITION",
+                            symbol = %symbol,
+                            side = %side,
+                            entry_price = %entry_price,
+                            mark_price = %mark_price,
+                            size = %size,
+                            unrealized_pnl = %unrealized_pnl,
+                            liquidation_price = %liquidation_price,
+                            "Position details"
+                        );
                     }
                 }
-                
-                println!("{}", "-".repeat(60));
             }
             Err(e) => {
-                println!("❌ Error fetching account: {}", e);
+                tracing::error!(error = %e, "Error fetching account");
             }
         }
         

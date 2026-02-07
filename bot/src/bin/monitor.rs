@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     // Load pairs from config.yaml (same source of truth as main bot)
     let cfg = config::load_config(Path::new("config.yaml"))
         .expect("Failed to load config.yaml");
-    let bot = &cfg.bots[0];
+    let bot = cfg.bots.first().expect("config.yaml must have at least one bot entry");
     let vest_pair = bot.pair.to_string();
     let paradex_pair = format!("{}-USD-PERP",
         vest_pair.split('-').next().unwrap_or("BTC"));

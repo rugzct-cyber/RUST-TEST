@@ -69,6 +69,7 @@ pub struct AppState {
     
     // Logs (ring buffer)
     pub recent_logs: VecDeque<LogEntry>,
+    pub dropped_logs_count: u64,
     
     // Trade history (ring buffer)
     pub trade_history: VecDeque<TradeRecord>,
@@ -113,6 +114,7 @@ impl AppState {
             last_latency_ms: None,
             uptime_start: Instant::now(),
             recent_logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
+            dropped_logs_count: 0,
             trade_history: VecDeque::with_capacity(MAX_TRADE_HISTORY),
             should_quit: false,
             log_scroll_offset: 0,
@@ -242,6 +244,7 @@ impl AppState {
         self.entry_direction = None;
         self.entry_vest_price = None;
         self.entry_paradex_price = None;
+        self.position_polls = 0;
         self.trades_count += 1;
         self.total_profit_usd += pnl_usd;
         self.last_latency_ms = Some(latency_ms);
@@ -297,7 +300,7 @@ mod tests {
         assert_eq!(state.entry_vest_price, Some(97000.0));
         assert_eq!(state.entry_paradex_price, Some(97100.0));
         
-        state.record_exit(-0.04, 0.08, 45);  // exit_spread, profit_pct, latency_ms
+        state.record_exit(-0.04, 0.08, 45);  // exit_spread, pnl_usd, latency_ms
         assert!(!state.position_open);
         assert_eq!(state.trades_count, 1);
         assert_eq!(state.total_profit_usd, 0.08);

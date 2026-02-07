@@ -265,7 +265,7 @@ async fn main() -> anyhow::Result<()> {
                 price: Some(sell_limit_price), // Allow 1% slippage
                 quantity: btc_quantity, // Same quantity to fully close
                 time_in_force: TimeInForce::Ioc,
-                reduce_only: true, // IMPORTANT: Only reduce position, don't open new short
+                reduce_only: false, // Vest rejects reduce_only - use correct side+qty instead
             };
 
             let sell_start = std::time::Instant::now();

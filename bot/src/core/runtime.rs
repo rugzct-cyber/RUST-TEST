@@ -60,6 +60,7 @@ struct ExitResult {
     exit_spread: f64,
     vest_exit_price: f64,
     paradex_exit_price: f64,
+    execution_latency_ms: u64,
 }
 
 /// Exit monitoring loop - polls orderbooks until exit condition or shutdown
@@ -169,10 +170,13 @@ where
                         const MAX_CLOSE_RETRIES: u32 = 3;
                         const CLOSE_RETRY_DELAY_SECS: u64 = 5;
                         let mut close_retries = 0u32;
+                        let close_start = std::time::Instant::now();
                         
                         loop {
                             match executor.close_position(exit_spread, vest_bid, vest_ask).await {
                                 Ok(close_result) => {
+                                    let execution_latency_ms = close_start.elapsed().as_millis() as u64;
+                                    
                                     // Log POSITION_CLOSED event
                                     let closed_event = TradingEvent::position_closed(
                                         pair,
@@ -187,6 +191,7 @@ where
                                         exit_spread,
                                         vest_exit_price: close_result.vest_fill_price,
                                         paradex_exit_price: close_result.paradex_fill_price,
+                                        execution_latency_ms,
                                     }));
                                 }
                                 Err(e) => {
@@ -201,6 +206,7 @@ where
                                     );
                                     
                                     if close_retries >= MAX_CLOSE_RETRIES {
+                                        let execution_latency_ms = close_start.elapsed().as_millis() as u64;
                                         error!(
                                             event_type = "CLOSE_ABANDONED",
                                             retries = close_retries,
@@ -210,6 +216,7 @@ where
                                             exit_spread,
                                             vest_exit_price: 0.0,
                                             paradex_exit_price: 0.0,
+                                            execution_latency_ms,
                                         }));
                                     }
                                     
@@ -324,11 +331,15 @@ pub async fn execution_task<V, P>(
                             
                             // Update TUI state with entry prices from position data
                             if let Some(ref tui) = tui_state {
-                                if let Ok(mut state) = tui.try_lock() {
-                                    // Calculate actual entry spread from real entry prices
+                                match tui.lock() {
+                                    Ok(mut state) => {
+                                    // Calculate actual entry spread from real fill prices (direction-aware)
                                     let actual_spread = match (vest_entry, paradex_entry) {
                                         (Some(v), Some(p)) if v > 0.0 && p > 0.0 => {
-                                            ((v - p).abs() / v.max(p)) * 100.0
+                                            match opportunity.direction {
+                                                SpreadDirection::AOverB => ((p - v) / v) * 100.0,
+                                                SpreadDirection::BOverA => ((v - p) / p) * 100.0,
+                                            }
                                         }
                                         _ => spread_pct, // fallback to detected spread
                                     };
@@ -339,6 +350,10 @@ pub async fn execution_task<V, P>(
                                         vest_entry.unwrap_or(0.0),
                                         paradex_entry.unwrap_or(0.0),
                                     );
+                                    }
+                                    Err(e) => {
+                                        error!(event_type = "TUI_STATE_ERROR", error = %e, "Failed to record trade entry in TUI state");
+                                    }
                                 }
                             }
                             
@@ -353,7 +368,7 @@ pub async fn execution_task<V, P>(
                                     "Starting exit monitoring"
                                 );
                                 
-                                let (poll_count, maybe_exit_result) = exit_monitoring_loop(
+                                let (_poll_count, maybe_exit_result) = exit_monitoring_loop(
                                     &executor,
                                     vest_orderbooks.clone(),
                                     paradex_orderbooks.clone(),
@@ -370,7 +385,8 @@ pub async fn execution_task<V, P>(
                                 
                                 // Update TUI trade history (AC1: record_exit after close_position)
                                 if let (Some(exit_result), Some(ref tui)) = (maybe_exit_result, &tui_state) {
-                                    if let Ok(mut state) = tui.try_lock() {
+                                    match tui.lock() {
+                                        Ok(mut state) => {
                                         let position_size = executor.get_default_quantity();
                                         
                                         // PnL from real prices: profit on each leg
@@ -397,8 +413,11 @@ pub async fn execution_task<V, P>(
                                             }
                                         };
                                         
-                                        let latency_ms = poll_count * EXIT_POLL_INTERVAL_MS;
-                                        state.record_exit(exit_result.exit_spread, pnl_usd, latency_ms);
+                                        state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms);
+                                        }
+                                        Err(e) => {
+                                            error!(event_type = "TUI_STATE_ERROR", error = %e, "Failed to record trade exit in TUI state");
+                                        }
                                     }
                                 }
                             } else {

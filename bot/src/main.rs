@@ -66,50 +66,25 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
     
+    // CR-1 Fix: Load config FIRST (before subscriber) to avoid log loss in TUI mode.
+    // In TUI mode, the subscriber isn't ready until after AppState is created from config.
+    // So we load config silently, init subscriber, then log everything.
+    let config = match config::load_config(Path::new("config.yaml")) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("FATAL: Failed to load config.yaml: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let bot = config.bots.first().expect("config.yaml must have at least one bot entry");
+
     // Initialize logging - TUI mode uses TuiLayer, others use normal logging
-    // AppState will be created after config is loaded
     if !tui_mode {
         config::init_logging();
         // Log BOT_STARTED event (Story 5.3)
         let started_event = TradingEvent::bot_started();
         log_event(&started_event);
     }
-    
-    // Load configuration from YAML
-    info!(event_type = "CONFIG", "Loading configuration from config.yaml");
-    let config = match config::load_config(Path::new("config.yaml")) {
-        Ok(cfg) => {
-            let pairs: Vec<String> = cfg.bots.iter()
-                .map(|b| b.pair.to_string())
-                .collect();
-            info!(
-                event_type = "CONFIG",
-                pairs = ?pairs,
-                bot_count = cfg.bots.len(),
-                "Configuration loaded"
-            );
-            cfg
-        }
-        Err(e) => {
-            error!(event_type = "CONFIG", error = %e, "Configuration failed");
-            std::process::exit(1);
-        }
-    };
-
-    // Access first bot for MVP single-pair mode
-    let bot = &config.bots[0];
-    info!(
-        event_type = "CONFIG",
-        bot_id = %bot.id,
-        pair = %bot.pair,
-        dex_a = %bot.dex_a,
-        dex_b = %bot.dex_b,
-        spread_entry = %format_pct(bot.spread_entry),
-        spread_exit = %format_pct(bot.spread_exit),
-        leverage = %format!("{}x", bot.leverage),
-        position_size = %format!("{} {}", bot.position_size, bot.pair),
-        "Active bot configuration"
-    );
     
     // TUI Mode: Initialize AppState, terminal, and tracing subscriber
     let app_state: Option<Arc<Mutex<AppState>>> = if tui_mode {
@@ -142,6 +117,26 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     
+    // Now that subscriber is ready (both TUI and non-TUI), log config details
+    info!(
+        event_type = "CONFIG",
+        pairs = ?config.bots.iter().map(|b| b.pair.to_string()).collect::<Vec<_>>(),
+        bot_count = config.bots.len(),
+        "Configuration loaded"
+    );
+    info!(
+        event_type = "CONFIG",
+        bot_id = %bot.id,
+        pair = %bot.pair,
+        dex_a = %bot.dex_a,
+        dex_b = %bot.dex_b,
+        spread_entry = %format_pct(bot.spread_entry),
+        spread_exit = %format_pct(bot.spread_exit),
+        leverage = %format!("{}x", bot.leverage),
+        position_size = %format!("{} {}", bot.position_size, bot.pair),
+        "Active bot configuration"
+    );
+    
     // Story 6.1 Task 1: Create adapters with real credentials
     info!(event_type = "ADAPTER_INIT", "Initializing exchange adapters");
     
@@ -153,10 +148,17 @@ async fn main() -> anyhow::Result<()> {
     
     // Initialize Pyth USDC rate cache for USD→USDC price conversion
     let usdc_rate_cache = std::sync::Arc::new(hft_bot::core::UsdcRateCache::new());
-    hft_bot::core::spawn_rate_refresh_task(
+    let pyth_handle = hft_bot::core::spawn_rate_refresh_task(
         std::sync::Arc::clone(&usdc_rate_cache),
         reqwest::Client::new(),
     );
+    // CR-4: Monitor Pyth task — warn if it exits unexpectedly (panic or error)
+    tokio::spawn(async move {
+        match pyth_handle.await {
+            Ok(()) => warn!(event_type = "PYTH_STOPPED", "Pyth rate refresh task exited — USDC rate may become stale"),
+            Err(e) => error!(event_type = "PYTH_PANIC", error = %e, "Pyth rate refresh task PANICKED — USDC rate frozen"),
+        }
+    });
     info!(event_type = "PYTH_INIT", "USDC rate cache initialized with 15-minute refresh");
     
     // Subtask 1.2: Create ParadexAdapter with credentials from .env
@@ -345,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
             ).expect("Failed to create terminal");
             
             let mut shutdown_rx = tui_shutdown;
+            let mut event_stream = crossterm::event::EventStream::new();
             
             loop {
                 // Check for shutdown
@@ -353,36 +356,44 @@ async fn main() -> anyhow::Result<()> {
                 }
                 
                 // Update AppState with latest orderbook data
-                {
-                    let vest_orderbooks = tui_vest_orderbooks.read().await;
-                    let paradex_orderbooks = tui_paradex_orderbooks.read().await;
-                    
-                    if let (Some(vest_ob), Some(paradex_ob)) = (
-                        vest_orderbooks.get(&tui_vest_symbol),
-                        paradex_orderbooks.get(&tui_paradex_symbol),
-                    ) {
-                        if let Ok(mut state) = tui_state.try_lock() {
-                            // Update prices
-                            state.update_prices(
-                                vest_ob.best_bid().unwrap_or(0.0),
-                                vest_ob.best_ask().unwrap_or(0.0),
-                                paradex_ob.best_bid().unwrap_or(0.0),
-                                paradex_ob.best_ask().unwrap_or(0.0),
-                            );
-                            
-                            // Calculate live entry/exit spreads
-                            state.update_live_spreads();
-                            
-                            // Use live_entry_spread for header (same percentage unit)
-                            let entry_spread = state.live_entry_spread;
-                            state.update_spread(entry_spread, None);
-                        }
+                // Clone data out of each RwLock individually to minimize lock hold time (CR-6)
+                let vest_ob_data = tui_vest_orderbooks.read().await.get(&tui_vest_symbol).cloned();
+                let paradex_ob_data = tui_paradex_orderbooks.read().await.get(&tui_paradex_symbol).cloned();
+                
+                if let (Some(vest_ob), Some(paradex_ob)) = (vest_ob_data, paradex_ob_data) {
+                    if let Ok(mut state) = tui_state.try_lock() {
+                        // Update prices
+                        state.update_prices(
+                            vest_ob.best_bid().unwrap_or(0.0),
+                            vest_ob.best_ask().unwrap_or(0.0),
+                            paradex_ob.best_bid().unwrap_or(0.0),
+                            paradex_ob.best_ask().unwrap_or(0.0),
+                        );
+                        
+                        // Calculate live entry/exit spreads
+                        state.update_live_spreads();
+                        
+                        // Determine best direction for header display (CR-1)
+                        let entry_spread = state.live_entry_spread;
+                        let best_dir = if state.vest_best_ask > 0.0 && state.paradex_best_ask > 0.0 {
+                            let a_over_b = (state.paradex_best_bid - state.vest_best_ask) / state.vest_best_ask;
+                            let b_over_a = (state.vest_best_bid - state.paradex_best_ask) / state.paradex_best_ask;
+                            if a_over_b >= b_over_a {
+                                Some(hft_bot::core::spread::SpreadDirection::AOverB)
+                            } else {
+                                Some(hft_bot::core::spread::SpreadDirection::BOverA)
+                            }
+                        } else {
+                            None
+                        };
+                        state.update_spread(entry_spread, best_dir);
                     }
                 }
                 
-                // Handle keyboard events
-                if !hft_bot::tui::event::handle_events(&tui_state, &tui_shutdown_tx) {
-                    break;
+                // Handle keyboard events (async, non-blocking — CR-14)
+                match hft_bot::tui::event::handle_events_async(&tui_state, &tui_shutdown_tx, &mut event_stream).await {
+                    hft_bot::tui::event::EventResult::Quit => break,
+                    hft_bot::tui::event::EventResult::Continue => {}
                 }
                 
                 // Render UI
@@ -392,8 +403,8 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
                 
-                // 100ms tick rate
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // 50ms tick rate (event timeout provides 50ms pacing, add small yield)
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             
             // Restore terminal on exit

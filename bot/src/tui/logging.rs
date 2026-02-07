@@ -7,9 +7,25 @@ use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use super::app::{AppState, LogEntry};
 
-/// Custom Layer that captures logs for TUI display
+/// Tracks whether DEBUG logs are enabled. Updated from AppState to avoid
+/// acquiring the lock just to check the flag (CR-17).
+static SHOW_DEBUG: AtomicBool = AtomicBool::new(false);
+
+/// Update the global DEBUG filter flag (call from event.rs when toggling).
+pub fn set_show_debug(enabled: bool) {
+    SHOW_DEBUG.store(enabled, Ordering::Relaxed);
+}
+
+/// Custom Layer that captures logs for TUI display.
+///
+/// SAFETY: `on_event()` MUST use `try_lock()` — never `lock()` — because
+/// tracing events can fire while another thread holds the AppState lock
+/// (e.g. runtime logging inside a lock block). Using `lock()` here would
+/// cause a deadlock. Dropped logs under contention are acceptable.
 pub struct TuiLayer {
     app_state: Arc<Mutex<AppState>>,
 }
@@ -22,44 +38,74 @@ impl TuiLayer {
 
 impl<S: Subscriber> Layer<S> for TuiLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Extract message from event
+        let level = event.metadata().level();
+        
+        // CR-17: Filter DEBUG before acquiring lock
+        if *level == tracing::Level::DEBUG && !SHOW_DEBUG.load(Ordering::Relaxed) {
+            return;
+        }
+        
+        // CR-18: Extract message + key structured fields
         let mut message = String::new();
-        let mut visitor = MessageVisitor(&mut message);
+        let mut extra_fields = Vec::new();
+        let mut visitor = MessageVisitor {
+            message: &mut message,
+            extra_fields: &mut extra_fields,
+        };
         event.record(&mut visitor);
         
-        let level = event.metadata().level().to_string();
+        // Append structured fields to message for richer TUI display
+        if !extra_fields.is_empty() {
+            message.push_str(" [");
+            message.push_str(&extra_fields.join(", "));
+            message.push(']');
+        }
+        
+        let level_str = level.to_string();
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         
         let entry = LogEntry {
             timestamp,
-            level: level.clone(),
+            level: level_str,
             message,
         };
         
-        // Use try_lock to avoid blocking hot path
-        if let Ok(mut state) = self.app_state.try_lock() {
-            // Filter DEBUG if not enabled
-            if level == "DEBUG" && !state.show_debug_logs {
-                return;
+        // CR-16: Count dropped logs instead of silent loss
+        match self.app_state.try_lock() {
+            Ok(mut state) => {
+                state.push_log(entry);
             }
-            state.push_log(entry);
+            Err(_) => {
+                // Lock contended — increment dropped counter via another try
+                // (best effort, acceptable to lose this increment too)
+                if let Ok(mut state) = self.app_state.try_lock() {
+                    state.dropped_logs_count += 1;
+                }
+            }
         }
     }
 }
 
-/// Visitor to extract message field from tracing events
-struct MessageVisitor<'a>(&'a mut String);
+/// Visitor to extract message and key structured fields from tracing events
+struct MessageVisitor<'a> {
+    message: &'a mut String,
+    extra_fields: &'a mut Vec<String>,
+}
 
 impl<'a> tracing::field::Visit for MessageVisitor<'a> {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
-            *self.0 = format!("{:?}", value).trim_matches('"').to_string();
+            *self.message = format!("{:?}", value).trim_matches('"').to_string();
+        } else if matches!(field.name(), "event_type" | "pair" | "direction" | "error") {
+            self.extra_fields.push(format!("{}={:?}", field.name(), value));
         }
     }
     
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
-            *self.0 = value.to_string();
+            *self.message = value.to_string();
+        } else if matches!(field.name(), "event_type" | "pair" | "direction" | "error") {
+            self.extra_fields.push(format!("{}={}", field.name(), value));
         }
     }
 }

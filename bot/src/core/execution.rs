@@ -597,7 +597,8 @@ where
     
     /// Close the current position by executing inverse trades
     /// 
-    /// Uses reduce_only=true to ensure we only close, not open new positions.
+    /// Vest: closes via opposite side + same quantity (reduce_only rejected by platform).
+    /// Paradex: uses reduce_only=true to ensure we only close, not open new positions.
     /// Resets position_open and entry_direction after successful close.
     /// 
     /// # Arguments
@@ -1100,6 +1101,7 @@ mod tests {
             quantity: 0.01,
             side: "long".to_string(),
             entry_price: 42000.0,
+            mark_price: None,
             unrealized_pnl: 0.0,
         }));
         
@@ -1108,6 +1110,7 @@ mod tests {
             quantity: 0.01,
             side: "short".to_string(),
             entry_price: 42100.0,
+            mark_price: None,
             unrealized_pnl: 0.0,
         }));
         
@@ -1141,6 +1144,7 @@ mod tests {
             quantity: 0.01,
             side: "short".to_string(),
             entry_price: 42100.0,
+            mark_price: None,
             unrealized_pnl: 0.0,
         }));
         
@@ -1169,6 +1173,7 @@ mod tests {
             quantity: 0.01,
             side: "short".to_string(),
             entry_price: 42100.0,
+            mark_price: None,
             unrealized_pnl: 0.0,
         }));
         
@@ -1177,6 +1182,7 @@ mod tests {
             quantity: 0.01,
             side: "long".to_string(),
             entry_price: 42000.0,
+            mark_price: None,
             unrealized_pnl: 0.0,
         }));
         
