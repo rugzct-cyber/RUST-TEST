@@ -34,6 +34,9 @@ use crate::core::channels::SharedOrderbooks;
 /// Exit monitoring polling interval in milliseconds (25ms for V1 HFT)
 const EXIT_POLL_INTERVAL_MS: u64 = 25;
 
+/// Delay after trade entry to let exchange APIs settle before verifying positions (milliseconds)
+const API_SETTLE_DELAY_MS: u64 = 500;
+
 /// Log throttle — imported from channels (single source of truth)
 use super::channels::LOG_THROTTLE_POLLS;
 
@@ -289,7 +292,7 @@ pub async fn execution_task<V, P>(
                             
                             // Verify positions on both exchanges and get entry prices
                             // Add small delay to let Vest API update entry price
-                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
                             let (vest_entry, paradex_entry) = executor.verify_positions(spread_pct, exit_spread_target).await;
                             
                             // Update TUI state with entry prices from position data

@@ -289,14 +289,17 @@ pub fn sign_order_message(params: OrderSignParams) -> ExchangeResult<(String, St
     Ok((r_decimal, s_decimal))
 }
 
+/// Paradex quantum multiplier (10^8) for converting decimal values to felt
+const QUANTUM_MULTIPLIER: f64 = 100_000_000.0;
+
 /// Parse a decimal string (like "0.001" or "105000") to Felt as quantum value (x 10^8)
 pub fn parse_decimal_to_felt(s: &str) -> ExchangeResult<starknet_core::types::Felt> {
     use starknet_core::types::Felt;
     
     // Try parsing as float first
     if let Ok(val) = s.parse::<f64>() {
-        // Convert to quantum (multiply by 10^8)
-        let quantum = (val * 100_000_000.0).round() as u64;
+        // Convert to quantum (multiply by QUANTUM_MULTIPLIER = 10^8)
+        let quantum = (val * QUANTUM_MULTIPLIER).round() as u64;
         return Ok(Felt::from(quantum));
     }
     

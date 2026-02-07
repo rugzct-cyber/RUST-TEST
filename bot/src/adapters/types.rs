@@ -26,33 +26,50 @@ pub fn next_subscription_id() -> u64 {
 
 use std::time::Duration;
 
+// =============================================================================
+// HTTP Client Constants (Story 7.2)
+// =============================================================================
+
+/// HTTP request timeout (seconds)
+const HTTP_TIMEOUT_SECS: u64 = 10;
+/// Max idle connections per host in connection pool
+const HTTP_POOL_MAX_IDLE: usize = 2;
+/// How long idle connections stay in the pool (seconds)
+const HTTP_POOL_IDLE_TIMEOUT_SECS: u64 = 60;
+/// TCP keepalive interval (seconds)
+const HTTP_TCP_KEEPALIVE_SECS: u64 = 30;
+
 /// Create an optimized HTTP client for HFT operations
-/// 
-/// Connection pooling configured for latency optimization (Story 7.2):
-/// - `pool_max_idle_per_host(2)`: Keep 2 idle connections per host
-/// - `pool_idle_timeout(60s)`: Keep connections warm for 60 seconds
-/// - `tcp_keepalive(30s)`: TCP keepalive every 30 seconds
-/// - `connect_timeout(10s)`: Connection timeout
-/// - `timeout(10s)`: Request timeout
+///
+/// Connection pooling configured for latency optimization (Story 7.2)
 pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .pool_max_idle_per_host(2)
-        .pool_idle_timeout(Duration::from_secs(60))
-        .tcp_keepalive(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE)
+        .pool_idle_timeout(Duration::from_secs(HTTP_POOL_IDLE_TIMEOUT_SECS))
+        .tcp_keepalive(Duration::from_secs(HTTP_TCP_KEEPALIVE_SECS))
+        .connect_timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     tracing::info!(
         phase = "init",
         exchange = %exchange_name,
-        pool_max_idle = 2,
-        pool_idle_timeout_s = 60,
-        tcp_keepalive_s = 30,
+        pool_max_idle = HTTP_POOL_MAX_IDLE,
+        pool_idle_timeout_s = HTTP_POOL_IDLE_TIMEOUT_SECS,
+        tcp_keepalive_s = HTTP_TCP_KEEPALIVE_SECS,
         "HTTP client configured"
     );
     client
 }
+
+/// Maximum number of orderbook levels (bids/asks) to retain after parsing
+pub const MAX_ORDERBOOK_DEPTH: usize = 10;
+
+/// Vest API recvWindow in milliseconds (time validity of signed requests)
+pub const VEST_RECV_WINDOW_MS: u64 = 60_000;
+
+/// WebSocket ping / health-check interval (seconds)
+pub const WS_PING_INTERVAL_SECS: u64 = 30;
 
 // =============================================================================
 // Connection Health Types (Story 2.6)

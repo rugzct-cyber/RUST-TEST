@@ -655,7 +655,7 @@ impl ParadexAdapter {
         
         let handle = tokio::spawn(async move {
             // Check every 30 seconds as per NFR20
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut interval = tokio::time::interval(Duration::from_secs(crate::adapters::types::WS_PING_INTERVAL_SECS));
             // Skip the first immediate tick
             interval.tick().await;
             

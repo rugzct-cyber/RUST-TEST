@@ -321,7 +321,7 @@ impl VestAdapter {
                 "limitPrice": presigned.price_str,
                 "reduceOnly": order.reduce_only,
             },
-            "recvWindow": 60000,
+            "recvWindow": crate::adapters::types::VEST_RECV_WINDOW_MS,
             "signature": presigned.signature,
         });
 
@@ -803,7 +803,7 @@ impl VestAdapter {
         last_pong.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut interval = tokio::time::interval(Duration::from_secs(crate::adapters::types::WS_PING_INTERVAL_SECS));
             interval.tick().await;
 
             loop {
@@ -928,7 +928,7 @@ impl VestAdapter {
             "nonce": nonce,
             "symbol": symbol,
             "value": leverage,
-            "recvWindow": 60000,
+            "recvWindow": crate::adapters::types::VEST_RECV_WINDOW_MS,
             "signature": signature,
         });
 
@@ -1135,7 +1135,7 @@ impl ExchangeAdapter for VestAdapter {
 
         let body = serde_json::json!({
             "order": order_obj,
-            "recvWindow": 60000,
+            "recvWindow": crate::adapters::types::VEST_RECV_WINDOW_MS,
             "signature": signature,
         });
 

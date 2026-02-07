@@ -150,8 +150,8 @@ impl ParadexOrderbookData {
         bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
         asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
         
-        bids.truncate(10);
-        asks.truncate(10);
+        bids.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
+        asks.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
         
         let orderbook = Orderbook {
             bids,

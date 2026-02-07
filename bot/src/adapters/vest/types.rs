@@ -154,11 +154,13 @@ pub struct PreSignedOrder {
     pub price_str: String,
 }
 
+/// Pre-signed orders expire after this many seconds (leaving ~5s buffer for recvWindow of 60s)
+const SIGNATURE_EXPIRY_SECS: u64 = 55;
+
 impl PreSignedOrder {
     /// Check if this pre-signed order is still valid (not expired)
-    /// Orders expire after 55 seconds (leaving 5s buffer for recvWindow of 60s)
     pub fn is_valid(&self) -> bool {
-        self.created_at.elapsed().as_secs() < 55
+        self.created_at.elapsed().as_secs() < SIGNATURE_EXPIRY_SECS
     }
 }
 
@@ -219,8 +221,8 @@ impl VestDepthData {
         asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
         
         // Take only top 10 levels after sorting
-        bids.truncate(10);
-        asks.truncate(10);
+        bids.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
+        asks.truncate(crate::adapters::types::MAX_ORDERBOOK_DEPTH);
         
         let orderbook = Orderbook {
             bids,
