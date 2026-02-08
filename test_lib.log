@@ -1,0 +1,285 @@
+warning: unused import: `super::*`
+  --> src\core\channels.rs:45:9
+   |
+45 |     use super::*;
+   |         ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Orderbook`
+    --> src\core\execution.rs:1031:47
+     |
+1031 |     use crate::adapters::types::{OrderStatus, Orderbook};
+     |                                               ^^^^^^^^^
+
+warning: unused import: `AtomicU64`
+    --> src\core\execution.rs:1032:29
+     |
+1032 |     use std::sync::atomic::{AtomicU64, Ordering};
+     |                             ^^^^^^^^^
+
+warning: unused import: `std::sync::Arc`
+    --> src\core\execution.rs:1033:9
+     |
+1033 |     use std::sync::Arc;
+     |         ^^^^^^^^^^^^^^
+
+warning: unused variable: `position_size`
+   --> src\core\runtime.rs:408:45
+    |
+408 | ...                   let position_size = executor.get_default_quantity();
+    |                           ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_position_size`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `hft_bot` (lib test) generated 5 warnings (run `cargo fix --lib -p hft_bot --tests` to apply 5 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.62s
+     Running unittests src\lib.rs (target\debug\deps\hft_bot-341dda1b435cf1a4.exe)
+
+running 228 tests
+test adapters::errors::tests::test_connection_failed_display ... ok
+test adapters::errors::tests::test_authentication_failed_display ... ok
+test adapters::errors::tests::test_invalid_order_display ... ok
+test adapters::errors::tests::test_invalid_response_display ... ok
+test adapters::errors::tests::test_order_rejected_display ... ok
+test adapters::errors::tests::test_network_timeout_display ... ok
+test adapters::errors::tests::test_subscription_failed_display ... ok
+test adapters::paradex::config::tests::test_paradex_config_default_production ... ok
+test adapters::paradex::config::tests::test_paradex_config_from_env ... ok
+test adapters::paradex::adapter::tests::test_paradex_adapter_new ... ok
+test adapters::paradex::adapter::tests::test_jwt_needs_refresh_when_no_token ... ok
+test adapters::paradex::config::tests::test_paradex_config_urls ... ok
+test adapters::paradex::adapter::tests::test_exchange_name ... ok
+test adapters::paradex::signing::tests::test_build_ws_url ... ok
+test adapters::paradex::adapter::tests::test_adapter_not_connected_initially ... ok
+test adapters::paradex::signing::tests::test_build_ws_auth_message ... ok
+test adapters::paradex::signing::tests::test_current_time_ms ... ok
+test adapters::paradex::signing::tests::test_compute_starknet_selector ... ok
+test adapters::paradex::signing::tests::test_string_to_felt ... ok
+test adapters::paradex::types::tests::test_paradex_orderbook_parsing ... ok
+test adapters::paradex::types::tests::test_paradex_orderbook_sorting ... ok
+test adapters::paradex::types::tests::test_to_orderbook_with_usdc_conversion ... ok
+test adapters::shared::reconnect::tests::test_reconnect_config_default ... ok
+test adapters::traits::tests::test_mock_adapter_cancel_order ... ok
+test adapters::traits::tests::test_mock_adapter_disconnect ... ok
+test adapters::traits::tests::test_mock_adapter_connect ... ok
+test adapters::traits::tests::test_mock_adapter_exchange_name ... ok
+test adapters::traits::tests::test_mock_adapter_subscribe_orderbook ... ok
+test adapters::traits::tests::test_mock_adapter_unsubscribe_orderbook ... ok
+test adapters::types::tests::test_connection_health_clone_refs ... ok
+test adapters::types::tests::test_connection_health_default ... ok
+test adapters::types::tests::test_connection_health_new ... ok
+test adapters::types::tests::test_connection_state_default ... ok
+test adapters::types::tests::test_connection_state_equality ... ok
+test adapters::types::tests::test_connection_state_serialization ... ok
+test adapters::types::tests::test_connection_state_transitions ... ok
+test adapters::types::tests::test_exponential_backoff_timing ... ok
+test adapters::types::tests::test_ioc_limit_helper ... ok
+test adapters::types::tests::test_order_builder_happy_path ... ok
+test adapters::types::tests::test_order_builder_limit_without_price ... ok
+test adapters::types::tests::test_order_builder_market_order ... ok
+test adapters::types::tests::test_order_builder_market_with_price_slippage ... ok
+test adapters::types::tests::test_order_builder_missing_client_order_id ... ok
+test adapters::types::tests::test_order_builder_reduce_only ... ok
+test adapters::types::tests::test_order_request_construction ... ok
+test adapters::types::tests::test_order_request_validate_limit_without_price ... ok
+test adapters::types::tests::test_order_request_validate_negative_quantity ... ok
+test adapters::types::tests::test_order_request_validate_valid_order ... ok
+test adapters::types::tests::test_order_status_values ... ok
+test adapters::types::tests::test_orderbook_best_prices ... ok
+test adapters::types::tests::test_orderbook_empty ... ok
+test adapters::types::tests::test_orderbook_level_creation ... ok
+test adapters::types::tests::test_orderbook_level_serialization ... ok
+test adapters::types::tests::test_orderbook_only_asks ... ok
+test adapters::types::tests::test_orderbook_only_bids ... ok
+test adapters::types::tests::test_orderbook_serialization ... ok
+test adapters::types::tests::test_orderbook_update_serialization ... ok
+test adapters::types::tests::test_reader_alive_flag_default ... ok
+test adapters::types::tests::test_reader_alive_shared_across_clones ... ok
+test adapters::types::tests::test_reader_alive_transitions ... ok
+test adapters::types::tests::test_stale_detection_threshold_30_seconds ... ok
+test adapters::vest::adapter::tests::test_http_client_configured_with_pooling ... ok
+test adapters::vest::config::tests::test_vest_config_default ... ok
+test adapters::vest::config::tests::test_vest_config_from_env_missing_vars ... ok
+test adapters::vest::config::tests::test_vest_config_urls ... ok
+test adapters::vest::signing::tests::test_current_time_ms ... ok
+test adapters::vest::signing::tests::test_expiry_7_days_ms ... ok
+test adapters::vest::signing::tests::test_sign_order ... ok
+test adapters::traits::tests::test_mock_adapter_place_order ... ok
+test adapters::vest::types::tests::test_presigned_order_validity ... ok
+test adapters::vest::types::tests::test_vest_depth_data_parsing ... ok
+test adapters::vest::types::tests::test_vest_pong_parsing ... ok
+test adapters::vest::signing::tests::test_sign_registration_proof ... ok
+test config::loader::tests::test_empty_bots_array_fails_validation ... ok
+test config::loader::tests::test_load_config_file_not_found ... ok
+test config::loader::tests::test_load_config_from_file_invalid_yaml ... ok
+test config::loader::tests::test_load_config_from_file_valid ... ok
+test config::loader::tests::test_load_config_from_str_invalid_yaml ... ok
+test config::loader::tests::test_load_config_from_str_valid ... ok
+test config::loader::tests::test_load_config_from_str_validation_failure ... ok
+test config::loader::tests::test_multiple_bots_config ... ok
+test config::logging::tests::test_log_format_default_is_json ... ok
+test config::logging::tests::test_env_filter_fallback ... ok
+test config::logging::tests::test_pretty_format_detection ... ok
+test config::types::tests::test_dex_serde ... ok
+test config::types::tests::test_empty_bot_id_fails ... ok
+test adapters::paradex::signing::tests::test_sign_order_message_produces_valid_signature ... ok
+test config::types::tests::test_empty_bots_array_fails ... ok
+test config::types::tests::test_infinity_position_size_fails ... ok
+test config::types::tests::test_into_shared ... ok
+test config::types::tests::test_leverage_too_high_fails ... ok
+test config::types::tests::test_leverage_too_low_fails ... ok
+test config::types::tests::test_nan_spread_entry_fails ... ok
+test config::types::tests::test_neg_infinity_spread_exit_fails ... ok
+test config::types::tests::test_negative_spread_entry_fails ... ok
+test config::types::tests::test_negative_spread_exit_is_valid ... ok
+test config::types::tests::test_position_size_negative_fails ... ok
+test config::types::tests::test_position_size_zero_fails ... ok
+test config::types::tests::test_same_dex_fails ... ok
+test config::types::tests::test_spread_entry_above_100_fails ... ok
+test config::types::tests::test_spread_entry_zero_fails ... ok
+test config::types::tests::test_spread_exit_above_100_fails ... ok
+test config::types::tests::test_spread_thresholds_at_boundaries ... ok
+test config::types::tests::test_trading_pair_serde ... ok
+test config::types::tests::test_valid_bot_config ... ok
+test config::types::tests::test_valid_config_deserialize ... ok
+test config::types::tests::test_whitespace_only_bot_id_fails ... ok
+test adapters::paradex::signing::tests::test_sign_order_message_market_order_with_zero_price ... ok
+test core::events::tests::test_current_timestamp ... ok
+test core::channels::tests::test_orderbook_channel_send_receive ... ok
+test core::events::tests::test_event_type_display ... ok
+test core::events::tests::test_latency_calculation ... ok
+test core::events::tests::test_position_monitoring_event ... ok
+test core::events::tests::test_slippage_analysis_event ... ok
+test core::events::tests::test_slippage_analysis_event_type_display ... ok
+test core::events::tests::test_spread_detected_event ... ok
+test core::events::tests::test_timing_breakdown_new ... ok
+test core::events::tests::test_trade_entry_event ... ok
+test core::events::tests::test_trade_exit_event ... ok
+test core::execution::tests::test_delta_neutral_executor_creation ... ok
+test core::execution::tests::test_delta_neutral_result_fields ... ok
+test adapters::paradex::signing::tests::test_sign_auth_message_produces_valid_signature ... ok
+test core::execution::tests::test_execute_both_legs_fail ... ok
+test core::execution::tests::test_execute_both_legs_parallel ... ok
+test core::execution::tests::test_execute_latency_measurement ... ok
+test core::execution::tests::test_leg_status_is_success ... ok
+test core::execution::tests::test_position_verification_b_over_a_direction ... ok
+test core::execution::tests::test_position_verification_calculates_spread_correctly ... ok
+test core::execution::tests::test_position_verification_handles_missing_positions ... ok
+test core::execution::tests::test_result_to_leg_status_cancelled_order ... ok
+test core::execution::tests::test_result_to_leg_status_error ... ok
+test core::execution::tests::test_result_to_leg_status_rejected_order ... ok
+test core::execution::tests::test_spread_direction_a_over_b ... ok
+test core::execution::tests::test_execute_one_leg_fails ... ok
+test core::execution::tests::test_force_reset_position_guard ... ok
+test core::execution::tests::test_position_guard_prevents_duplicate_trade ... ok
+test core::execution::tests::test_trade_timings_total_latency ... FAILED
+test core::execution::tests::test_trade_timings_sequence ... ok
+test core::execution::tests::test_spread_direction_b_over_a ... ok
+test core::execution::tests::test_single_leg_failure_triggers_rollback_state ... ok
+test core::monitoring::tests::test_monitoring_task_channel_closed_breaks_loop ... ok
+test core::monitoring::tests::test_monitoring_task_opportunity_includes_prices ... ok
+test core::monitoring::tests::test_monitoring_task_sends_opportunity_when_threshold_exceeded ... ok
+test core::monitoring::tests::test_monitoring_task_threshold_boundary_just_above ... ok
+test core::monitoring::tests::test_monitoring_task_shutdown ... ok
+test core::pyth::tests::test_rate_cache_default_is_one ... ok
+test core::pyth::tests::test_rate_cache_rejects_out_of_bounds ... ok
+test core::pyth::tests::test_rate_cache_update_and_get ... ok
+test core::pyth::tests::test_usd_to_usdc_conversion ... ok
+test adapters::shared::reconnect::tests::test_reconnect_succeeds_on_first_attempt ... ok
+test adapters::shared::reconnect::tests::test_reconnect_succeeds_on_second_attempt ... ok
+test core::monitoring::tests::test_monitoring_task_missing_one_orderbook ... ok
+test core::monitoring::tests::test_monitoring_task_channel_full_no_panic ... ok
+test core::runtime::tests::test_execution_task_handles_empty_channel ... ok
+test core::runtime::tests::test_execution_task_shutdown ... ok
+test core::monitoring::tests::test_monitoring_task_no_opportunity_below_threshold ... ok
+test core::runtime::tests::test_exit_monitoring_loop_b_over_a_direction ... ok
+test core::runtime::tests::test_exit_monitoring_loop_exits_on_spread_condition ... ok
+test core::spread::tests::proptests::always_finite ... ok
+test core::spread::tests::proptests::entry_exit_inverse_relationship ... ok
+test core::spread::tests::proptests::large_values_no_overflow ... ok
+test core::spread::tests::proptests::negative_spread_when_ask_exceeds_bid ... ok
+test core::monitoring::tests::test_monitoring_task_threshold_just_below ... ok
+test core::spread::tests::proptests::never_panics ... ok
+test core::spread::tests::proptests::positive_spread_when_bid_exceeds_ask ... ok
+test core::spread::tests::test_calculate_dual_spreads_empty_orderbook ... ok
+test core::spread::tests::test_calculate_dual_spreads_from_orderbooks ... ok
+test core::spread::tests::test_calculate_entry_spread_basic ... ok
+test core::spread::tests::test_calculate_entry_spread_positive ... ok
+test core::spread::tests::test_calculate_entry_spread_zero_midpoint ... ok
+test core::spread::tests::proptests::symmetric_direction_detection ... ok
+test core::spread::tests::test_calculate_exit_spread_basic ... ok
+test core::spread::tests::test_calculate_exit_spread_negative ... ok
+test core::spread::tests::test_calculate_exit_spread_zero_midpoint ... ok
+test core::spread::tests::test_dual_spread_realistic_btc_values ... ok
+test core::spread::tests::test_entry_exit_spreads_are_different ... ok
+test core::spread::tests::test_spread_both_empty_returns_none ... ok
+test core::spread::tests::test_spread_calculation_basic ... ok
+test core::spread::tests::test_spread_calculation_exact_values ... ok
+test core::spread::tests::test_spread_direction_a_over_b ... ok
+test core::spread::tests::test_spread_direction_b_over_a ... ok
+test core::spread::tests::test_spread_direction_calculate_captured_spread_a_over_b ... ok
+test core::spread::tests::test_spread_direction_calculate_captured_spread_b_over_a ... ok
+test core::spread::tests::test_spread_direction_calculate_captured_spread_zero_price ... ok
+test core::spread::tests::test_spread_direction_from_u8 ... ok
+test core::spread::tests::test_spread_direction_roundtrip ... ok
+test core::spread::tests::test_spread_direction_to_close_sides ... ok
+test core::spread::tests::test_spread_direction_to_exchanges ... ok
+test core::spread::tests::test_spread_direction_to_u8 ... ok
+test core::spread::tests::test_spread_empty_orderbook_a_returns_none ... ok
+test core::spread::tests::test_spread_empty_orderbook_b_returns_none ... ok
+test core::spread::tests::test_spread_negative_both_directions ... ok
+test core::spread::tests::test_spread_negative_in_one_direction ... ok
+test core::spread::tests::test_spread_orderbook_missing_asks ... ok
+test core::spread::tests::test_spread_orderbook_missing_bids ... ok
+test core::spread::tests::test_spread_result_timestamp_is_set ... ok
+test error::tests::test_api_error_display ... ok
+test error::tests::test_app_error_is_debug_printable ... ok
+test error::tests::test_config_error_display ... ok
+test error::tests::test_exchange_error_converts_to_app_error ... ok
+test error::tests::test_exchange_error_order_rejected_preserves_context ... ok
+test error::tests::test_execution_error_display ... ok
+test error::tests::test_io_error_converts_to_app_error ... ok
+test error::tests::test_serde_error_converts_to_app_error ... ok
+test tui::app::tests::test_app_state_creation ... ok
+test tui::app::tests::test_log_rotation ... ok
+test core::spread::tests::proptests::zero_ask_returns_zero ... ok
+test tui::app::tests::test_trade_history_ring_buffer ... ok
+test tui::app::tests::test_trade_recording ... ok
+test tui::app::tests::test_update_prices ... ok
+test tui::app::tests::test_uptime_str_format ... ok
+test tui::event::tests::test_app_state_scroll_offset ... ok
+test tui::event::tests::test_debug_toggle ... ok
+test tui::event::tests::test_process_quit_q ... ok
+test tui::event::tests::test_process_scroll_down ... ok
+test tui::logging::tests::test_log_entry_creation ... ok
+test tui::logging::tests::test_tui_layer_creation ... ok
+test tui::ui::tests::test_app_state_for_ui ... ok
+test core::spread::tests::test_spread_calculation_performance_100k ... ok
+test core::runtime::tests::test_exit_monitoring_loop_responds_to_shutdown ... ok
+test adapters::shared::reconnect::tests::test_reconnect_backoff_increases ... ok
+test core::runtime::tests::test_exit_monitoring_continues_with_missing_orderbooks ... ok
+test adapters::shared::reconnect::tests::test_reconnect_exhausts_all_attempts ... ok
+test adapters::vest::adapter::tests::test_warm_up_http_makes_request ... ok
+test adapters::paradex::adapter::tests::test_warm_up_http_makes_request ... ok
+test adapters::shared::reconnect::tests::test_reconnect_respects_max_delay_cap ... ok
+test core::runtime::tests::test_execution_task_processes_opportunity ... ok
+test core::runtime::tests::test_execution_task_drains_pending_messages ... ok
+
+failures:
+
+---- core::execution::tests::test_trade_timings_total_latency stdout ----
+
+thread 'core::execution::tests::test_trade_timings_total_latency' (14952) panicked at src\core\execution.rs:1547:9:
+assertion `left == right` failed: Total latency should be t_confirmed - t_signal
+  left: 0
+ right: 25
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    core::execution::tests::test_trade_timings_total_latency
+
+test result: FAILED. 227 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.68s
+
+error: test failed, to rerun pass `--lib`

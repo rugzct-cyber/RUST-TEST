@@ -1,10 +1,4 @@
-﻿cargo : warning: unused variable: `position_size`
-Au caractère Ligne:1 : 1
-+ cargo test 2>&1 | Out-File -FilePath C:\Users\jules\Documents\bot4\te ...
-+ ~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (warning: unused...`position_size`:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
+warning: unused variable: `position_size`
    --> src\core\runtime.rs:408:45
     |
 408 | ...                   let position_size = executor.get_default_quantity();
@@ -13,7 +7,6 @@ Au caractère Ligne:1 : 1
     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 warning: `hft_bot` (lib) generated 1 warning (run `cargo fix --lib -p hft_bot` to apply 1 suggestion)
-   Compiling hft_bot v0.1.0 (C:\Users\jules\Documents\bot4\bot)
 warning: unused import: `super::*`
   --> src\core\channels.rs:45:9
    |
@@ -40,6 +33,7 @@ warning: unused import: `std::sync::Arc`
 1033 |     use std::sync::Arc;
      |         ^^^^^^^^^^^^^^
 
+   Compiling hft_bot v0.1.0 (C:\Users\jules\Documents\bot4\bot)
 warning: `hft_bot` (lib test) generated 5 warnings (1 duplicate) (run `cargo fix --lib -p hft_bot --tests` to apply 4 suggestions)
 error[E0407]: method `get_order` is not a member of trait `ExchangeAdapter`
    --> tests\full_cycle.rs:171:5
@@ -76,4 +70,3 @@ error[E0560]: struct `FillInfo` has no field named `filled_quantity`
 Some errors have detailed explanations: E0407, E0560.
 For more information about an error, try `rustc --explain E0407`.
 error: could not compile `hft_bot` (test "full_cycle") due to 3 previous errors
-warning: build failed, waiting for other jobs to finish...

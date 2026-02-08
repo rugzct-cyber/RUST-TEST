@@ -1,0 +1,16 @@
+﻿cargo :     Finished `dev` 
+profile [unoptimized + 
+debuginfo] target(s) in 0.80s
+Au caractère Ligne:1 : 1
++ cargo check 2>&1 | 
+Out-File -FilePath C:\Users\j
+ules\Documents\bot4\b ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo           
+   : NotSpecified: (    Fin  
+  ished `d...get(s) in 0.8   
+ 0s:String) [], RemoteExc    
+eption
+    + FullyQualifiedErrorId  
+   : NativeCommandError
+ 
