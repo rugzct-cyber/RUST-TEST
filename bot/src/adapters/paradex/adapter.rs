@@ -4,7 +4,7 @@
 //! Uses modules: config, types, signing for sub-components.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -404,6 +404,7 @@ impl ParadexAdapter {
         // Clone Arc references for background tasks
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
         let last_data = Arc::clone(&self.connection_health.last_data);
+        let reader_alive = Arc::clone(&self.connection_health.reader_alive);
         let usdc_rate_cache = self.usdc_rate_cache.clone();
 
         // Initialize last_data to now so we don't immediately appear stale
@@ -411,7 +412,7 @@ impl ParadexAdapter {
 
         // Spawn background reader with shared orderbooks, health tracking, and USDC rate
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_data, usdc_rate_cache)
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_data, reader_alive, usdc_rate_cache)
                 .await;
         });
 
@@ -428,8 +429,10 @@ impl ParadexAdapter {
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
         last_data: Arc<AtomicU64>,
+        reader_alive: Arc<AtomicBool>,
         usdc_rate_cache: Option<Arc<crate::core::UsdcRateCache>>,
     ) {
+        reader_alive.store(true, Ordering::Relaxed);
         tracing::info!("Paradex message_reader_loop started");
         while let Some(msg_result) = ws_receiver.next().await {
             // Update last_data timestamp for any message received
@@ -568,7 +571,8 @@ impl ParadexAdapter {
                 }
             }
         }
-        tracing::info!("Paradex message reader loop ended");
+        reader_alive.store(false, Ordering::Relaxed);
+        tracing::warn!("Paradex message reader loop ended — reader_alive set to false");
     }
 
     /// Send a subscribe request for a symbol's orderbook
@@ -676,8 +680,11 @@ impl ParadexAdapter {
     ///
     /// Paradex uses native WebSocket PING/PONG which tokio-tungstenite handles automatically.
     /// This task monitors the last_data timestamp to detect stale connections.
+    /// If data is stale for more than STALE_THRESHOLD_MS, sets `reader_alive = false`
+    /// so that `is_stale()` detects the dead connection.
     fn spawn_heartbeat_task(&mut self) {
         let last_data = Arc::clone(&self.connection_health.last_data);
+        let reader_alive = Arc::clone(&self.connection_health.reader_alive);
 
         // Initialize last_data to now so we don't immediately appear stale
         last_data.store(current_time_ms(), Ordering::Relaxed);
@@ -693,12 +700,23 @@ impl ParadexAdapter {
             loop {
                 interval.tick().await;
 
-                // Just trace-level health check, no warning needed
                 let last = last_data.load(Ordering::Relaxed);
                 let now = current_time_ms();
+                let age_ms = now.saturating_sub(last);
+
+                if age_ms > crate::adapters::types::STALE_THRESHOLD_MS {
+                    tracing::warn!(
+                        "Paradex heartbeat: data stale for {}ms (threshold {}ms) — signaling dead connection",
+                        age_ms,
+                        crate::adapters::types::STALE_THRESHOLD_MS
+                    );
+                    reader_alive.store(false, Ordering::Relaxed);
+                    break;
+                }
+
                 tracing::trace!(
                     "Paradex heartbeat: last data was {}ms ago",
-                    now.saturating_sub(last)
+                    age_ms
                 );
             }
         });
@@ -977,9 +995,10 @@ impl ExchangeAdapter for ParadexAdapter {
         self.subscriptions.clear();
         self.orderbooks.clear();
 
-        // Reset connection health timestamps
+        // Reset connection health
         self.connection_health.last_pong.store(0, Ordering::Relaxed);
         self.connection_health.last_data.store(0, Ordering::Relaxed);
+        self.connection_health.reader_alive.store(false, Ordering::Relaxed);
 
         // Clear shared orderbooks
         let mut books = self.shared_orderbooks.write().await;
@@ -1384,6 +1403,11 @@ impl ExchangeAdapter for ParadexAdapter {
 
     fn is_stale(&self) -> bool {
         if !self.connected {
+            return true;
+        }
+
+        // Reader loop died → connection is dead (S-1/S-2 fix)
+        if !self.connection_health.reader_alive.load(Ordering::Relaxed) {
             return true;
         }
 

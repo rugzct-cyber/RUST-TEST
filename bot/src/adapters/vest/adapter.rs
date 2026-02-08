@@ -4,7 +4,7 @@
 //! Uses modules: config, types, signing for sub-components.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,6 +75,7 @@ pub struct VestAdapter {
     pub(crate) ws_sender: Option<Arc<Mutex<WsWriter>>>,
     pub(crate) reader_handle: Option<JoinHandle<()>>,
     pub(crate) heartbeat_handle: Option<JoinHandle<()>>,
+    pub(crate) listen_key_renewal_handle: Option<JoinHandle<()>>,
     pub(crate) connected: bool,
     pub(crate) api_key: Option<String>,
     pub(crate) listen_key: Option<String>,
@@ -102,6 +103,7 @@ impl VestAdapter {
             ws_sender: None,
             reader_handle: None,
             heartbeat_handle: None,
+            listen_key_renewal_handle: None,
             connected: false,
             api_key: None,
             listen_key: None,
@@ -664,11 +666,12 @@ impl VestAdapter {
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
         let last_pong = Arc::clone(&self.connection_health.last_pong);
         let last_data = Arc::clone(&self.connection_health.last_data);
+        let reader_alive = Arc::clone(&self.connection_health.reader_alive);
 
         last_data.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_pong, last_data).await;
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_pong, last_data, reader_alive).await;
         });
 
         self.reader_handle = Some(handle);
@@ -676,13 +679,19 @@ impl VestAdapter {
     }
 
     /// Background message reader loop
+    ///
+    /// Sets `reader_alive` to `true` on entry and `false` on exit, so that
+    /// `is_stale()` can detect a dead connection immediately.
     async fn message_reader_loop(
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
         last_pong: Arc<AtomicU64>,
         last_data: Arc<AtomicU64>,
+        reader_alive: Arc<AtomicBool>,
     ) {
         tracing::info!("Vest message_reader_loop started");
+        reader_alive.store(true, Ordering::Relaxed);
+
         while let Some(msg_result) = ws_receiver.next().await {
             last_data.store(current_time_ms(), Ordering::Relaxed);
 
@@ -775,7 +784,9 @@ impl VestAdapter {
                 }
             }
         }
-        tracing::info!("Message reader loop ended");
+
+        reader_alive.store(false, Ordering::Relaxed);
+        tracing::warn!("Vest message reader loop ended — reader_alive set to false");
     }
 
     /// Send a SUBSCRIBE request for a symbol's orderbook
@@ -836,6 +847,7 @@ impl VestAdapter {
         };
 
         let last_pong = Arc::clone(&self.connection_health.last_pong);
+        let reader_alive = Arc::clone(&self.connection_health.reader_alive);
         last_pong.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
@@ -857,6 +869,7 @@ impl VestAdapter {
                     let mut sender = ws_sender.lock().await;
                     if let Err(e) = sender.send(Message::Text(ping_msg.to_string())).await {
                         tracing::warn!("Vest heartbeat: Failed to send PING - {}", e);
+                        reader_alive.store(false, Ordering::Relaxed);
                         break;
                     }
                     tracing::trace!("Vest heartbeat: PING sent");
@@ -870,9 +883,10 @@ impl VestAdapter {
                 let pong_age_ms = now.saturating_sub(last);
                 if pong_age_ms > 30_000 {
                     tracing::warn!(
-                        "Vest heartbeat: PONG stale ({}ms ago) - connection likely dead",
+                        "Vest heartbeat: PONG stale ({}ms ago) - connection likely dead, setting reader_alive=false",
                         pong_age_ms
                     );
+                    reader_alive.store(false, Ordering::Relaxed);
                     break;
                 }
                 tracing::trace!("Vest heartbeat: last PONG was {}ms ago", pong_age_ms);
@@ -883,6 +897,102 @@ impl VestAdapter {
 
         self.heartbeat_handle = Some(handle);
         tracing::info!("Vest: Heartbeat monitoring started (30s interval)");
+    }
+
+    // =========================================================================
+    // Listen Key Renewal (S-8: prevents 60-min expiry)
+    // =========================================================================
+
+    /// Extend listen key validity by 60 minutes (Vest API: PUT /account/listenKey)
+    async fn extend_listen_key_request(
+        http_client: &reqwest::Client,
+        rest_base_url: &str,
+        api_key: &str,
+        rest_server_header: &str,
+    ) -> ExchangeResult<()> {
+        let url = format!("{}/account/listenKey", rest_base_url);
+
+        let response = http_client
+            .put(&url)
+            .header("xrestservermm", rest_server_header)
+            .header("X-API-KEY", api_key)
+            .send()
+            .await
+            .map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("ListenKey extend failed: {}", e))
+            })?;
+
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(ExchangeError::AuthenticationFailed(format!(
+                "ListenKey extend failed: {}",
+                text
+            )));
+        }
+
+        tracing::info!("Vest: Listen key extended successfully (+60 min)");
+        Ok(())
+    }
+
+    /// Spawn background task that extends the listen key every 45 minutes.
+    ///
+    /// The Vest listen key expires after 60 minutes. Renewing every 45 minutes
+    /// gives a 15-minute safety margin. On failure, sets `reader_alive = false`
+    /// to trigger reconnection via `is_stale()` → `ensure_ready()`.
+    fn spawn_listen_key_renewal_task(&mut self) {
+        let api_key = match &self.api_key {
+            Some(key) => key.clone(),
+            None => return,
+        };
+
+        let http_client = self.http_client.clone();
+        let rest_base_url = self.config.rest_base_url().to_string();
+        let rest_server_header = self.rest_server_header();
+        let reader_alive = Arc::clone(&self.connection_health.reader_alive);
+
+        let handle = tokio::spawn(async move {
+            use crate::adapters::types::VEST_LISTEN_KEY_RENEWAL_SECS;
+
+            let mut interval = tokio::time::interval(Duration::from_secs(
+                VEST_LISTEN_KEY_RENEWAL_SECS,
+            ));
+            // Skip the immediate first tick (key was just created)
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+
+                tracing::info!("Vest: Attempting listen key renewal...");
+                match Self::extend_listen_key_request(
+                    &http_client,
+                    &rest_base_url,
+                    &api_key,
+                    &rest_server_header,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        tracing::info!("Vest: Listen key renewal successful");
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Vest: Listen key renewal FAILED: {} — setting reader_alive=false to trigger reconnect",
+                            e
+                        );
+                        reader_alive.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+
+            tracing::debug!("Vest listen key renewal task ended");
+        });
+
+        self.listen_key_renewal_handle = Some(handle);
+        tracing::info!(
+            "Vest: Listen key renewal task started ({}s interval)",
+            crate::adapters::types::VEST_LISTEN_KEY_RENEWAL_SECS
+        );
     }
 
     // =========================================================================
@@ -1210,6 +1320,7 @@ impl ExchangeAdapter for VestAdapter {
         self.validate_connection().await?;
         self.split_and_spawn_reader()?;
         self.spawn_heartbeat_task();
+        self.spawn_listen_key_renewal_task();
 
         self.connected = true;
         tracing::info!(exchange = "vest", "Vest WebSocket connected");
@@ -1231,6 +1342,10 @@ impl ExchangeAdapter for VestAdapter {
             handle.abort();
         }
 
+        if let Some(handle) = self.listen_key_renewal_handle.take() {
+            handle.abort();
+        }
+
         if let Some(ws_sender) = self.ws_sender.take() {
             let mut sender = ws_sender.lock().await;
             let _ = sender.close().await;
@@ -1249,6 +1364,7 @@ impl ExchangeAdapter for VestAdapter {
 
         self.connection_health.last_pong.store(0, Ordering::Relaxed);
         self.connection_health.last_data.store(0, Ordering::Relaxed);
+        self.connection_health.reader_alive.store(false, Ordering::Relaxed);
 
         let mut books = self.shared_orderbooks.write().await;
         books.clear();
@@ -1464,6 +1580,11 @@ impl ExchangeAdapter for VestAdapter {
 
     fn is_stale(&self) -> bool {
         if !self.connected {
+            return true;
+        }
+
+        // Reader loop died → connection is dead (S-1/S-2 fix)
+        if !self.connection_health.reader_alive.load(Ordering::Relaxed) {
             return true;
         }
 

@@ -4,7 +4,7 @@
 //! orderbook representation and order management.
 
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -74,6 +74,9 @@ pub const WS_PING_INTERVAL_SECS: u64 = 30;
 /// Threshold in milliseconds after which adapter data is considered stale (30 seconds)
 pub const STALE_THRESHOLD_MS: u64 = 30_000;
 
+/// How often to extend the Vest listen key (seconds) — well within 60-min TTL
+pub const VEST_LISTEN_KEY_RENEWAL_SECS: u64 = 45 * 60;
+
 // =============================================================================
 // Connection Health Types
 // =============================================================================
@@ -102,6 +105,9 @@ pub struct ConnectionHealth {
     pub last_pong: Arc<AtomicU64>,
     /// Timestamp of last data received (Unix ms) - any message counts
     pub last_data: Arc<AtomicU64>,
+    /// Set to false when the WS reader loop exits (Close frame or error).
+    /// Checked by is_stale() for immediate dead-connection detection.
+    pub reader_alive: Arc<AtomicBool>,
 }
 
 impl ConnectionHealth {
@@ -111,6 +117,7 @@ impl ConnectionHealth {
             state: Arc::new(RwLock::new(ConnectionState::Disconnected)),
             last_pong: Arc::new(AtomicU64::new(0)),
             last_data: Arc::new(AtomicU64::new(0)),
+            reader_alive: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -120,6 +127,7 @@ impl ConnectionHealth {
             state: Arc::clone(&self.state),
             last_pong: Arc::clone(&self.last_pong),
             last_data: Arc::clone(&self.last_data),
+            reader_alive: Arc::clone(&self.reader_alive),
         }
     }
 }
@@ -845,6 +853,47 @@ mod tests {
         // Verify cap works for higher attempts
         let attempt_10 = std::cmp::min(500 * (1u64 << 10), 5000);
         assert_eq!(attempt_10, 5000, "High attempt should cap at 5000ms");
+    }
+
+    // =========================================================================
+    // Reader Alive Flag Tests (S-1/S-2 Stability)
+    // =========================================================================
+
+    #[test]
+    fn test_reader_alive_flag_default() {
+        use std::sync::atomic::Ordering;
+        let health = ConnectionHealth::new();
+        // reader_alive should be false by default (reader not started yet)
+        assert!(!health.reader_alive.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_reader_alive_shared_across_clones() {
+        use std::sync::atomic::Ordering;
+        let health = ConnectionHealth::new();
+        let cloned = health.clone_refs();
+
+        // Set via original, read via clone
+        health.reader_alive.store(true, Ordering::Relaxed);
+        assert!(cloned.reader_alive.load(Ordering::Relaxed));
+
+        // Set via clone, read via original
+        cloned.reader_alive.store(false, Ordering::Relaxed);
+        assert!(!health.reader_alive.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_reader_alive_transitions() {
+        use std::sync::atomic::Ordering;
+        let health = ConnectionHealth::new();
+
+        // Simulate reader startup
+        health.reader_alive.store(true, Ordering::Relaxed);
+        assert!(health.reader_alive.load(Ordering::Relaxed));
+
+        // Simulate reader death (Close frame or error)
+        health.reader_alive.store(false, Ordering::Relaxed);
+        assert!(!health.reader_alive.load(Ordering::Relaxed));
     }
 
     // =========================================================================
