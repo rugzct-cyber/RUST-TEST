@@ -11,7 +11,7 @@
 //! - Distinct entry_spread vs exit_spread fields for slippage analysis
 
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 use tracing::{debug, error, warn};
 
@@ -45,16 +45,7 @@ use super::channels::LOG_THROTTLE_POLLS;
 // Helper Functions
 // =============================================================================
 
-/// Drain all pending messages from a channel and log if any were drained
-fn drain_channel<T>(rx: &mut mpsc::Receiver<T>, context: &str) {
-    let mut drained = 0;
-    while rx.try_recv().is_ok() {
-        drained += 1;
-    }
-    if drained > 0 {
-        debug!("Drained {} stale messages from {}", drained, context);
-    }
-}
+/// Drain is no longer needed with watch channel (auto-replaces stale values)
 
 /// Exit monitoring result with exit fill prices for PnL calculation
 struct ExitResult {
@@ -83,7 +74,7 @@ struct ExitMonitoringParams {
 ///
 /// Returns: (poll_count, Option<ExitResult>) - None for shutdown, Some for normal exit
 async fn exit_monitoring_loop<V, P>(
-    executor: &DeltaNeutralExecutor<V, P>,
+    executor: &mut DeltaNeutralExecutor<V, P>,
     params: ExitMonitoringParams,
     shutdown_rx: &mut broadcast::Receiver<()>,
 ) -> (u64, Option<ExitResult>)
@@ -282,8 +273,8 @@ where
 /// * `exit_spread_target` - Target spread for position exit (from config, e.g. -0.10)
 #[allow(clippy::too_many_arguments)]
 pub async fn execution_task<V, P>(
-    mut opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
-    executor: DeltaNeutralExecutor<V, P>,
+    mut opportunity_rx: watch::Receiver<Option<SpreadOpportunity>>,
+    mut executor: DeltaNeutralExecutor<V, P>,
     vest_best_prices: SharedBestPrices,
     paradex_best_prices: SharedBestPrices,
     vest_symbol: String,
@@ -308,8 +299,12 @@ pub async fn execution_task<V, P>(
                 log_system_event(&SystemEvent::task_shutdown("execution", "shutdown_signal"));
                 break;
             }
-            // Process incoming opportunities (AtomicBool guard prevents duplicates)
-            Some(opportunity) = opportunity_rx.recv() => {
+            // Process incoming opportunities (watch: always freshest)
+            Ok(_) = opportunity_rx.changed() => {
+                let opportunity = match opportunity_rx.borrow_and_update().clone() {
+                    Some(opp) => opp,
+                    None => continue, // Initial None value, skip
+                };
                 let spread_pct = opportunity.spread_percent;
                 let pair = opportunity.pair.clone();
 
@@ -388,7 +383,7 @@ pub async fn execution_task<V, P>(
                                 );
 
                                 let (_poll_count, maybe_exit_result) = exit_monitoring_loop(
-                                    &executor,
+                                    &mut executor,
                                     ExitMonitoringParams {
                                         vest_best_prices: vest_best_prices.clone(),
                                         paradex_best_prices: paradex_best_prices.clone(),
@@ -457,15 +452,13 @@ pub async fn execution_task<V, P>(
                             );
                         }
 
-                        // Drain any stale opportunities that accumulated during execution
-                        drain_channel(&mut opportunity_rx, "opportunity queue");
+                        // Watch channel auto-replaces stale data — no drain needed
                     }
                     Err(e) => {
                         // Check if it's a "position already open" error
                         let err_msg = format!("{:?}", e);
                         if err_msg.contains("Position already open") {
-                            debug!(event_type = "TRADE_SKIPPED", "Position already open - draining queue");
-                            drain_channel(&mut opportunity_rx, "opportunity queue");
+                            debug!(event_type = "TRADE_SKIPPED", "Position already open");
                         } else {
                             error!(event_type = "ORDER_FAILED", error = ?e, "Delta-neutral execution error");
                         }
@@ -495,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_task_processes_opportunity() {
-        let (opportunity_tx, opportunity_rx) = mpsc::channel(10);
+        let (opportunity_tx, opportunity_rx) = watch::channel(None);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let vest = TestMockAdapter::new("vest");
@@ -542,7 +535,7 @@ mod tests {
             dex_b_ask: 42005.0,
             dex_b_bid: 41985.0,
         };
-        opportunity_tx.send(opportunity).await.unwrap();
+        opportunity_tx.send_replace(Some(opportunity));
 
         // Give time for entry (including 500ms API delay) + exit monitoring to process
         tokio::time::sleep(Duration::from_millis(800)).await;
@@ -557,7 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_task_shutdown() {
-        let (_opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (_opportunity_tx, opportunity_rx) = watch::channel(None::<SpreadOpportunity>);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let vest = TestMockAdapter::new("vest");
@@ -604,7 +597,7 @@ mod tests {
         // Create mock executor
         let vest = TestMockAdapter::new("vest");
         let paradex = TestMockAdapter::new("paradex");
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -628,7 +621,7 @@ mod tests {
         let result = timeout(
             Duration::from_secs(5),
             exit_monitoring_loop(
-                &executor,
+                &mut executor,
                 ExitMonitoringParams {
                     vest_best_prices: vest_bp,
                     paradex_best_prices: paradex_bp,
@@ -663,7 +656,7 @@ mod tests {
         // Create mock executor
         let vest = TestMockAdapter::new("vest");
         let paradex = TestMockAdapter::new("paradex");
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -681,7 +674,7 @@ mod tests {
         // Spawn the monitoring loop in background
         let handle = tokio::spawn(async move {
             exit_monitoring_loop(
-                &executor,
+                &mut executor,
                 ExitMonitoringParams {
                     vest_best_prices: vest_bp,
                     paradex_best_prices: paradex_bp,
@@ -719,7 +712,7 @@ mod tests {
         // Create mock executor
         let vest = TestMockAdapter::new("vest");
         let paradex = TestMockAdapter::new("paradex");
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -742,7 +735,7 @@ mod tests {
         let result = timeout(
             Duration::from_secs(5),
             exit_monitoring_loop(
-                &executor,
+                &mut executor,
                 ExitMonitoringParams {
                     vest_best_prices: vest_bp,
                     paradex_best_prices: paradex_bp,
@@ -778,7 +771,7 @@ mod tests {
     #[tokio::test]
     async fn test_execution_task_drains_pending_messages() {
         // Send multiple opportunities, then shutdown — verify at least one is processed
-        let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (opportunity_tx, opportunity_rx) = watch::channel(None::<SpreadOpportunity>);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let vest = TestMockAdapter::new("vest");
@@ -824,7 +817,7 @@ mod tests {
             dex_b_ask: 42005.0,
             dex_b_bid: 41985.0,
         };
-        opportunity_tx.send(opp).await.unwrap();
+        opportunity_tx.send_replace(Some(opp));
 
         // Give time for processing
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -842,7 +835,7 @@ mod tests {
     #[tokio::test]
     async fn test_execution_task_handles_empty_channel() {
         // No opportunities sent, just shutdown — should exit cleanly
-        let (_opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (_opportunity_tx, opportunity_rx) = watch::channel(None::<SpreadOpportunity>);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let vest = TestMockAdapter::new("vest");
@@ -894,7 +887,7 @@ mod tests {
         // and should respond to shutdown signal
         let vest = TestMockAdapter::new("vest");
         let paradex = TestMockAdapter::new("paradex");
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -910,7 +903,7 @@ mod tests {
 
         let handle = tokio::spawn(async move {
             exit_monitoring_loop(
-                &executor,
+                &mut executor,
                 ExitMonitoringParams {
                     vest_best_prices: vest_bp,
                     paradex_best_prices: paradex_bp,

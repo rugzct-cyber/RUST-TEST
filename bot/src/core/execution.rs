@@ -10,7 +10,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Instant;
-use tokio::sync::Mutex;
+// Mutex removed (Axe 7): executor is single-owner, no shared access
 use tracing::{debug, error, info, warn};
 
 use crate::adapters::{
@@ -286,8 +286,8 @@ where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
 {
-    vest_adapter: Mutex<V>,
-    paradex_adapter: Mutex<P>,
+    vest_adapter: V,
+    paradex_adapter: P,
     /// Fixed quantity for MVP
     default_quantity: f64,
     /// Symbol for Vest (e.g., "BTC-PERP")
@@ -314,8 +314,8 @@ where
         paradex_symbol: String,
     ) -> Self {
         Self {
-            vest_adapter: Mutex::new(vest_adapter),
-            paradex_adapter: Mutex::new(paradex_adapter),
+            vest_adapter,
+            paradex_adapter,
             default_quantity,
             vest_symbol,
             paradex_symbol,
@@ -333,29 +333,23 @@ where
     ///
     /// Calls reconnect() on adapters if they are stale or need JWT refresh.
     /// This is critical for Paradex which has JWT expiry.
-    pub async fn ensure_ready(&self) -> ExchangeResult<()> {
+    pub async fn ensure_ready(&mut self) -> ExchangeResult<()> {
         // Check and refresh Paradex adapter if needed
-        {
-            let mut paradex = self.paradex_adapter.lock().await;
-            if paradex.is_stale() {
-                log_system_event(&SystemEvent::adapter_reconnect(
-                    "paradex",
-                    "stale - reconnecting",
-                ));
-                paradex.reconnect().await?;
-            }
+        if self.paradex_adapter.is_stale() {
+            log_system_event(&SystemEvent::adapter_reconnect(
+                "paradex",
+                "stale - reconnecting",
+            ));
+            self.paradex_adapter.reconnect().await?;
         }
 
         // Check Vest adapter
-        {
-            let mut vest = self.vest_adapter.lock().await;
-            if vest.is_stale() {
-                log_system_event(&SystemEvent::adapter_reconnect(
-                    "vest",
-                    "stale - reconnecting",
-                ));
-                vest.reconnect().await?;
-            }
+        if self.vest_adapter.is_stale() {
+            log_system_event(&SystemEvent::adapter_reconnect(
+                "vest",
+                "stale - reconnecting",
+            ));
+            self.vest_adapter.reconnect().await?;
         }
 
         Ok(())
@@ -379,7 +373,7 @@ where
     /// Places a long order on one exchange and short order on the other,
     /// in parallel using `tokio::join!`.
     pub async fn execute_delta_neutral(
-        &self,
+        &mut self,
         opportunity: SpreadOpportunity,
     ) -> ExchangeResult<DeltaNeutralResult> {
         // ATOMIC GUARD: Try to acquire - only one trade can pass
@@ -418,16 +412,14 @@ where
         timings.mark_signal_received();
 
         // Execute both orders in parallel (no retry)
-        // We lock both adapters and then place orders concurrently
-        let vest_guard = self.vest_adapter.lock().await;
-        let paradex_guard = self.paradex_adapter.lock().await;
+        // No lock needed — single-owner executor (Axe 7)
 
         // Mark order sent timestamp
         timings.mark_order_sent();
 
         let (vest_result, paradex_result) = tokio::join!(
-            vest_guard.place_order(vest_order),
-            paradex_guard.place_order(paradex_order)
+            self.vest_adapter.place_order(vest_order),
+            self.paradex_adapter.place_order(paradex_order)
         );
 
         // Mark order confirmed timestamp
@@ -527,7 +519,7 @@ where
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => vest_guard.place_order(o).await,
+                        Ok(o) => self.vest_adapter.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 } else {
@@ -542,7 +534,7 @@ where
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => paradex_guard.place_order(o).await,
+                        Ok(o) => self.paradex_adapter.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 };
@@ -566,7 +558,7 @@ where
                             .build()
                             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => vest_guard.place_order(o).await,
+                        Ok(o) => self.vest_adapter.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 } else {
@@ -581,7 +573,7 @@ where
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => paradex_guard.place_order(o).await,
+                        Ok(o) => self.paradex_adapter.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 };
@@ -609,16 +601,13 @@ where
     /// Logs entry prices, entry spread, and exit target to confirm trade placement.
     /// Returns (vest_entry_price, paradex_entry_price) for TUI display.
     pub async fn verify_positions(
-        &self,
+        &mut self,
         entry_spread: f64,
         exit_spread_target: f64,
     ) -> (Option<f64>, Option<f64>) {
-        let vest = self.vest_adapter.lock().await;
-        let paradex = self.paradex_adapter.lock().await;
-
         let (vest_pos, paradex_pos) = tokio::join!(
-            vest.get_position(&self.vest_symbol),
-            paradex.get_position(&self.paradex_symbol)
+            self.vest_adapter.get_position(&self.vest_symbol),
+            self.paradex_adapter.get_position(&self.paradex_symbol)
         );
 
         // Use PositionVerification struct for extraction and logging (Task 4)
@@ -695,7 +684,7 @@ where
     /// Uses live orderbook prices (0ms) instead of `get_position()` API call (200-500ms).
     /// Applies SLIPPAGE_BUFFER_PCT to the live price, same pattern as entry.
     pub async fn close_position(
-        &self,
+        &mut self,
         exit_spread: f64,
         vest_bid: f64,
         vest_ask: f64,
@@ -756,13 +745,11 @@ where
                 .build()
                 .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
-        // Execute close orders in parallel
-        let vest_guard = self.vest_adapter.lock().await;
-        let paradex_guard = self.paradex_adapter.lock().await;
+        // Execute close orders in parallel (no lock — Axe 7)
 
         let (vest_result, paradex_result) = tokio::join!(
-            vest_guard.place_order(vest_order),
-            paradex_guard.place_order(paradex_order)
+            self.vest_adapter.place_order(vest_order),
+            self.paradex_adapter.place_order(paradex_order)
         );
 
         let execution_latency_ms = start.elapsed().as_millis() as u64;
@@ -831,17 +818,14 @@ where
             _ => None,
         };
 
-        // Drop the adapter guards before re-acquiring for fill-price queries
-        drop(vest_guard);
-        drop(paradex_guard);
+        // No guard drops needed (Axe 7 — no Mutex)
 
         // Query real fill info from exchange APIs (best-effort, fallback to ACK price)
         let mut vest_realized_pnl: Option<f64> = None;
         let mut paradex_realized_pnl: Option<f64> = None;
 
         let vest_fill = if let Some(oid) = &vest_order_id {
-            let guard = self.vest_adapter.lock().await;
-            match guard.get_fill_info(&self.vest_symbol, oid).await {
+            match self.vest_adapter.get_fill_info(&self.vest_symbol, oid).await {
                 Ok(Some(info)) => {
                     tracing::info!(
                         order_id = %oid,
@@ -877,8 +861,7 @@ where
         };
 
         let paradex_fill = if let Some(oid) = &paradex_order_id {
-            let guard = self.paradex_adapter.lock().await;
-            match guard.get_fill_info(&self.paradex_symbol, oid).await {
+            match self.paradex_adapter.get_fill_info(&self.paradex_symbol, oid).await {
                 Ok(Some(info)) => {
                     tracing::info!(
                         order_id = %oid,
@@ -1108,7 +1091,7 @@ mod tests {
         let vest_count = vest.order_count.clone();
         let paradex_count = paradex.order_count.clone();
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1134,7 +1117,7 @@ mod tests {
         let vest = MockAdapter::new("vest");
         let paradex = MockAdapter::new("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1160,7 +1143,7 @@ mod tests {
         let vest = MockAdapter::new("vest");
         let paradex = MockAdapter::with_failure("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1184,7 +1167,7 @@ mod tests {
         let vest = MockAdapter::new("vest");
         let paradex = MockAdapter::new("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1217,7 +1200,7 @@ mod tests {
         let vest = MockAdapter::new("vest");
         let paradex = MockAdapter::new("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1265,7 +1248,7 @@ mod tests {
         let vest = MockAdapter::with_failure("vest");
         let paradex = MockAdapter::with_failure("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1404,7 +1387,7 @@ mod tests {
         let paradex = MockAdapter::new("paradex");
         let vest_count = vest.order_count.clone();
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1434,7 +1417,7 @@ mod tests {
         let vest = MockAdapter::new("vest");
         let paradex = MockAdapter::with_failure("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
@@ -1502,7 +1485,7 @@ mod tests {
         let vest = MockAdapter::new("vest");
         let paradex = MockAdapter::new("paradex");
 
-        let executor = DeltaNeutralExecutor::new(
+        let mut executor = DeltaNeutralExecutor::new(
             vest,
             paradex,
             0.01,
