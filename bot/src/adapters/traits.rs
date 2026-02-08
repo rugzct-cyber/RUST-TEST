@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 
 use crate::adapters::errors::ExchangeResult;
-use crate::adapters::types::{OrderRequest, OrderResponse, Orderbook, PositionInfo};
+use crate::adapters::types::{FillInfo, OrderRequest, OrderResponse, Orderbook, PositionInfo};
 
 /// Common trait for all exchange adapters
 ///
@@ -132,6 +132,21 @@ pub trait ExchangeAdapter: Send + Sync {
     /// * `Ok(None)` - No position for this symbol
     /// * `Err(...)` - Exchange error occurred
     async fn get_position(&self, symbol: &str) -> ExchangeResult<Option<PositionInfo>>;
+
+    /// Get fill info for a completed order by querying the exchange API (CR-11 fix)
+    ///
+    /// Returns fill price, realized PnL, and fee directly from the exchange,
+    /// avoiding manual PnL calculation from unreliable `avg_price` values.
+    ///
+    /// # Arguments
+    /// * `symbol` - Trading pair symbol (used by Paradex to filter fills)
+    /// * `order_id` - Exchange-assigned order ID from the close order
+    ///
+    /// # Default Implementation
+    /// Returns `Ok(None)` — override in exchange-specific adapters.
+    async fn get_fill_info(&self, _symbol: &str, _order_id: &str) -> ExchangeResult<Option<FillInfo>> {
+        Ok(None)
+    }
 
     /// Get the exchange name identifier
     ///

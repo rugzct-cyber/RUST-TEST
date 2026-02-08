@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::RwLock;
 
 use crate::adapters::Orderbook;
 
@@ -15,12 +15,6 @@ pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
 
 // Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
 pub use super::spread::SpreadDirection;
-
-// Import OrderbookUpdate for orderbook streaming channel
-use crate::adapters::types::OrderbookUpdate;
-
-/// Default channel capacity for bounded channels
-pub const DEFAULT_CHANNEL_CAPACITY: usize = 100;
 
 /// Log throttle interval — log every N polls (~1 second at 25ms polling)
 /// Single source of truth for runtime and monitoring tasks.
@@ -45,73 +39,16 @@ pub struct SpreadOpportunity {
     pub dex_b_bid: f64,
 }
 
-/// Bundle of all inter-task communication channels
-#[derive(Debug)]
-pub struct ChannelBundle {
-    /// SpreadCalculator -> Executor: spread opportunities
-    pub opportunity_tx: mpsc::Sender<SpreadOpportunity>,
-    pub opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
-
-    /// Adapters -> SpreadCalculator: orderbook updates
-    pub orderbook_tx: mpsc::Sender<OrderbookUpdate>,
-    pub orderbook_rx: mpsc::Receiver<OrderbookUpdate>,
-
-    /// Shutdown broadcast: main -> all tasks
-    pub shutdown_tx: broadcast::Sender<()>,
-}
-
-impl ChannelBundle {
-    pub fn new(capacity: usize) -> Self {
-        let (opportunity_tx, opportunity_rx) = mpsc::channel(capacity);
-        let (orderbook_tx, orderbook_rx) = mpsc::channel(capacity);
-        let (shutdown_tx, _) = broadcast::channel(1);
-
-        Self {
-            opportunity_tx,
-            opportunity_rx,
-            orderbook_tx,
-            orderbook_rx,
-            shutdown_tx,
-        }
-    }
-
-    pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
-        self.shutdown_tx.subscribe()
-    }
-}
-
-impl Default for ChannelBundle {
-    fn default() -> Self {
-        Self::new(DEFAULT_CHANNEL_CAPACITY)
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::types::{Orderbook, OrderbookLevel};
-
-    #[test]
-    fn test_channel_bundle_creation() {
-        let bundle = ChannelBundle::new(50);
-        assert!(!bundle.opportunity_tx.is_closed());
-        assert!(!bundle.orderbook_tx.is_closed());
-    }
-
-    #[tokio::test]
-    async fn test_shutdown_signal() {
-        let bundle = ChannelBundle::default();
-        let mut rx = bundle.subscribe_shutdown();
-
-        assert!(bundle.shutdown_tx.send(()).is_ok());
-        assert!(rx.recv().await.is_ok());
-    }
+    use crate::adapters::types::{Orderbook, OrderbookLevel, OrderbookUpdate};
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn test_orderbook_channel_send_receive() {
-        let bundle = ChannelBundle::new(10);
-        let mut rx = bundle.orderbook_rx;
-        let tx = bundle.orderbook_tx;
+        let (tx, mut rx) = mpsc::channel::<OrderbookUpdate>(10);
 
         // Create a test orderbook update
         let update = OrderbookUpdate {
@@ -130,7 +67,7 @@ mod tests {
         // Receive and verify
         let received = rx.recv().await.unwrap();
         assert_eq!(received.symbol, "BTC-PERP");
-        assert_eq!(received.exchange, "vest"); // Verify exchange field
+        assert_eq!(received.exchange, "vest");
         assert_eq!(received.orderbook.bids.len(), 1);
         assert_eq!(received.orderbook.asks.len(), 1);
         assert_eq!(received.orderbook.bids[0].price, 100.0);

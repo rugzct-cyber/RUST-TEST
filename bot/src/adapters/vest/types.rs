@@ -54,6 +54,17 @@ pub(crate) struct VestOrderResponse {
     /// Last filled price (only present when status is FILLED)
     #[serde(rename = "lastFilledPrice")]
     pub last_filled_price: Option<String>,
+    /// Last filled size (only present when status is FILLED)
+    #[serde(rename = "lastFilledSize")]
+    pub last_filled_size: Option<String>,
+    /// Settled funding (positive means trader received)
+    #[serde(rename = "settledFunding")]
+    pub settled_funding: Option<String>,
+    /// Realized PnL (includes funding and fees, only when status is FILLED)
+    #[serde(rename = "realizedPnl")]
+    pub realized_pnl: Option<String>,
+    /// Fees charged (includes premium)
+    pub fees: Option<String>,
     /// Error code if any
     pub code: Option<i32>,
     /// Error message

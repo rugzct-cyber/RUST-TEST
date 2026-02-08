@@ -28,6 +28,8 @@ pub struct TradeRecord {
     pub entry_spread: f64,
     pub exit_spread: f64,
     pub pnl_usd: f64,
+    pub vest_exit_price: f64,
+    pub paradex_exit_price: f64,
     pub timestamp: String,
 }
 
@@ -233,7 +235,7 @@ impl AppState {
     }
 
     /// Record trade exit
-    pub fn record_exit(&mut self, exit_spread: f64, pnl_usd: f64, latency_ms: u64) {
+    pub fn record_exit(&mut self, exit_spread: f64, pnl_usd: f64, latency_ms: u64, vest_exit_price: f64, paradex_exit_price: f64) {
         // Save trade to history BEFORE resetting position fields
         if let (Some(direction), Some(entry_spread)) = (self.entry_direction, self.entry_spread) {
             let record = TradeRecord {
@@ -241,6 +243,8 @@ impl AppState {
                 entry_spread,
                 exit_spread,
                 pnl_usd,
+                vest_exit_price,
+                paradex_exit_price,
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             };
 
@@ -306,7 +310,7 @@ mod tests {
         assert_eq!(state.entry_vest_price, Some(97000.0));
         assert_eq!(state.entry_paradex_price, Some(97100.0));
 
-        state.record_exit(-0.04, 0.08, 45); // exit_spread, pnl_usd, latency_ms
+        state.record_exit(-0.04, 0.08, 45, 97050.0, 97150.0); // exit_spread, pnl_usd, latency_ms, vest_exit, paradex_exit
         assert!(!state.position_open);
         assert_eq!(state.trades_count, 1);
         assert_eq!(state.total_profit_usd, 0.08);
@@ -349,7 +353,7 @@ mod tests {
         for i in 0..11 {
             let spread = 0.10 + (i as f64 * 0.01); // Varying entry spreads
             state.record_entry(spread, SpreadDirection::AOverB, 97000.0, 97100.0);
-            state.record_exit(-0.02, 0.05, 30); // exit_spread, pnl_usd, latency
+            state.record_exit(-0.02, 0.05, 30, 97050.0, 97150.0); // exit_spread, pnl_usd, latency, vest_exit, paradex_exit
         }
 
         // Should be capped at MAX_TRADE_HISTORY (10)

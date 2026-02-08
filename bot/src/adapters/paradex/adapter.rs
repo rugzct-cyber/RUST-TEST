@@ -1593,6 +1593,11 @@ impl ExchangeAdapter for ParadexAdapter {
         Ok(None)
     }
 
+    /// CR-11 fix: Query real fill info (price + fee) from Paradex REST API
+    async fn get_fill_info(&self, symbol: &str, order_id: &str) -> ExchangeResult<Option<crate::adapters::types::FillInfo>> {
+        self.query_fill_price(symbol, order_id).await
+    }
+
     /// Get exchange name
     fn exchange_name(&self) -> &'static str {
         "paradex"
@@ -1608,6 +1613,134 @@ impl ParadexAdapter {
     pub async fn get_orderbook_async(&self, symbol: &str) -> Option<Orderbook> {
         let books = self.shared_orderbooks.read().await;
         books.get(symbol).cloned()
+    }
+
+    /// Get the actual fill price for a completed order via REST API
+    ///
+    /// Queries `GET /v1/fills?market={symbol}&page_size=10` and filters by `order_id`.
+    /// This is needed because the initial order ACK from IOC/MARKET orders
+    /// often returns `avg_price = 0.0` (CR-11).
+    ///
+    /// Returns `Ok(Some(price))` if a matching fill is found,
+    /// `Ok(None)` if no fill matches the order_id.
+    pub async fn query_fill_price(&self, symbol: &str, order_id: &str) -> ExchangeResult<Option<crate::adapters::types::FillInfo>> {
+        if !self.connected {
+            return Err(ExchangeError::ConnectionFailed("Not connected".into()));
+        }
+
+        let jwt = self
+            .jwt_token
+            .as_ref()
+            .ok_or_else(|| ExchangeError::AuthenticationFailed("No JWT token".into()))?;
+
+        if self.jwt_needs_refresh() {
+            return Err(ExchangeError::AuthenticationFailed(
+                "JWT token expired - call reconnect() first".into(),
+            ));
+        }
+
+        // GET /v1/fills?market={symbol}&page_size=10
+        let url = format!(
+            "{}/fills?market={}&page_size=10",
+            self.config.rest_base_url(),
+            symbol
+        );
+
+        tracing::debug!(
+            order_id = %order_id,
+            symbol = %symbol,
+            "Paradex get_fill_info: GET {}",
+            url
+        );
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", jwt))
+            .send()
+            .await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("Fills request failed: {}", e)))?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+        })?;
+
+        if !status.is_success() {
+            tracing::warn!(
+                order_id = %order_id,
+                status = %status,
+                "Paradex get_fill_info failed"
+            );
+            return Ok(None);
+        }
+
+        // Parse fills response
+        #[derive(Debug, serde::Deserialize)]
+        struct FillsResponse {
+            results: Option<Vec<FillEntry>>,
+        }
+
+        #[derive(Debug, serde::Deserialize)]
+        struct FillEntry {
+            order_id: Option<String>,
+            price: Option<String>,
+            fee: Option<String>,
+            realized_pnl: Option<String>,
+        }
+
+        let fills_resp: FillsResponse = serde_json::from_str(&body).map_err(|e| {
+            ExchangeError::InvalidResponse(format!(
+                "Failed to parse fills response: {} - body: {}",
+                e, body
+            ))
+        })?;
+
+        // Find fill matching the order_id
+        if let Some(fills) = &fills_resp.results {
+            for fill in fills {
+                if fill.order_id.as_deref() == Some(order_id) {
+                    let fill_price = fill
+                        .price
+                        .as_ref()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+
+                    let fee = fill
+                        .fee
+                        .as_ref()
+                        .and_then(|s| s.parse::<f64>().ok());
+
+                    let realized_pnl = fill
+                        .realized_pnl
+                        .as_ref()
+                        .and_then(|s| s.parse::<f64>().ok());
+
+                    if fill_price > 0.0 || realized_pnl.is_some() {
+                        tracing::debug!(
+                            order_id = %order_id,
+                            fill_price = %fill_price,
+                            realized_pnl = ?realized_pnl,
+                            fee = ?fee,
+                            "Paradex: Retrieved fill info from GET /fills"
+                        );
+                        return Ok(Some(crate::adapters::types::FillInfo {
+                            fill_price,
+                            realized_pnl,
+                            fee,
+                        }));
+                    }
+                }
+            }
+        }
+
+        let fill_count = fills_resp.results.as_ref().map_or(0, |f| f.len());
+        tracing::debug!(
+            order_id = %order_id,
+            fill_count = fill_count,
+            "Paradex: No matching fill found for order"
+        );
+        Ok(None)
     }
 }
 

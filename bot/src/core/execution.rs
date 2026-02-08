@@ -266,6 +266,10 @@ pub struct DeltaNeutralResult {
     pub vest_fill_price: f64,
     /// Fill price from Paradex order (avg_fill_price)
     pub paradex_fill_price: f64,
+    /// Exchange-reported realized PnL from Vest (includes funding + fees)
+    pub vest_realized_pnl: Option<f64>,
+    /// Exchange-reported realized PnL from Paradex
+    pub paradex_realized_pnl: Option<f64>,
     /// Trade timing breakdown for deferred logging
     pub timings: Option<TradeTimings>,
 }
@@ -481,6 +485,8 @@ where
             short_exchange: short_exchange.to_string(),
             vest_fill_price,
             paradex_fill_price,
+            vest_realized_pnl: None,
+            paradex_realized_pnl: None,
             timings: Some(timings),
         };
 
@@ -796,21 +802,115 @@ where
         };
 
         // Extract fill prices from close order responses for PnL calculation
-        let vest_fill = match if matches!(entry_dir, SpreadDirection::AOverB) {
-            &long_status
+        // CR-11 fix: The initial OrderResponse.avg_price is often 0.0 for IOC/MARKET orders.
+        // First, get fallback prices and order IDs from the immediate response,
+        // then query the exchange APIs for the real fill prices.
+
+        // Determine which leg is vest vs paradex based on entry direction
+        let (vest_leg, paradex_leg) = if matches!(entry_dir, SpreadDirection::AOverB) {
+            (&long_status, &short_status)
         } else {
-            &short_status
-        } {
+            (&short_status, &long_status)
+        };
+
+        // Extract fallback prices and order IDs from the immediate ACK
+        let vest_fallback = match vest_leg {
             LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
             _ => 0.0,
         };
-        let paradex_fill = match if matches!(entry_dir, SpreadDirection::AOverB) {
-            &short_status
-        } else {
-            &long_status
-        } {
+        let paradex_fallback = match paradex_leg {
             LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
             _ => 0.0,
+        };
+        let vest_order_id = match vest_leg {
+            LegStatus::Success(resp) => Some(resp.order_id.clone()),
+            _ => None,
+        };
+        let paradex_order_id = match paradex_leg {
+            LegStatus::Success(resp) => Some(resp.order_id.clone()),
+            _ => None,
+        };
+
+        // Drop the adapter guards before re-acquiring for fill-price queries
+        drop(vest_guard);
+        drop(paradex_guard);
+
+        // Query real fill info from exchange APIs (best-effort, fallback to ACK price)
+        let mut vest_realized_pnl: Option<f64> = None;
+        let mut paradex_realized_pnl: Option<f64> = None;
+
+        let vest_fill = if let Some(oid) = &vest_order_id {
+            let guard = self.vest_adapter.lock().await;
+            match guard.get_fill_info(&self.vest_symbol, oid).await {
+                Ok(Some(info)) => {
+                    tracing::info!(
+                        order_id = %oid,
+                        fill_price = %info.fill_price,
+                        realized_pnl = ?info.realized_pnl,
+                        fee = ?info.fee,
+                        fallback = %vest_fallback,
+                        "CR-11 fix: Using real Vest fill info from API"
+                    );
+                    vest_realized_pnl = info.realized_pnl;
+                    info.fill_price
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        order_id = %oid,
+                        fallback = %vest_fallback,
+                        "Vest fill info not found, using fallback"
+                    );
+                    vest_fallback
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        order_id = %oid,
+                        error = %e,
+                        fallback = %vest_fallback,
+                        "Vest fill info query failed, using fallback"
+                    );
+                    vest_fallback
+                }
+            }
+        } else {
+            vest_fallback
+        };
+
+        let paradex_fill = if let Some(oid) = &paradex_order_id {
+            let guard = self.paradex_adapter.lock().await;
+            match guard.get_fill_info(&self.paradex_symbol, oid).await {
+                Ok(Some(info)) => {
+                    tracing::info!(
+                        order_id = %oid,
+                        fill_price = %info.fill_price,
+                        realized_pnl = ?info.realized_pnl,
+                        fee = ?info.fee,
+                        fallback = %paradex_fallback,
+                        "CR-11 fix: Using real Paradex fill info from API"
+                    );
+                    paradex_realized_pnl = info.realized_pnl;
+                    info.fill_price
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        order_id = %oid,
+                        fallback = %paradex_fallback,
+                        "Paradex fill info not found, using fallback"
+                    );
+                    paradex_fallback
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        order_id = %oid,
+                        error = %e,
+                        fallback = %paradex_fallback,
+                        "Paradex fill info query failed, using fallback"
+                    );
+                    paradex_fallback
+                }
+            }
+        } else {
+            paradex_fallback
         };
 
         Ok(DeltaNeutralResult {
@@ -823,6 +923,8 @@ where
             short_exchange: short_exchange.to_string(),
             vest_fill_price: vest_fill,
             paradex_fill_price: paradex_fill,
+            vest_realized_pnl,
+            paradex_realized_pnl,
             timings: None,
         })
     }

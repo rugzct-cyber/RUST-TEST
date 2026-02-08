@@ -1,6 +1,9 @@
 # Environment variables (NEVER commit secrets!)
 .env
 
+# Trading strategy config (exposes parameters)
+config.yaml
+
 # Build artifacts
 /target/
 Cargo.lock

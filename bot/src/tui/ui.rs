@@ -186,9 +186,19 @@ fn draw_trade_history(frame: &mut Frame, area: Rect, state: &AppState) {
                     format!("{:+.2}%", record.exit_spread),
                     Style::default().fg(Color::Yellow),
                 ),
+                Span::raw(" │ V:"),
+                Span::styled(
+                    format!("${:.1}", record.vest_exit_price),
+                    Style::default().fg(Color::White),
+                ),
+                Span::raw(" P:"),
+                Span::styled(
+                    format!("${:.1}", record.paradex_exit_price),
+                    Style::default().fg(Color::White),
+                ),
                 Span::raw(" │ "),
                 Span::styled(
-                    format!("${:+.2}", record.pnl_usd),
+                    format!("${:+.4}", record.pnl_usd),
                     Style::default().fg(pnl_color),
                 ),
             ]))

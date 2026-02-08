@@ -34,8 +34,7 @@ use tracing::{debug, info};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradingEventType {
     // Spread Events
-    SpreadDetected,    // Spread crosses threshold
-    SpreadOpportunity, // Opportunity sent to executor
+    SpreadDetected, // Spread crosses threshold
 
     // Trade Events
     TradeEntry, // Delta-neutral entry executed
@@ -44,7 +43,6 @@ pub enum TradingEventType {
     // Order Events
     OrderPlaced, // Order sent to exchange
     OrderFilled, // Order confirmation received
-    OrderFailed, // Order rejected
 
     PositionClosed,     // Position fully closed
     PositionMonitoring, // Periodic monitoring tick (throttled)
@@ -61,12 +59,10 @@ impl fmt::Display for TradingEventType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TradingEventType::SpreadDetected => write!(f, "SPREAD_DETECTED"),
-            TradingEventType::SpreadOpportunity => write!(f, "SPREAD_OPPORTUNITY"),
             TradingEventType::TradeEntry => write!(f, "TRADE_ENTRY"),
             TradingEventType::TradeExit => write!(f, "TRADE_EXIT"),
             TradingEventType::OrderPlaced => write!(f, "ORDER_PLACED"),
             TradingEventType::OrderFilled => write!(f, "ORDER_FILLED"),
-            TradingEventType::OrderFailed => write!(f, "ORDER_FAILED"),
             TradingEventType::PositionClosed => write!(f, "POSITION_CLOSED"),
             TradingEventType::PositionMonitoring => write!(f, "POSITION_MONITORING"),
             TradingEventType::BotStarted => write!(f, "BOT_STARTED"),
@@ -177,7 +173,7 @@ pub enum EventPayload {
         short_exchange: String,
         direction: String,
     },
-    /// Events with no extra fields (BotStarted, BotShutdown, OrderFailed)
+    /// Events with no extra fields (BotStarted, BotShutdown)
     Simple,
 }
 
@@ -448,7 +444,7 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
+                pair = event.pair.as_deref().unwrap_or(""),
                 direction = %direction,
                 "{}", msg
             );
@@ -475,7 +471,7 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
+                pair = event.pair.as_deref().unwrap_or(""),
                 long_exchange = %long_exchange,
                 short_exchange = %short_exchange,
                 "{}", msg
@@ -492,7 +488,7 @@ pub fn log_event(event: &TradingEvent) {
             debug!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
+                pair = event.pair.as_deref().unwrap_or(""),
                 polls = polls,
                 "{}", msg
             );
@@ -516,7 +512,7 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
+                pair = event.pair.as_deref().unwrap_or(""),
                 polls = polls,
                 profit = %format_pct(*profit),
                 "{}", msg
@@ -536,7 +532,7 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
+                pair = event.pair.as_deref().unwrap_or(""),
                 detection_spread_pct = detection_spread,
                 execution_spread_pct = execution_spread,
                 slippage_bps = slippage_bps,
@@ -558,11 +554,11 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
-                exchange = ?event.exchange,
+                pair = event.pair.as_deref().unwrap_or(""),
+                exchange = event.exchange.as_deref().unwrap_or(""),
                 order_id = %order_id,
                 direction = %direction,
-                ""
+                "Order placed"
             );
         }
         // ORDER_FILLED
@@ -573,11 +569,11 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
-                exchange = ?event.exchange,
+                pair = event.pair.as_deref().unwrap_or(""),
+                exchange = event.exchange.as_deref().unwrap_or(""),
                 order_id = %order_id,
                 latency_ms = latency_ms,
-                ""
+                "Order filled"
             );
         }
         // POSITION_CLOSED
@@ -589,11 +585,11 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
+                pair = event.pair.as_deref().unwrap_or(""),
                 entry_spread = %format_pct(*entry_spread),
                 exit_spread = %format_pct(*exit_spread),
                 profit = %format_pct(*profit),
-                ""
+                "Position closed"
             );
         }
         // Simple events (BotStarted, BotShutdown, etc.)
@@ -601,9 +597,9 @@ pub fn log_event(event: &TradingEvent) {
             info!(
                 event_type = %event_type,
                 event_ts_ms = timestamp,
-                pair = ?event.pair,
-                exchange = ?event.exchange,
-                ""
+                pair = event.pair.as_deref().unwrap_or(""),
+                exchange = event.exchange.as_deref().unwrap_or(""),
+                "Bot lifecycle event"
             );
         }
     }

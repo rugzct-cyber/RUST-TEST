@@ -18,7 +18,7 @@ pub use errors::{ExchangeError, ExchangeResult};
 pub use paradex::{ParadexAdapter, ParadexConfig};
 pub use traits::ExchangeAdapter;
 pub use types::{
-    OrderBuilder, OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderType, Orderbook,
-    OrderbookLevel, OrderbookUpdate, PositionInfo, TimeInForce,
+    FillInfo, OrderBuilder, OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderType,
+    Orderbook, OrderbookLevel, OrderbookUpdate, PositionInfo, TimeInForce,
 };
 pub use vest::{SharedOrderbooks, VestAdapter, VestConfig};

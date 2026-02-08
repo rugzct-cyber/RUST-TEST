@@ -1036,6 +1036,153 @@ impl VestAdapter {
         let account = self.get_account_info().await?;
         Ok(account.positions)
     }
+
+    /// Get the actual fill price for a completed order via REST API
+    ///
+    /// Queries `GET /orders?id={order_id}` to retrieve `avgFilledPrice`.
+    /// This is needed because the initial order ACK from IOC/MARKET orders
+    /// often returns `avg_price = 0.0` (CR-11).
+    ///
+    /// Returns `Ok(Some(FillInfo))` if the order is FILLED with valid data,
+    /// `Ok(None)` if the order is not found or has no fill data.
+    pub async fn get_order_fill_price(&self, order_id: &str) -> ExchangeResult<Option<crate::adapters::types::FillInfo>> {
+        if !self.connected {
+            return Err(ExchangeError::ConnectionFailed("Not connected".into()));
+        }
+
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or_else(|| ExchangeError::AuthenticationFailed("Not registered".into()))?;
+
+        // Vest GET /orders returns an array of order objects
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct VestOrderInfo {
+            #[allow(dead_code)]
+            id: Option<String>,
+            status: Option<String>,
+            avg_filled_price: Option<String>,
+            realized_pnl: Option<String>,
+            fees: Option<String>,
+        }
+
+        // Retry loop: MARKET orders may not be FILLED immediately after ACK
+        const MAX_ATTEMPTS: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 500;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            let time = current_time_ms();
+            let url = format!(
+                "{}/orders?id={}&time={}",
+                self.config.rest_base_url(),
+                order_id,
+                time
+            );
+
+            tracing::debug!(order_id = %order_id, attempt, "Vest get_order_fill_price: GET {}", url);
+
+            let response = self
+                .http_client
+                .get(&url)
+                .header("X-API-Key", api_key)
+                .header(
+                    "xrestservermm",
+                    format!("restserver{}", self.config.account_group),
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    ExchangeError::ConnectionFailed(format!("Order query failed: {}", e))
+                })?;
+
+            let status = response.status();
+            let body = response.text().await.map_err(|e| {
+                ExchangeError::InvalidResponse(format!("Failed to read response: {}", e))
+            })?;
+
+            if !status.is_success() {
+                tracing::warn!(
+                    order_id = %order_id,
+                    status = %status,
+                    attempt,
+                    "Vest get_order_fill_price failed"
+                );
+                if attempt < MAX_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+                    continue;
+                }
+                return Ok(None);
+            }
+
+            let orders: Vec<VestOrderInfo> = serde_json::from_str(&body).map_err(|e| {
+                ExchangeError::InvalidResponse(format!(
+                    "Failed to parse orders response: {} - body: {}",
+                    e, body
+                ))
+            })?;
+
+            // Find the matching filled order and extract fill info
+            for order in &orders {
+                if order.status.as_deref() == Some("FILLED") {
+                    let fill_price = order
+                        .avg_filled_price
+                        .as_ref()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+
+                    let realized_pnl = order
+                        .realized_pnl
+                        .as_ref()
+                        .and_then(|s| s.parse::<f64>().ok());
+
+                    let fee = order
+                        .fees
+                        .as_ref()
+                        .and_then(|s| s.parse::<f64>().ok());
+
+                    if fill_price > 0.0 || realized_pnl.is_some() {
+                        tracing::debug!(
+                            order_id = %order_id,
+                            fill_price = %fill_price,
+                            realized_pnl = ?realized_pnl,
+                            fee = ?fee,
+                            attempt,
+                            "Vest: Retrieved fill info from GET /orders"
+                        );
+                        return Ok(Some(crate::adapters::types::FillInfo {
+                            fill_price,
+                            realized_pnl,
+                            fee,
+                        }));
+                    }
+                }
+            }
+
+            // Order exists but not FILLED yet — retry after delay
+            let order_statuses: Vec<_> = orders.iter()
+                .filter_map(|o| o.status.as_deref())
+                .collect();
+            tracing::debug!(
+                order_id = %order_id,
+                attempt,
+                max_attempts = MAX_ATTEMPTS,
+                statuses = ?order_statuses,
+                "Vest: Order not yet FILLED, retrying..."
+            );
+
+            if attempt < MAX_ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+            }
+        }
+
+        tracing::warn!(
+            order_id = %order_id,
+            attempts = MAX_ATTEMPTS,
+            "Vest: Fill info not found after all retries"
+        );
+        Ok(None)
+    }
 }
 
 // =============================================================================
@@ -1488,6 +1635,11 @@ impl ExchangeAdapter for VestAdapter {
 
         tracing::debug!(symbol = symbol, "Vest: No position found for symbol");
         Ok(None)
+    }
+
+    /// CR-11 fix: Query real fill info (price + realized PnL) from Vest REST API
+    async fn get_fill_info(&self, _symbol: &str, order_id: &str) -> ExchangeResult<Option<crate::adapters::types::FillInfo>> {
+        self.get_order_fill_price(order_id).await
     }
 
     fn exchange_name(&self) -> &'static str {

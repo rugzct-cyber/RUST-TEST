@@ -29,7 +29,7 @@ pub mod spread;
 pub use spread::{SpreadCalculator, SpreadDirection, SpreadResult};
 
 // Explicit re-exports for channels module
-pub use channels::{ChannelBundle, SharedOrderbooks, SpreadOpportunity, DEFAULT_CHANNEL_CAPACITY};
+pub use channels::{SharedOrderbooks, SpreadOpportunity};
 
 // Explicit re-exports for execution module
 pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
@@ -42,8 +42,7 @@ pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
 
 // Explicit re-exports for events module
 pub use events::{
-    calculate_latency_ms, current_timestamp_ms, format_pct, log_event, EventPayload, TradingEvent,
-    TradingEventType,
+    current_timestamp_ms, format_pct, log_event, EventPayload, TradingEvent, TradingEventType,
 };
 
 // Explicit re-exports for pyth module (USD/USDC conversion)

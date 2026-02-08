@@ -170,6 +170,17 @@ impl AppConfig {
             ));
         }
 
+        // Rule: No duplicate bot IDs
+        let mut seen_ids = std::collections::HashSet::new();
+        for bot in &self.bots {
+            if !seen_ids.insert(&bot.id) {
+                return Err(AppError::Config(format!(
+                    "Duplicate bot ID: '{}'",
+                    bot.id
+                )));
+            }
+        }
+
         // Validate each bot configuration
         for bot in &self.bots {
             bot.validate()?;

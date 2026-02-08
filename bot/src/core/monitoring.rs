@@ -17,7 +17,7 @@
 
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, Duration};
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::core::channels::SpreadOpportunity;
 use crate::core::events::{
@@ -150,12 +150,22 @@ pub async fn monitoring_task(
                                     }
                                     debug!("Spread opportunity sent to execution task");
                                 }
-                                Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Silent drop: channel full means position is open or executor is busy
-                                    // This is expected behavior, no need to log
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                    // Channel full: executor is busy (in position or processing)
+                                    // Log throttled to avoid spam — useful for tuning spread thresholds
+                                    if poll_count % LOG_THROTTLE_POLLS == 0 {
+                                        debug!(
+                                            event_type = "OPPORTUNITY_DROPPED",
+                                            spread = %format_pct(spread_result.spread_pct),
+                                            "Channel full - executor busy"
+                                        );
+                                    }
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    error!("Opportunity channel closed, shutting down monitoring");
+                                    warn!(
+                                        event_type = "CHANNEL_CLOSED",
+                                        "Opportunity channel closed - executor may have crashed"
+                                    );
                                     break;
                                 }
                             }

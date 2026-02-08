@@ -489,6 +489,21 @@ pub struct PositionInfo {
     pub unrealized_pnl: f64,
 }
 
+/// Fill information returned by exchange APIs after order execution
+///
+/// Contains the actual fill price, realized PnL, and fee directly from the
+/// exchange. This avoids manual PnL calculation from unreliable `avg_price` values.
+#[derive(Debug, Clone)]
+pub struct FillInfo {
+    /// Actual execution price
+    pub fill_price: f64,
+    /// Exchange-reported realized PnL (includes funding and fees on Vest)
+    /// `None` if the exchange doesn't provide this field (e.g. Paradex fills)
+    pub realized_pnl: Option<f64>,
+    /// Trading fee
+    pub fee: Option<f64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

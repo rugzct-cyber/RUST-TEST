@@ -60,6 +60,8 @@ struct ExitResult {
     exit_spread: f64,
     vest_exit_price: f64,
     paradex_exit_price: f64,
+    vest_realized_pnl: Option<f64>,
+    paradex_realized_pnl: Option<f64>,
     execution_latency_ms: u64,
 }
 
@@ -207,6 +209,8 @@ where
                                         exit_spread,
                                         vest_exit_price: close_result.vest_fill_price,
                                         paradex_exit_price: close_result.paradex_fill_price,
+                                        vest_realized_pnl: close_result.vest_realized_pnl,
+                                        paradex_realized_pnl: close_result.paradex_realized_pnl,
                                         execution_latency_ms,
                                     }));
                                 }
@@ -232,6 +236,8 @@ where
                                             exit_spread,
                                             vest_exit_price: 0.0,
                                             paradex_exit_price: 0.0,
+                                            vest_realized_pnl: None,
+                                            paradex_realized_pnl: None,
                                             execution_latency_ms,
                                         }));
                                     }
@@ -401,31 +407,33 @@ pub async fn execution_task<V, P>(
                                         Ok(mut state) => {
                                         let position_size = executor.get_default_quantity();
 
-                                        // PnL from real prices: profit on each leg
-                                        // Vest leg PnL: depends on whether vest was long or short
-                                        // Paradex leg PnL: depends on whether paradex was long or short
-                                        let pnl_usd = match direction {
-                                            SpreadDirection::AOverB => {
-                                                // Vest=Long, Paradex=Short
-                                                // Long PnL = (exit - entry) * qty
-                                                // Short PnL = (entry - exit) * qty
-                                                let vest_entry = state.entry_vest_price.unwrap_or(0.0);
-                                                let paradex_entry = state.entry_paradex_price.unwrap_or(0.0);
-                                                let long_pnl = (exit_result.vest_exit_price - vest_entry) * position_size;
-                                                let short_pnl = (paradex_entry - exit_result.paradex_exit_price) * position_size;
-                                                long_pnl + short_pnl
-                                            }
-                                            SpreadDirection::BOverA => {
-                                                // Vest=Short, Paradex=Long
-                                                let vest_entry = state.entry_vest_price.unwrap_or(0.0);
-                                                let paradex_entry = state.entry_paradex_price.unwrap_or(0.0);
-                                                let short_pnl = (vest_entry - exit_result.vest_exit_price) * position_size;
-                                                let long_pnl = (exit_result.paradex_exit_price - paradex_entry) * position_size;
-                                                long_pnl + short_pnl
-                                            }
+                                        // Get exit prices for display
+                                        let vest_exit = exit_result.vest_exit_price;
+                                        let paradex_exit = exit_result.paradex_exit_price;
+
+                                        // === PnL: prefer exchange-reported realized_pnl ===
+                                        let vest_rpnl = exit_result.vest_realized_pnl;
+                                        let paradex_rpnl = exit_result.paradex_realized_pnl;
+
+                                        let pnl_usd = if vest_rpnl.is_some() || paradex_rpnl.is_some() {
+                                            let total = vest_rpnl.unwrap_or(0.0) + paradex_rpnl.unwrap_or(0.0);
+                                            tracing::info!(
+                                                event_type = "PNL_FROM_EXCHANGE",
+                                                vest_realized_pnl = ?vest_rpnl,
+                                                paradex_realized_pnl = ?paradex_rpnl,
+                                                total_pnl = %format!("{:.6}", total),
+                                                "PnL from exchange-reported realized PnL"
+                                            );
+                                            total
+                                        } else {
+                                            tracing::warn!(
+                                                event_type = "PNL_UNAVAILABLE",
+                                                "No realized PnL returned by either exchange"
+                                            );
+                                            0.0
                                         };
 
-                                        state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms);
+                                        state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms, vest_exit, paradex_exit);
                                         }
                                         Err(e) => {
                                             error!(event_type = "TUI_STATE_ERROR", error = %e, "Failed to record trade exit in TUI state");
