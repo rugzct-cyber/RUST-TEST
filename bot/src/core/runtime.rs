@@ -405,7 +405,7 @@ pub async fn execution_task<V, P>(
                                 if let (Some(exit_result), Some(ref tui)) = (maybe_exit_result, &tui_state) {
                                     match tui.lock() {
                                         Ok(mut state) => {
-                                        let position_size = executor.get_default_quantity();
+                                        let _position_size = executor.get_default_quantity();
 
                                         // Get exit prices for display
                                         let vest_exit = exit_result.vest_exit_price;
