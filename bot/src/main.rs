@@ -27,7 +27,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, watch};
 use tracing::{error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
@@ -193,7 +193,7 @@ async fn main() -> anyhow::Result<()> {
     // Task 2: Create channels for data pipeline
 
     // Create spread_opportunity channel
-    let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(1);
+    let (opportunity_tx, opportunity_rx) = watch::channel(None::<SpreadOpportunity>);
 
     // Task 3: Connect to exchanges
     info!(event_type = "CONNECTION", "Connecting to exchanges");
@@ -406,11 +406,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Spawn monitoring task (using SharedOrderbooks - NO Mutex!)
-    let monitoring_tx = opportunity_tx.clone();
+    // watch::Sender is moved directly (no clone — single sender)
     let monitoring_vest_symbol = vest_symbol.clone();
     let monitoring_paradex_symbol = paradex_symbol.clone();
     let monitoring_config = MonitoringConfig {
-        pair: bot.pair.to_string(),
+        pair: Arc::from(bot.pair.to_string().as_str()),
         spread_entry: bot.spread_entry,
         spread_exit: bot.spread_exit,
     };
@@ -422,7 +422,7 @@ async fn main() -> anyhow::Result<()> {
             paradex_best_prices.clone(),
             vest_shared_orderbooks.clone(),
             paradex_shared_orderbooks.clone(),
-            monitoring_tx,
+            opportunity_tx,
             monitoring_vest_symbol,
             monitoring_paradex_symbol,
             monitoring_config,

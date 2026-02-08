@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 use tokio::time::sleep;
 
 use hft_bot::adapters::errors::{ExchangeError, ExchangeResult};
@@ -203,9 +203,9 @@ async fn test_spread_opportunity_triggers_execution() {
 
     // Create spread opportunity
     let opportunity = SpreadOpportunity {
-        pair: "BTC-PERP".to_string(),
-        dex_a: "vest".to_string(),
-        dex_b: "paradex".to_string(),
+        pair: Arc::from("BTC-PERP"),
+        dex_a: "vest",
+        dex_b: "paradex",
         spread_percent: 0.35,
         direction: SpreadDirection::AOverB,
         detected_at_ms: current_time_ms(),
@@ -378,16 +378,17 @@ async fn test_graceful_shutdown_propagation() {
 // Test 4: Channel Communication (AC: Data Pipeline)
 // =============================================================================
 
-/// Test that spread opportunities flow through channels correctly
+/// Test that spread opportunities flow through watch channel (last-write-wins)
 #[tokio::test]
 async fn test_channel_spread_opportunity_flow() {
-    let (tx, mut rx) = mpsc::channel::<SpreadOpportunity>(100);
+    let (tx, mut rx) = watch::channel(None::<SpreadOpportunity>);
 
+    // Send 5 opportunities — watch keeps only the latest
     for i in 0..5 {
         let opportunity = SpreadOpportunity {
-            pair: format!("BTC-PERP-{}", i),
-            dex_a: "vest".to_string(),
-            dex_b: "paradex".to_string(),
+            pair: Arc::from(format!("BTC-PERP-{}", i).as_str()),
+            dex_a: "vest",
+            dex_b: "paradex",
             spread_percent: 0.30 + (i as f64 * 0.01),
             direction: SpreadDirection::AOverB,
             detected_at_ms: current_time_ms(),
@@ -396,21 +397,14 @@ async fn test_channel_spread_opportunity_flow() {
             dex_b_ask: 42005.0,
             dex_b_bid: 41985.0,
         };
-        tx.send(opportunity).await.expect("Send should succeed");
+        tx.send_replace(Some(opportunity));
     }
 
-    drop(tx);
-
-    let mut received = Vec::new();
-    while let Some(opp) = rx.recv().await {
-        received.push(opp);
-    }
-
-    assert_eq!(received.len(), 5, "All 5 opportunities should be received");
-
-    for (i, opp) in received.iter().enumerate() {
-        assert_eq!(opp.pair, format!("BTC-PERP-{}", i));
-    }
+    // Watch channel: only the last value is available
+    rx.changed().await.expect("Should detect change");
+    let latest = rx.borrow_and_update().clone().expect("Should have value");
+    assert_eq!(&*latest.pair, "BTC-PERP-4", "Watch should hold the latest (freshest) opportunity");
+    assert!((latest.spread_percent - 0.34).abs() < 0.001, "Last spread should be 0.34%");
 }
 
 // =============================================================================

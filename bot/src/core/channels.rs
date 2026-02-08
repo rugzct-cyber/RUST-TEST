@@ -81,9 +81,9 @@ pub const LOG_THROTTLE_POLLS: u64 = 40;
 /// Simple spread opportunity for MVP
 #[derive(Debug, Clone)]
 pub struct SpreadOpportunity {
-    pub pair: String,
-    pub dex_a: String,
-    pub dex_b: String,
+    pub pair: Arc<str>,
+    pub dex_a: &'static str,
+    pub dex_b: &'static str,
     pub spread_percent: f64,
     pub direction: SpreadDirection,
     pub detected_at_ms: u64,

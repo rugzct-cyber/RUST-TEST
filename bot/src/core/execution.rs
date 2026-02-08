@@ -1020,9 +1020,9 @@ mod tests {
 
     fn create_test_opportunity() -> SpreadOpportunity {
         SpreadOpportunity {
-            pair: "BTC-PERP".to_string(),
-            dex_a: "vest".to_string(),
-            dex_b: "paradex".to_string(),
+            pair: Arc::from("BTC-PERP"),
+            dex_a: "vest",
+            dex_b: "paradex",
             spread_percent: 0.35,
             direction: SpreadDirection::AOverB,
             detected_at_ms: 1706000000000,
@@ -1176,9 +1176,9 @@ mod tests {
         );
 
         let opportunity = SpreadOpportunity {
-            pair: "BTC-PERP".to_string(),
-            dex_a: "vest".to_string(),
-            dex_b: "paradex".to_string(),
+            pair: Arc::from("BTC-PERP"),
+            dex_a: "vest",
+            dex_b: "paradex",
             spread_percent: 0.35,
             direction: SpreadDirection::AOverB,
             detected_at_ms: 1706000000000,
@@ -1209,9 +1209,9 @@ mod tests {
         );
 
         let opportunity = SpreadOpportunity {
-            pair: "BTC-PERP".to_string(),
-            dex_a: "vest".to_string(),
-            dex_b: "paradex".to_string(),
+            pair: Arc::from("BTC-PERP"),
+            dex_a: "vest",
+            dex_b: "paradex",
             spread_percent: 0.35,
             direction: SpreadDirection::BOverA,
             detected_at_ms: 1706000000000,
