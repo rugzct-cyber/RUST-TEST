@@ -30,10 +30,12 @@ use std::time::Duration;
 // HTTP Client Constants
 // =============================================================================
 
-/// HTTP request timeout (seconds)
-const HTTP_TIMEOUT_SECS: u64 = 10;
+/// HTTP request timeout (seconds) — 3s max for HFT (price moves after ~2s)
+const HTTP_TIMEOUT_SECS: u64 = 3;
+/// HTTP connection timeout (milliseconds) — fail fast if host unreachable
+const HTTP_CONNECT_TIMEOUT_MS: u64 = 1500;
 /// Max idle connections per host in connection pool
-const HTTP_POOL_MAX_IDLE: usize = 2;
+const HTTP_POOL_MAX_IDLE: usize = 5;
 /// How long idle connections stay in the pool (seconds)
 const HTTP_POOL_IDLE_TIMEOUT_SECS: u64 = 60;
 /// TCP keepalive interval (seconds)
@@ -48,12 +50,14 @@ pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
         .pool_max_idle_per_host(HTTP_POOL_MAX_IDLE)
         .pool_idle_timeout(Duration::from_secs(HTTP_POOL_IDLE_TIMEOUT_SECS))
         .tcp_keepalive(Duration::from_secs(HTTP_TCP_KEEPALIVE_SECS))
-        .connect_timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_millis(HTTP_CONNECT_TIMEOUT_MS))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     tracing::info!(
         phase = "init",
         exchange = %exchange_name,
+        timeout_s = HTTP_TIMEOUT_SECS,
+        connect_timeout_ms = HTTP_CONNECT_TIMEOUT_MS,
         pool_max_idle = HTTP_POOL_MAX_IDLE,
         pool_idle_timeout_s = HTTP_POOL_IDLE_TIMEOUT_SECS,
         tcp_keepalive_s = HTTP_TCP_KEEPALIVE_SECS,
