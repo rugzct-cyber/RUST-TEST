@@ -61,6 +61,8 @@ pub use crate::core::channels::SharedOrderbooks;
 /// Lock-free atomic best prices for hot-path monitoring
 use crate::core::channels::SharedBestPrices;
 use crate::core::channels::AtomicBestPrices;
+/// Event-driven orderbook notification (Axe 5)
+use crate::core::channels::OrderbookNotify;
 
 // next_subscription_id() imported from crate::adapters::types (shared counter)
 
@@ -88,6 +90,8 @@ pub struct VestAdapter {
     pub(crate) shared_orderbooks: SharedOrderbooks,
     /// Atomic best prices for lock-free hot-path monitoring
     pub(crate) shared_best_prices: SharedBestPrices,
+    /// Orderbook update notification (Axe 5 event-driven monitoring)
+    pub(crate) orderbook_notify: Option<OrderbookNotify>,
     pub(crate) connection_health: ConnectionHealth,
 }
 
@@ -117,6 +121,7 @@ impl VestAdapter {
             orderbooks: HashMap::new(),
             shared_orderbooks: Arc::new(RwLock::new(HashMap::new())),
             shared_best_prices: Arc::new(AtomicBestPrices::new()),
+            orderbook_notify: None,
             connection_health: ConnectionHealth::default(),
         }
     }
@@ -157,6 +162,14 @@ impl VestAdapter {
     /// Get shared atomic best prices for lock-free hot-path monitoring
     pub fn get_shared_best_prices(&self) -> SharedBestPrices {
         Arc::clone(&self.shared_best_prices)
+    }
+
+    /// Set the shared orderbook notification (Axe 5 event-driven monitoring)
+    ///
+    /// Call this before `connect()` so the WebSocket reader can signal
+    /// the monitoring task when new data arrives.
+    pub fn set_orderbook_notify(&mut self, notify: OrderbookNotify) {
+        self.orderbook_notify = Some(notify);
     }
 
     // =========================================================================
@@ -680,6 +693,7 @@ impl VestAdapter {
 
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
         let shared_best_prices = Arc::clone(&self.shared_best_prices);
+        let orderbook_notify = self.orderbook_notify.clone();
         let last_pong = Arc::clone(&self.connection_health.last_pong);
         let last_data = Arc::clone(&self.connection_health.last_data);
         let reader_alive = Arc::clone(&self.connection_health.reader_alive);
@@ -687,7 +701,7 @@ impl VestAdapter {
         last_data.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, last_pong, last_data, reader_alive).await;
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, orderbook_notify, last_pong, last_data, reader_alive).await;
         });
 
         self.reader_handle = Some(handle);
@@ -702,6 +716,7 @@ impl VestAdapter {
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
         shared_best_prices: SharedBestPrices,
+        orderbook_notify: Option<OrderbookNotify>,
         last_pong: Arc<AtomicU64>,
         last_data: Arc<AtomicU64>,
         reader_alive: Arc<AtomicBool>,
@@ -739,6 +754,7 @@ impl VestAdapter {
                                             orderbook.best_bid().unwrap_or(0.0),
                                             orderbook.best_ask().unwrap_or(0.0),
                                         );
+                                        if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
                                         let mut books = shared_orderbooks.write().await;
                                         books.insert(symbol.clone(), orderbook);
                                         tracing::trace!(symbol = %symbol, "Orderbook updated in shared storage");
@@ -792,6 +808,7 @@ impl VestAdapter {
                                     orderbook.best_bid().unwrap_or(0.0),
                                     orderbook.best_ask().unwrap_or(0.0),
                                 );
+                                if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
                                 let mut books = shared_orderbooks.write().await;
                                 books.insert(symbol, orderbook);
                             }

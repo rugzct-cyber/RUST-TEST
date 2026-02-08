@@ -289,9 +289,13 @@ async fn main() -> anyhow::Result<()> {
     // Get AtomicBestPrices for hot-path monitoring (zero lock, zero allocation)
     let vest_best_prices = vest_adapter.get_shared_best_prices();
     let paradex_best_prices = paradex_adapter.get_shared_best_prices();
+    // Create shared Notify for event-driven monitoring (Axe 5)
+    let orderbook_notify: hft_bot::core::OrderbookNotify = Arc::new(tokio::sync::Notify::new());
+    vest_adapter.set_orderbook_notify(orderbook_notify.clone());
+    paradex_adapter.set_orderbook_notify(orderbook_notify.clone());
     info!(
         event_type = "RUNTIME",
-        "SharedOrderbooks + AtomicBestPrices extracted for lock-free monitoring"
+        "SharedOrderbooks + AtomicBestPrices + OrderbookNotify configured for event-driven monitoring"
     );
 
     // Create shutdown broadcast channel
@@ -379,6 +383,7 @@ async fn main() -> anyhow::Result<()> {
     let exec_vest_symbol = vest_symbol.clone();
     let exec_paradex_symbol = paradex_symbol.clone();
     let exec_tui_state = app_state.clone();
+    let exec_orderbook_notify = orderbook_notify.clone();
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
@@ -390,6 +395,7 @@ async fn main() -> anyhow::Result<()> {
             execution_shutdown,
             exit_spread_target,
             exec_tui_state,
+            exec_orderbook_notify,
         )
         .await;
     });
@@ -420,6 +426,7 @@ async fn main() -> anyhow::Result<()> {
             monitoring_vest_symbol,
             monitoring_paradex_symbol,
             monitoring_config,
+            orderbook_notify,
             monitoring_shutdown,
         )
         .await;
@@ -427,8 +434,8 @@ async fn main() -> anyhow::Result<()> {
     info!(
         event_type = "RUNTIME",
         task = "monitoring",
-        polling_ms = 25,
-        "Task spawned (lock-free)"
+        mode = "event-driven",
+        "Task spawned (event-driven, Axe 5)"
     );
 
     // Spawn TUI render task (if TUI mode enabled)

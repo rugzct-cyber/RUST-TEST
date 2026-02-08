@@ -16,7 +16,7 @@
 //! - Events include entry_spread, spread_threshold, direction, pair
 
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::{interval, Duration};
+use tokio::time::Duration;
 use tracing::{debug, warn};
 
 use crate::core::channels::SpreadOpportunity;
@@ -25,11 +25,12 @@ use crate::core::events::{
 };
 use crate::core::spread::SpreadCalculator;
 
-use crate::core::channels::SharedOrderbooks;
+use crate::core::channels::{SharedOrderbooks, OrderbookNotify};
 use crate::core::channels::SharedBestPrices;
 
-/// Polling interval for orderbook monitoring (25ms for V1 HFT)
-pub const POLL_INTERVAL_MS: u64 = 25;
+/// Timeout for waiting on orderbook notifications before checking diagnostics (Axe 5)
+/// If no orderbook update arrives within this window, log a "waiting" warning.
+const NOTIFY_TIMEOUT_MS: u64 = 1000;
 
 /// Log throttle — imported from channels (single source of truth)
 use crate::core::channels::LOG_THROTTLE_POLLS;
@@ -74,12 +75,12 @@ pub async fn monitoring_task(
     vest_symbol: String,
     paradex_symbol: String,
     config: MonitoringConfig,
+    orderbook_notify: OrderbookNotify,
     mut shutdown_rx: broadcast::Receiver<()>,
 ) {
     log_system_event(&SystemEvent::task_started("monitoring"));
 
     let calculator = SpreadCalculator::new("vest", "paradex");
-    let mut poll_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
     let mut poll_count: u64 = 0;
     let mut warn_counter: u32 = 0;
 
@@ -90,9 +91,13 @@ pub async fn monitoring_task(
                 log_system_event(&SystemEvent::task_shutdown("monitoring", "shutdown_signal"));
                 break;
             }
-            // Poll orderbooks on interval
-            _ = poll_interval.tick() => {
+            // Wait for orderbook update notification (event-driven, Axe 5)
+            result = tokio::time::timeout(
+                Duration::from_millis(NOTIFY_TIMEOUT_MS),
+                orderbook_notify.notified()
+            ) => {
                 poll_count += 1;
+                let _timed_out = result.is_err();
 
                 // HOT PATH: Read atomic best prices — zero lock, zero allocation
                 let (vest_bid, vest_ask) = vest_best_prices.load();
@@ -201,6 +206,20 @@ mod tests {
         bp
     }
 
+    /// Helper: create an OrderbookNotify and spawn a background signaler
+    /// that keeps poking the monitoring loop so tests don't wait 1s timeout.
+    fn make_test_notify() -> OrderbookNotify {
+        let n = Arc::new(tokio::sync::Notify::new());
+        let handle = n.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                handle.notify_waiters();
+            }
+        });
+        n
+    }
+
     #[tokio::test]
     async fn test_monitoring_task_shutdown() {
         let vest_orderbooks = Arc::new(RwLock::new(HashMap::new()));
@@ -225,6 +244,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -273,6 +293,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -324,6 +345,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -373,6 +395,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -421,6 +444,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -462,6 +486,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -507,6 +532,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -555,6 +581,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 
@@ -598,6 +625,7 @@ mod tests {
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
             config,
+            make_test_notify(),
             shutdown_rx,
         ));
 

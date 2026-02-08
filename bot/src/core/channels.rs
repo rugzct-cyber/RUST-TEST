@@ -65,6 +65,12 @@ impl AtomicBestPrices {
 /// Type alias for shared atomic best prices
 pub type SharedBestPrices = Arc<AtomicBestPrices>;
 
+/// Shared notification for event-driven monitoring (Axe 5)
+///
+/// Adapters call `notify_waiters()` after writing new prices to `AtomicBestPrices`.
+/// The monitoring loop `notified().await`s instead of polling on a fixed interval.
+pub type OrderbookNotify = Arc<tokio::sync::Notify>;
+
 // Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
 pub use super::spread::SpreadDirection;
 

@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tokio::time::{interval, Duration};
+use tokio::time::Duration;
 use tracing::{debug, error, warn};
 
 use crate::adapters::ExchangeAdapter;
@@ -26,13 +26,14 @@ use crate::tui::app::AppState as TuiState;
 use std::sync::Mutex as StdMutex;
 
 use crate::core::channels::SharedBestPrices;
+use crate::core::channels::OrderbookNotify;
 
 // =============================================================================
 // Constants
 // =============================================================================
 
-/// Exit monitoring uses same polling interval as monitoring task (single source of truth)
-use super::monitoring::POLL_INTERVAL_MS;
+/// Exit monitoring timeout — how long to wait for a Notify before checking anyway
+const EXIT_NOTIFY_TIMEOUT_MS: u64 = 100;
 
 /// Delay after trade entry to let exchange APIs settle before verifying positions (milliseconds)
 const API_SETTLE_DELAY_MS: u64 = 500;
@@ -75,6 +76,7 @@ struct ExitMonitoringParams {
     entry_spread: f64,
     exit_spread_target: f64,
     direction: SpreadDirection,
+    orderbook_notify: OrderbookNotify,
 }
 
 /// Exit monitoring loop - polls orderbooks until exit condition or shutdown
@@ -98,10 +100,11 @@ where
         entry_spread,
         exit_spread_target,
         direction,
+        orderbook_notify,
     } = params;
 
-    let mut exit_interval = interval(Duration::from_millis(POLL_INTERVAL_MS));
     let mut poll_count: u64 = 0;
+    let mut last_jwt_refresh = std::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -109,12 +112,16 @@ where
                 log_system_event(&SystemEvent::task_shutdown("exit_monitoring", "shutdown_signal"));
                 return (poll_count, None);
             }
-            _ = exit_interval.tick() => {
+            _ = tokio::time::timeout(
+                Duration::from_millis(EXIT_NOTIFY_TIMEOUT_MS),
+                orderbook_notify.notified()
+            ) => {
                 poll_count += 1;
 
                 // Proactively refresh JWT every ~2 min so close_position has zero delay
-                const JWT_REFRESH_POLLS: u64 = 4800; // 4800 × 25ms ≈ 2 min
-                if poll_count % JWT_REFRESH_POLLS == 0 {
+                const JWT_REFRESH_INTERVAL_SECS: u64 = 120;
+                if last_jwt_refresh.elapsed().as_secs() >= JWT_REFRESH_INTERVAL_SECS {
+                    last_jwt_refresh = std::time::Instant::now();
                     if let Err(e) = executor.ensure_ready().await {
                         warn!(event_type = "JWT_REFRESH_FAILED", error = %e, "Adapter refresh failed during monitoring");
                     }
@@ -284,6 +291,7 @@ pub async fn execution_task<V, P>(
     mut shutdown_rx: broadcast::Receiver<()>,
     exit_spread_target: f64,
     tui_state: Option<Arc<StdMutex<TuiState>>>,
+    orderbook_notify: OrderbookNotify,
 ) where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
@@ -390,6 +398,7 @@ pub async fn execution_task<V, P>(
                                         entry_spread: spread_pct,
                                         exit_spread_target,
                                         direction,
+                                        orderbook_notify: orderbook_notify.clone(),
                                     },
                                     &mut shutdown_rx,
                                 ).await;
@@ -515,6 +524,7 @@ mod tests {
                 shutdown_rx,
                 -0.05, // exit_spread_target: exit when spread >= -0.05%
                 None,  // No TUI state in tests
+                Arc::new(tokio::sync::Notify::new()),
             )
             .await;
         });
@@ -576,6 +586,7 @@ mod tests {
                 shutdown_rx,
                 -0.05, // exit_spread_target
                 None,  // No TUI state in tests
+                Arc::new(tokio::sync::Notify::new()),
             )
             .await;
         });
@@ -627,6 +638,7 @@ mod tests {
                     entry_spread: 0.35,
                     exit_spread_target: -0.05,
                     direction: SpreadDirection::AOverB,
+                    orderbook_notify: Arc::new(tokio::sync::Notify::new()),
                 },
                 &mut shutdown_rx,
             ),
@@ -679,6 +691,7 @@ mod tests {
                     entry_spread: 0.35,
                     exit_spread_target: -0.05,
                     direction: SpreadDirection::AOverB,
+                    orderbook_notify: Arc::new(tokio::sync::Notify::new()),
                 },
                 &mut shutdown_rx,
             )
@@ -739,6 +752,7 @@ mod tests {
                     entry_spread: 0.35,
                     exit_spread_target: -0.05,
                     direction: SpreadDirection::BOverA,
+                    orderbook_notify: Arc::new(tokio::sync::Notify::new()),
                 },
                 &mut shutdown_rx,
             ),
@@ -792,6 +806,7 @@ mod tests {
                 shutdown_rx,
                 -0.05,
                 None,
+                Arc::new(tokio::sync::Notify::new()),
             )
             .await;
         });
@@ -855,6 +870,7 @@ mod tests {
                 shutdown_rx,
                 -0.05,
                 None,
+                Arc::new(tokio::sync::Notify::new()),
             )
             .await;
         });
@@ -904,6 +920,7 @@ mod tests {
                     entry_spread: 0.35,
                     exit_spread_target: -0.05,
                     direction: SpreadDirection::AOverB,
+                    orderbook_notify: Arc::new(tokio::sync::Notify::new()),
                 },
                 &mut shutdown_rx,
             )

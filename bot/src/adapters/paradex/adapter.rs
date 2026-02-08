@@ -63,6 +63,8 @@ pub use crate::core::channels::SharedOrderbooks;
 /// Lock-free atomic best prices for hot-path monitoring
 use crate::core::channels::SharedBestPrices;
 use crate::core::channels::AtomicBestPrices;
+/// Event-driven orderbook notification (Axe 5)
+use crate::core::channels::OrderbookNotify;
 
 // =============================================================================
 // Paradex Adapter
@@ -106,6 +108,8 @@ pub struct ParadexAdapter {
     starknet_chain_id: Option<String>,
     /// USD/USDC rate cache for price conversion (Pyth integration)
     usdc_rate_cache: Option<Arc<crate::core::UsdcRateCache>>,
+    /// Orderbook update notification (Axe 5 event-driven monitoring)
+    orderbook_notify: Option<OrderbookNotify>,
 }
 
 impl ParadexAdapter {
@@ -130,6 +134,7 @@ impl ParadexAdapter {
             heartbeat_handle: None,
             starknet_chain_id: None,
             usdc_rate_cache: None,
+            orderbook_notify: None,
         }
     }
 
@@ -153,6 +158,11 @@ impl ParadexAdapter {
     /// Get shared atomic best prices for lock-free hot-path monitoring
     pub fn get_shared_best_prices(&self) -> SharedBestPrices {
         Arc::clone(&self.shared_best_prices)
+    }
+
+    /// Set the shared orderbook notification (Axe 5 event-driven monitoring)
+    pub fn set_orderbook_notify(&mut self, notify: OrderbookNotify) {
+        self.orderbook_notify = Some(notify);
     }
 
     /// Authenticate with Paradex REST API to obtain JWT token
@@ -418,13 +428,14 @@ impl ParadexAdapter {
         let last_data = Arc::clone(&self.connection_health.last_data);
         let reader_alive = Arc::clone(&self.connection_health.reader_alive);
         let usdc_rate_cache = self.usdc_rate_cache.clone();
+        let orderbook_notify = self.orderbook_notify.clone();
 
         // Initialize last_data to now so we don't immediately appear stale
         last_data.store(current_time_ms(), Ordering::Relaxed);
 
         // Spawn background reader with shared orderbooks, health tracking, and USDC rate
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, last_data, reader_alive, usdc_rate_cache)
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, orderbook_notify, last_data, reader_alive, usdc_rate_cache)
                 .await;
         });
 
@@ -441,6 +452,7 @@ impl ParadexAdapter {
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
         shared_best_prices: SharedBestPrices,
+        orderbook_notify: Option<OrderbookNotify>,
         last_data: Arc<AtomicU64>,
         reader_alive: Arc<AtomicBool>,
         usdc_rate_cache: Option<Arc<crate::core::UsdcRateCache>>,
@@ -514,6 +526,7 @@ impl ParadexAdapter {
                                                 orderbook.best_bid().unwrap_or(0.0),
                                                 orderbook.best_ask().unwrap_or(0.0),
                                             );
+                                            if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
                                             // Update shared orderbook (acquire lock briefly)
                                             let mut books = shared_orderbooks.write().await;
                                             books.insert(symbol.clone(), orderbook);
@@ -543,6 +556,7 @@ impl ParadexAdapter {
                                                 orderbook.best_bid().unwrap_or(0.0),
                                                 orderbook.best_ask().unwrap_or(0.0),
                                             );
+                                            if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
                                             // Update shared orderbook (acquire lock briefly)
                                             let mut books = shared_orderbooks.write().await;
                                             books.insert(symbol.clone(), orderbook);

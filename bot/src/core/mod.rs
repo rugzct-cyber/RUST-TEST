@@ -29,7 +29,7 @@ pub mod spread;
 pub use spread::{SpreadCalculator, SpreadDirection, SpreadResult};
 
 // Explicit re-exports for channels module
-pub use channels::{AtomicBestPrices, SharedBestPrices, SharedOrderbooks, SpreadOpportunity};
+pub use channels::{AtomicBestPrices, OrderbookNotify, SharedBestPrices, SharedOrderbooks, SpreadOpportunity};
 
 // Explicit re-exports for execution module
 pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
@@ -38,7 +38,7 @@ pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};
 pub use runtime::execution_task;
 
 // Explicit re-exports for monitoring module
-pub use monitoring::{monitoring_task, MonitoringConfig, POLL_INTERVAL_MS};
+pub use monitoring::{monitoring_task, MonitoringConfig};
 
 // Explicit re-exports for events module
 pub use events::{
