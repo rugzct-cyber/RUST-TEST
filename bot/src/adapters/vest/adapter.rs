@@ -58,6 +58,9 @@ pub(crate) type WsWriter = SplitSink<WsStream, Message>;
 pub(crate) type WsReader = SplitStream<WsStream>;
 /// Thread-safe shared orderbooks storage for lock-free monitoring
 pub use crate::core::channels::SharedOrderbooks;
+/// Lock-free atomic best prices for hot-path monitoring
+use crate::core::channels::SharedBestPrices;
+use crate::core::channels::AtomicBestPrices;
 
 // next_subscription_id() imported from crate::adapters::types (shared counter)
 
@@ -83,6 +86,8 @@ pub struct VestAdapter {
     pub(crate) pending_subscriptions: HashMap<u64, String>,
     pub(crate) orderbooks: HashMap<String, Orderbook>,
     pub(crate) shared_orderbooks: SharedOrderbooks,
+    /// Atomic best prices for lock-free hot-path monitoring
+    pub(crate) shared_best_prices: SharedBestPrices,
     pub(crate) connection_health: ConnectionHealth,
 }
 
@@ -111,6 +116,7 @@ impl VestAdapter {
             pending_subscriptions: HashMap::new(),
             orderbooks: HashMap::new(),
             shared_orderbooks: Arc::new(RwLock::new(HashMap::new())),
+            shared_best_prices: Arc::new(AtomicBestPrices::new()),
             connection_health: ConnectionHealth::default(),
         }
     }
@@ -146,6 +152,11 @@ impl VestAdapter {
     /// without blocking execution.
     pub fn get_shared_orderbooks(&self) -> SharedOrderbooks {
         Arc::clone(&self.shared_orderbooks)
+    }
+
+    /// Get shared atomic best prices for lock-free hot-path monitoring
+    pub fn get_shared_best_prices(&self) -> SharedBestPrices {
+        Arc::clone(&self.shared_best_prices)
     }
 
     // =========================================================================
@@ -234,6 +245,10 @@ impl VestAdapter {
     }
 
     // =========================================================================
+    // Precision Helpers
+    // =========================================================================
+
+    // =========================================================================
     // Pre-Signed Order Methods
     // =========================================================================
 
@@ -255,11 +270,11 @@ impl VestAdapter {
         };
 
         let is_buy = matches!(order.side, crate::adapters::types::OrderSide::Buy);
-        let size_str = format!("{:.3}", order.quantity); // Vest requires exactly 3 decimal places
+        let size_str = format_vest_size(order.quantity, &order.symbol);
         let price_str = order
             .price
-            .map(|p| format!("{:.3}", p)) // Vest requires exactly 3 decimal places
-            .unwrap_or_else(|| "0.000".to_string());
+            .map(|p| format_vest_price(p, &order.symbol))
+            .unwrap_or_else(|| format_vest_price(0.0, &order.symbol));
         let reduce_only = order.reduce_only;
 
         let encoded = encode(&[
@@ -664,6 +679,7 @@ impl VestAdapter {
         self.ws_sender = Some(Arc::new(Mutex::new(ws_sender)));
 
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
+        let shared_best_prices = Arc::clone(&self.shared_best_prices);
         let last_pong = Arc::clone(&self.connection_health.last_pong);
         let last_data = Arc::clone(&self.connection_health.last_data);
         let reader_alive = Arc::clone(&self.connection_health.reader_alive);
@@ -671,7 +687,7 @@ impl VestAdapter {
         last_data.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_pong, last_data, reader_alive).await;
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, last_pong, last_data, reader_alive).await;
         });
 
         self.reader_handle = Some(handle);
@@ -685,6 +701,7 @@ impl VestAdapter {
     async fn message_reader_loop(
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
+        shared_best_prices: SharedBestPrices,
         last_pong: Arc<AtomicU64>,
         last_data: Arc<AtomicU64>,
         reader_alive: Arc<AtomicBool>,
@@ -717,6 +734,11 @@ impl VestAdapter {
 
                                 match depth_msg.data.to_orderbook() {
                                     Ok(orderbook) => {
+                                        // Write atomic best prices FIRST (lock-free hot path)
+                                        shared_best_prices.store(
+                                            orderbook.best_bid().unwrap_or(0.0),
+                                            orderbook.best_ask().unwrap_or(0.0),
+                                        );
                                         let mut books = shared_orderbooks.write().await;
                                         books.insert(symbol.clone(), orderbook);
                                         tracing::trace!(symbol = %symbol, "Orderbook updated in shared storage");
@@ -766,6 +788,10 @@ impl VestAdapter {
                                 .to_string();
 
                             if let Ok(orderbook) = depth_msg.data.to_orderbook() {
+                                shared_best_prices.store(
+                                    orderbook.best_bid().unwrap_or(0.0),
+                                    orderbook.best_ask().unwrap_or(0.0),
+                                );
                                 let mut books = shared_orderbooks.write().await;
                                 books.insert(symbol, orderbook);
                             }
@@ -1445,11 +1471,11 @@ impl ExchangeAdapter for VestAdapter {
             },
             "symbol": order.symbol,
             "isBuy": is_buy,
-            "size": format!("{:.3}", order.quantity),  // Vest requires exactly 3 decimal places
+            "size": format_vest_size(order.quantity, &order.symbol),
             // Vest requires limitPrice for ALL orders (including MARKET) as a slippage protection
             // If price is None, this will fail - caller must provide a price
             "limitPrice": match order.price {
-                Some(p) => format!("{:.3}", p),
+                Some(p) => format_vest_price(p, &order.symbol),
                 None => return Err(ExchangeError::InvalidOrder(
                     "Vest requires limitPrice for all orders - price must not be None".into()
                 )),
@@ -1768,6 +1794,56 @@ impl ExchangeAdapter for VestAdapter {
     fn exchange_name(&self) -> &'static str {
         "vest"
     }
+}
+
+// =============================================================================
+// Vest Precision Helpers
+// =============================================================================
+
+/// Return the number of decimal places Vest requires for order **sizes** on a given market.
+///
+/// Values from Vest production `/exchangeInfo` API (queried 2026-02-08):
+/// - BTC-PERP: sizeDecimals = 4
+/// - ETH-PERP: sizeDecimals = 3
+/// - SOL-PERP: sizeDecimals = 2
+pub(super) fn vest_size_decimals(market: &str) -> usize {
+    if market.starts_with("BTC") {
+        4
+    } else if market.starts_with("ETH") {
+        3
+    } else {
+        // SOL and any future crypto market
+        2
+    }
+}
+
+/// Return the number of decimal places Vest requires for **prices** on a given market.
+///
+/// Values from Vest production `/exchangeInfo` API (queried 2026-02-08):
+/// - BTC-PERP: priceDecimals = 2
+/// - ETH-PERP: priceDecimals = 3
+/// - SOL-PERP: priceDecimals = 4
+pub(super) fn vest_price_decimals(market: &str) -> usize {
+    if market.starts_with("BTC") {
+        2
+    } else if market.starts_with("ETH") {
+        3
+    } else {
+        // SOL and other markets
+        4
+    }
+}
+
+/// Format a Vest order size string with the correct per-market precision.
+pub(super) fn format_vest_size(quantity: f64, market: &str) -> String {
+    let decimals = vest_size_decimals(market);
+    format!("{:.prec$}", quantity, prec = decimals)
+}
+
+/// Format a Vest limit price string with the correct per-market precision.
+pub(super) fn format_vest_price(price: f64, market: &str) -> String {
+    let decimals = vest_price_decimals(market);
+    format!("{:.prec$}", price, prec = decimals)
 }
 
 // =============================================================================

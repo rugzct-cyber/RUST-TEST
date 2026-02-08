@@ -26,6 +26,7 @@ use crate::core::events::{
 use crate::core::spread::SpreadCalculator;
 
 use crate::core::channels::SharedOrderbooks;
+use crate::core::channels::SharedBestPrices;
 
 /// Polling interval for orderbook monitoring (25ms for V1 HFT)
 pub const POLL_INTERVAL_MS: u64 = 25;
@@ -47,22 +48,26 @@ pub struct MonitoringConfig {
     pub spread_exit: f64,
 }
 
-/// Lock-free monitoring task that reads shared orderbooks directly
+/// Lock-free monitoring task using AtomicBestPrices
 ///
-/// # Lock-Free Design
-/// - NO Mutex locks - reads directly from Arc<RwLock<...>>
-/// - Polls every 25ms (4x faster than original 100ms)
-/// - WebSocket handlers write to SharedOrderbooks asynchronously
+/// # Hot-Path Design (Axe 1 optimization)
+/// - Reads 4 `f64` prices from `AtomicU64` — NO lock, NO clone, NO allocation
+/// - Calculates spread via `calculate_from_prices()` directly
+/// - `SharedOrderbooks` kept only for the rare missing-data warning path
 ///
 /// # Arguments
-/// * `vest_orderbooks` - Vest shared orderbooks (Arc<RwLock<...>>)
-/// * `paradex_orderbooks` - Paradex shared orderbooks (Arc<RwLock<...>>)
+/// * `vest_best_prices` - Atomic best bid/ask from Vest WebSocket reader
+/// * `paradex_best_prices` - Atomic best bid/ask from Paradex WebSocket reader
+/// * `vest_orderbooks` - Vest SharedOrderbooks (only for connection-check warnings)
+/// * `paradex_orderbooks` - Paradex SharedOrderbooks (only for connection-check warnings)
 /// * `opportunity_tx` - Channel to send spread opportunities to execution_task
 /// * `vest_symbol` - Symbol for Vest orderbook (e.g., "BTC-PERP")
 /// * `paradex_symbol` - Symbol for Paradex orderbook (e.g., "BTC-USD-PERP")
 /// * `config` - Monitoring configuration with spread thresholds
 /// * `shutdown_rx` - Broadcast receiver for shutdown signal
 pub async fn monitoring_task(
+    vest_best_prices: SharedBestPrices,
+    paradex_best_prices: SharedBestPrices,
     vest_orderbooks: SharedOrderbooks,
     paradex_orderbooks: SharedOrderbooks,
     opportunity_tx: mpsc::Sender<SpreadOpportunity>,
@@ -89,92 +94,79 @@ pub async fn monitoring_task(
             _ = poll_interval.tick() => {
                 poll_count += 1;
 
-                // Read directly from shared storage - NO Mutex contention!
-                let vest_ob = {
-                    let books = vest_orderbooks.read().await;
-                    books.get(&vest_symbol).cloned()
-                };
+                // HOT PATH: Read atomic best prices — zero lock, zero allocation
+                let (vest_bid, vest_ask) = vest_best_prices.load();
+                let (paradex_bid, paradex_ask) = paradex_best_prices.load();
 
-                let paradex_ob = {
-                    let books = paradex_orderbooks.read().await;
-                    books.get(&paradex_symbol).cloned()
-                };
+                // Only calculate spread if both have valid prices
+                if let Some(spread_result) = calculator.calculate_from_prices(
+                    vest_bid, vest_ask, paradex_bid, paradex_ask
+                ) {
+                    // Log spread status periodically (every ~1 second)
+                    if poll_count % LOG_THROTTLE_POLLS == 0 {
+                        debug!(
+                            event_type = "SPREAD_MONITORING",
+                            entry_spread = %format_pct(spread_result.spread_pct),
+                            spread_threshold = %format_pct(config.spread_entry),
+                            direction = ?spread_result.direction,
+                            "Monitoring spread"
+                        );
+                    }
 
-                // Only calculate spread if both orderbooks are available
-                if let (Some(vest_orderbook), Some(paradex_orderbook)) = (vest_ob, paradex_ob) {
-                    if let Some(spread_result) = calculator.calculate(&vest_orderbook, &paradex_orderbook) {
-                        // Log spread status periodically (every ~1 second)
-                        // Uses debug level for non-opportunity monitoring
-                        if poll_count % LOG_THROTTLE_POLLS == 0 {
-                            debug!(
-                                event_type = "SPREAD_MONITORING",
-                                entry_spread = %format_pct(spread_result.spread_pct),
-                                spread_threshold = %format_pct(config.spread_entry),
-                                direction = ?spread_result.direction,
-                                "Monitoring spread"
-                            );
-                        }
+                    // Only send opportunity if threshold exceeded
+                    if spread_result.spread_pct >= config.spread_entry {
+                        let now_ms = current_timestamp_ms();
 
-                        // Only send opportunity if threshold exceeded
-                        if spread_result.spread_pct >= config.spread_entry {
-                            let now_ms = current_timestamp_ms();
+                        let opportunity = SpreadOpportunity {
+                            pair: config.pair.clone(),
+                            dex_a: "vest".to_string(),
+                            dex_b: "paradex".to_string(),
+                            spread_percent: spread_result.spread_pct,
+                            direction: spread_result.direction,
+                            detected_at_ms: now_ms,
+                            // Prices from atomics (already loaded above)
+                            dex_a_ask: vest_ask,
+                            dex_a_bid: vest_bid,
+                            dex_b_ask: paradex_ask,
+                            dex_b_bid: paradex_bid,
+                        };
 
-                            let opportunity = SpreadOpportunity {
-                                pair: config.pair.clone(),
-                                dex_a: "vest".to_string(),
-                                dex_b: "paradex".to_string(),
-                                spread_percent: spread_result.spread_pct,
-                                direction: spread_result.direction,
-                                detected_at_ms: now_ms,
-                                // Include orderbook prices for order placement
-                                dex_a_ask: vest_orderbook.best_ask().unwrap_or(0.0),
-                                dex_a_bid: vest_orderbook.best_bid().unwrap_or(0.0),
-                                dex_b_ask: paradex_orderbook.best_ask().unwrap_or(0.0),
-                                dex_b_bid: paradex_orderbook.best_bid().unwrap_or(0.0),
-                            };
-
-                            // Non-blocking send to avoid blocking monitoring loop
-                            match opportunity_tx.try_send(opportunity) {
-                                Ok(_) => {
-                                    // Only log SPREAD_DETECTED when opportunity
-                                    // is actually sent (not when position is open/channel full)
-                                    if poll_count % LOG_THROTTLE_POLLS == 0 {
-                                        let direction_str = format!("{:?}", spread_result.direction);
-                                        let event = TradingEvent::spread_detected(
-                                            &config.pair,
-                                            spread_result.spread_pct,
-                                            config.spread_entry,
-                                            &direction_str,
-                                        );
-                                        log_event(&event);
-                                    }
-                                    debug!("Spread opportunity sent to execution task");
-                                }
-                            Err(mpsc::error::TrySendError::Full(_)) => {
-                                    // Channel full: executor is busy (in position or processing)
-                                    // Log throttled to avoid spam — useful for tuning spread thresholds
-                                    if poll_count % LOG_THROTTLE_POLLS == 0 {
-                                        debug!(
-                                            event_type = "OPPORTUNITY_DROPPED",
-                                            spread = %format_pct(spread_result.spread_pct),
-                                            "Channel full - executor busy"
-                                        );
-                                    }
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    warn!(
-                                        event_type = "CHANNEL_CLOSED",
-                                        "Opportunity channel closed - executor may have crashed"
+                        // Non-blocking send to avoid blocking monitoring loop
+                        match opportunity_tx.try_send(opportunity) {
+                            Ok(_) => {
+                                if poll_count % LOG_THROTTLE_POLLS == 0 {
+                                    let direction_str = format!("{:?}", spread_result.direction);
+                                    let event = TradingEvent::spread_detected(
+                                        &config.pair,
+                                        spread_result.spread_pct,
+                                        config.spread_entry,
+                                        &direction_str,
                                     );
-                                    break;
+                                    log_event(&event);
                                 }
+                                debug!("Spread opportunity sent to execution task");
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                if poll_count % LOG_THROTTLE_POLLS == 0 {
+                                    debug!(
+                                        event_type = "OPPORTUNITY_DROPPED",
+                                        spread = %format_pct(spread_result.spread_pct),
+                                        "Channel full - executor busy"
+                                    );
+                                }
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                warn!(
+                                    event_type = "CHANNEL_CLOSED",
+                                    "Opportunity channel closed - executor may have crashed"
+                                );
+                                break;
                             }
                         }
                     }
                 } else {
-                    // Log when orderbooks are missing (helps debug connection issues)
+                    // Atomic prices are 0.0 (no data yet) — use SharedOrderbooks for diagnostics
                     warn_counter += 1;
-                    // Only warn every 400 iterations (~10 seconds at 25ms) to avoid spam
                     if warn_counter % WARN_THROTTLE_POLLS == 0 {
                         let vest_has_ob = vest_orderbooks.read().await.contains_key(&vest_symbol);
                         let paradex_has_ob = paradex_orderbooks.read().await.contains_key(&paradex_symbol);
@@ -196,15 +188,25 @@ pub async fn monitoring_task(
 mod tests {
     use super::*;
     use crate::adapters::types::{Orderbook, OrderbookLevel};
+    use crate::core::channels::AtomicBestPrices;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use tokio::time::timeout;
 
+    /// Helper: create AtomicBestPrices pre-loaded with the given bid/ask
+    fn make_best_prices(bid: f64, ask: f64) -> SharedBestPrices {
+        let bp = Arc::new(AtomicBestPrices::new());
+        bp.store(bid, ask);
+        bp
+    }
+
     #[tokio::test]
     async fn test_monitoring_task_shutdown() {
         let vest_orderbooks = Arc::new(RwLock::new(HashMap::new()));
         let paradex_orderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let vest_bp = Arc::new(AtomicBestPrices::new()); // uninitialized (0.0)
+        let paradex_bp = Arc::new(AtomicBestPrices::new());
         let (opportunity_tx, _opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
@@ -214,8 +216,9 @@ mod tests {
             spread_exit: 0.05,
         };
 
-        // Spawn monitoring task
         let handle = tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -225,26 +228,24 @@ mod tests {
             shutdown_rx,
         ));
 
-        // Wait a bit then send shutdown
         tokio::time::sleep(Duration::from_millis(50)).await;
         shutdown_tx.send(()).unwrap();
 
-        // Task should complete cleanly
         let result = timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "Monitoring task should shutdown cleanly");
     }
 
     #[tokio::test]
     async fn test_monitoring_task_sends_opportunity_when_threshold_exceeded() {
-        // Create orderbooks with spread > threshold
-        // Vest: ask=99.0, bid=98.5
-        // Paradex: bid=100.5 (> ask_A so spread = (100.5-99)/99*100 = 1.515%)
+        // Vest: ask=99.0, bid=98.5; Paradex: bid=100.5, ask=100.0
+        // spread = (100.5-99)/99*100 = 1.515%
         let mut vest_books = HashMap::new();
         let mut vest_ob = Orderbook::new();
         vest_ob.asks.push(OrderbookLevel::new(99.0, 1.0));
         vest_ob.bids.push(OrderbookLevel::new(98.5, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(98.5, 99.0);
 
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
@@ -252,18 +253,20 @@ mod tests {
         paradex_ob.bids.push(OrderbookLevel::new(100.5, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(100.5, 100.0);
 
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
         let config = MonitoringConfig {
             pair: "BTC-PERP".to_string(),
-            spread_entry: 0.30, // 0.30% threshold
+            spread_entry: 0.30,
             spread_exit: 0.05,
         };
 
-        // Spawn monitoring task
         tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -273,13 +276,9 @@ mod tests {
             shutdown_rx,
         ));
 
-        // Wait for opportunity to be received
         let result = timeout(Duration::from_millis(500), opportunity_rx.recv()).await;
-
-        // Shutdown monitoring task
         let _ = shutdown_tx.send(());
 
-        // Verify opportunity was received
         assert!(result.is_ok(), "Should receive opportunity within timeout");
         let opportunity = result.unwrap().expect("Should receive SpreadOpportunity");
         assert_eq!(opportunity.pair, "BTC-PERP");
@@ -291,13 +290,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_monitoring_task_no_opportunity_below_threshold() {
-        // Create orderbooks with spread below threshold
         let mut vest_books = HashMap::new();
         let mut vest_ob = Orderbook::new();
         vest_ob.asks.push(OrderbookLevel::new(100.1, 1.0));
         vest_ob.bids.push(OrderbookLevel::new(100.0, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(100.0, 100.1);
 
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
@@ -305,61 +304,7 @@ mod tests {
         paradex_ob.bids.push(OrderbookLevel::new(99.95, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
-
-        let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-        let config = MonitoringConfig {
-            pair: "BTC-PERP".to_string(),
-            spread_entry: 0.30, // 0.30% threshold
-            spread_exit: 0.05,
-        };
-
-        // Spawn monitoring task
-        tokio::spawn(monitoring_task(
-            vest_orderbooks,
-            paradex_orderbooks,
-            opportunity_tx,
-            "BTC-PERP".to_string(),
-            "BTC-USD-PERP".to_string(),
-            config,
-            shutdown_rx,
-        ));
-
-        // Wait briefly - no opportunity should arrive
-        let result = timeout(Duration::from_millis(200), opportunity_rx.recv()).await;
-
-        // Shutdown monitoring task
-        let _ = shutdown_tx.send(());
-
-        // Should timeout because no opportunity exceeds threshold
-        assert!(
-            result.is_err(),
-            "Should NOT receive opportunity when spread below threshold"
-        );
-    }
-
-    // =========================================================================
-    // Additional Tests
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_monitoring_task_threshold_boundary_just_above() {
-        // Use bid_b=100.31, ask_a=100.0 => spread = (100.31-100)/100*100 = 0.31% > 0.30%
-        // NOTE: Using 100.31 (not 100.30) to avoid floating point boundary issues
-        let mut vest_books = HashMap::new();
-        let mut vest_ob = Orderbook::new();
-        vest_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
-        vest_ob.bids.push(OrderbookLevel::new(99.5, 1.0));
-        vest_books.insert("BTC-PERP".to_string(), vest_ob);
-        let vest_orderbooks = Arc::new(RwLock::new(vest_books));
-
-        let mut paradex_books = HashMap::new();
-        let mut paradex_ob = Orderbook::new();
-        paradex_ob.asks.push(OrderbookLevel::new(101.0, 1.0));
-        paradex_ob.bids.push(OrderbookLevel::new(100.31, 1.0));
-        paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
-        let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(99.95, 100.0);
 
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -371,6 +316,57 @@ mod tests {
         };
 
         tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
+            vest_orderbooks,
+            paradex_orderbooks,
+            opportunity_tx,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+            config,
+            shutdown_rx,
+        ));
+
+        let result = timeout(Duration::from_millis(200), opportunity_rx.recv()).await;
+        let _ = shutdown_tx.send(());
+
+        assert!(
+            result.is_err(),
+            "Should NOT receive opportunity when spread below threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_monitoring_task_threshold_boundary_just_above() {
+        // bid_b=100.31, ask_a=100.0 => spread = 0.31% > 0.30%
+        let mut vest_books = HashMap::new();
+        let mut vest_ob = Orderbook::new();
+        vest_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
+        vest_ob.bids.push(OrderbookLevel::new(99.5, 1.0));
+        vest_books.insert("BTC-PERP".to_string(), vest_ob);
+        let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(99.5, 100.0);
+
+        let mut paradex_books = HashMap::new();
+        let mut paradex_ob = Orderbook::new();
+        paradex_ob.asks.push(OrderbookLevel::new(101.0, 1.0));
+        paradex_ob.bids.push(OrderbookLevel::new(100.31, 1.0));
+        paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
+        let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(100.31, 101.0);
+
+        let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let config = MonitoringConfig {
+            pair: "BTC-PERP".to_string(),
+            spread_entry: 0.30,
+            spread_exit: 0.05,
+        };
+
+        tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -397,6 +393,7 @@ mod tests {
         vest_ob.bids.push(OrderbookLevel::new(99.5, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(99.5, 100.0);
 
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
@@ -404,6 +401,7 @@ mod tests {
         paradex_ob.bids.push(OrderbookLevel::new(100.29, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(100.29, 101.0);
 
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -415,6 +413,8 @@ mod tests {
         };
 
         tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -432,16 +432,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_monitoring_task_missing_one_orderbook() {
-        // Vest has data, but Paradex is empty => no panic, just waits
+        // Vest has prices, Paradex has none (atomics at 0.0)
         let mut vest_books = HashMap::new();
         let mut vest_ob = Orderbook::new();
         vest_ob.asks.push(OrderbookLevel::new(100.0, 1.0));
         vest_ob.bids.push(OrderbookLevel::new(99.0, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(99.0, 100.0);
 
-        // Paradex: empty (no key)
         let paradex_orderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let paradex_bp = Arc::new(AtomicBestPrices::new()); // 0.0 = no data
 
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -453,6 +454,8 @@ mod tests {
         };
 
         tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -462,7 +465,6 @@ mod tests {
             shutdown_rx,
         ));
 
-        // Should not panic, just timeout without sending opportunity
         let result = timeout(Duration::from_millis(200), opportunity_rx.recv()).await;
         let _ = shutdown_tx.send(());
 
@@ -471,14 +473,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_monitoring_task_channel_full_no_panic() {
-        // Channel capacity=1, spread is high => first send fills the buffer,
-        // second should be dropped gracefully (no panic)
         let mut vest_books = HashMap::new();
         let mut vest_ob = Orderbook::new();
         vest_ob.asks.push(OrderbookLevel::new(99.0, 1.0));
         vest_ob.bids.push(OrderbookLevel::new(98.5, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(98.5, 99.0);
 
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
@@ -486,8 +487,8 @@ mod tests {
         paradex_ob.bids.push(OrderbookLevel::new(100.5, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(100.5, 100.0);
 
-        // Capacity 1 — will fill up quickly
         let (opportunity_tx, _opportunity_rx) = mpsc::channel(1);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 
@@ -498,6 +499,8 @@ mod tests {
         };
 
         let handle = tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -507,7 +510,6 @@ mod tests {
             shutdown_rx,
         ));
 
-        // Let it run long enough to attempt multiple sends on a full channel
         tokio::time::sleep(Duration::from_millis(200)).await;
         let _ = shutdown_tx.send(());
 
@@ -517,13 +519,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_monitoring_task_channel_closed_breaks_loop() {
-        // Drop the receiver, channel becomes closed => task should break
         let mut vest_books = HashMap::new();
         let mut vest_ob = Orderbook::new();
         vest_ob.asks.push(OrderbookLevel::new(99.0, 1.0));
         vest_ob.bids.push(OrderbookLevel::new(98.5, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(98.5, 99.0);
 
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
@@ -531,6 +533,7 @@ mod tests {
         paradex_ob.bids.push(OrderbookLevel::new(100.5, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(100.5, 100.0);
 
         let (opportunity_tx, opportunity_rx) = mpsc::channel(10);
         let (_shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -541,10 +544,11 @@ mod tests {
             spread_exit: 0.05,
         };
 
-        // Drop receiver immediately
         drop(opportunity_rx);
 
         let handle = tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,
@@ -554,20 +558,19 @@ mod tests {
             shutdown_rx,
         ));
 
-        // Task should detect closed channel and exit on its own
         let result = timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "Task should exit when channel is closed");
     }
 
     #[tokio::test]
     async fn test_monitoring_task_opportunity_includes_prices() {
-        // Verify that SpreadOpportunity contains the correct dex_a/b prices
         let mut vest_books = HashMap::new();
         let mut vest_ob = Orderbook::new();
         vest_ob.asks.push(OrderbookLevel::new(42000.0, 1.0));
         vest_ob.bids.push(OrderbookLevel::new(41990.0, 1.0));
         vest_books.insert("BTC-PERP".to_string(), vest_ob);
         let vest_orderbooks = Arc::new(RwLock::new(vest_books));
+        let vest_bp = make_best_prices(41990.0, 42000.0);
 
         let mut paradex_books = HashMap::new();
         let mut paradex_ob = Orderbook::new();
@@ -575,6 +578,7 @@ mod tests {
         paradex_ob.bids.push(OrderbookLevel::new(42200.0, 1.0));
         paradex_books.insert("BTC-USD-PERP".to_string(), paradex_ob);
         let paradex_orderbooks = Arc::new(RwLock::new(paradex_books));
+        let paradex_bp = make_best_prices(42200.0, 42010.0);
 
         let (opportunity_tx, mut opportunity_rx) = mpsc::channel(10);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
@@ -586,6 +590,8 @@ mod tests {
         };
 
         tokio::spawn(monitoring_task(
+            vest_bp,
+            paradex_bp,
             vest_orderbooks,
             paradex_orderbooks,
             opportunity_tx,

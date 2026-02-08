@@ -25,7 +25,7 @@ use crate::core::spread::{SpreadCalculator, SpreadDirection};
 use crate::tui::app::AppState as TuiState;
 use std::sync::Mutex as StdMutex;
 
-use crate::core::channels::SharedOrderbooks;
+use crate::core::channels::SharedBestPrices;
 
 // =============================================================================
 // Constants
@@ -67,8 +67,8 @@ struct ExitResult {
 
 /// Bundled parameters for exit monitoring (replaces 7 loose arguments)
 struct ExitMonitoringParams {
-    vest_orderbooks: SharedOrderbooks,
-    paradex_orderbooks: SharedOrderbooks,
+    vest_best_prices: SharedBestPrices,
+    paradex_best_prices: SharedBestPrices,
     vest_symbol: String,
     paradex_symbol: String,
     pair: String,
@@ -90,10 +90,10 @@ where
     P: ExchangeAdapter + Send + Sync,
 {
     let ExitMonitoringParams {
-        vest_orderbooks,
-        paradex_orderbooks,
-        vest_symbol,
-        paradex_symbol,
+        vest_best_prices,
+        paradex_best_prices,
+        vest_symbol: _vest_symbol,
+        paradex_symbol: _paradex_symbol,
         pair,
         entry_spread,
         exit_spread_target,
@@ -120,16 +120,11 @@ where
                     }
                 }
 
-                // Read orderbooks
-                let vest_ob = vest_orderbooks.read().await.get(&vest_symbol).cloned();
-                let paradex_ob = paradex_orderbooks.read().await.get(&paradex_symbol).cloned();
+                // HOT PATH: Read atomic best prices — zero lock, zero allocation
+                let (vest_bid, vest_ask) = vest_best_prices.load();
+                let (paradex_bid, paradex_ask) = paradex_best_prices.load();
 
-                if let (Some(v_ob), Some(p_ob)) = (vest_ob, paradex_ob) {
-                    // Get best prices
-                    let vest_bid = v_ob.best_bid().unwrap_or(0.0);
-                    let vest_ask = v_ob.best_ask().unwrap_or(0.0);
-                    let paradex_bid = p_ob.best_bid().unwrap_or(0.0);
-                    let paradex_ask = p_ob.best_ask().unwrap_or(0.0);
+                if vest_bid > 0.0 && vest_ask > 0.0 && paradex_bid > 0.0 && paradex_ask > 0.0 {
 
                     // Calculate exit spread based on entry direction
                     let exit_spread = match direction {
@@ -282,8 +277,8 @@ where
 pub async fn execution_task<V, P>(
     mut opportunity_rx: mpsc::Receiver<SpreadOpportunity>,
     executor: DeltaNeutralExecutor<V, P>,
-    vest_orderbooks: SharedOrderbooks,
-    paradex_orderbooks: SharedOrderbooks,
+    vest_best_prices: SharedBestPrices,
+    paradex_best_prices: SharedBestPrices,
     vest_symbol: String,
     paradex_symbol: String,
     mut shutdown_rx: broadcast::Receiver<()>,
@@ -387,8 +382,8 @@ pub async fn execution_task<V, P>(
                                 let (_poll_count, maybe_exit_result) = exit_monitoring_loop(
                                     &executor,
                                     ExitMonitoringParams {
-                                        vest_orderbooks: vest_orderbooks.clone(),
-                                        paradex_orderbooks: paradex_orderbooks.clone(),
+                                        vest_best_prices: vest_best_prices.clone(),
+                                        paradex_best_prices: paradex_best_prices.clone(),
                                         vest_symbol: vest_symbol.clone(),
                                         paradex_symbol: paradex_symbol.clone(),
                                         pair: pair.clone(),
@@ -478,11 +473,16 @@ pub async fn execution_task<V, P>(
 mod tests {
     use super::*;
     use crate::adapters::test_utils::TestMockAdapter;
-    use crate::adapters::types::Orderbook;
+    use crate::core::channels::AtomicBestPrices;
     use crate::core::spread::SpreadDirection;
-    use std::collections::HashMap;
-    use tokio::sync::RwLock;
     use tokio::time::{timeout, Duration};
+
+    /// Helper: create SharedBestPrices pre-loaded with the given bid/ask
+    fn make_best_prices(bid: f64, ask: f64) -> SharedBestPrices {
+        let bp = Arc::new(AtomicBestPrices::new());
+        bp.store(bid, ask);
+        bp
+    }
 
     #[tokio::test]
     async fn test_execution_task_processes_opportunity() {
@@ -499,35 +499,17 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // Create SharedOrderbooks with data that triggers exit (spread = 0 >= -0.05)
-        let mut vest_books = HashMap::new();
-        vest_books.insert(
-            "BTC-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
-                timestamp: 1706000000000,
-            },
-        );
-        let mut paradex_books = HashMap::new();
-        paradex_books.insert(
-            "BTC-USD-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)], // Same as vest_bid => spread ~0%
-                timestamp: 1706000000000,
-            },
-        );
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        // Create SharedBestPrices with data that triggers exit (spread = 0 >= -0.05)
+        let vest_bp = make_best_prices(42000.0, 42001.0);
+        let paradex_bp = make_best_prices(42000.0, 42001.0); // Same as vest => spread ~0%
 
         // Spawn the execution task (V1: with exit monitoring)
         let handle = tokio::spawn(async move {
             execution_task(
                 opportunity_rx,
                 executor,
-                vest_orderbooks,
-                paradex_orderbooks,
+                vest_bp,
+                paradex_bp,
                 "BTC-PERP".to_string(),
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
@@ -578,17 +560,17 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // Create empty SharedOrderbooks for test
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        // Create empty SharedBestPrices for test
+        let vest_bp = Arc::new(AtomicBestPrices::new());
+        let paradex_bp = Arc::new(AtomicBestPrices::new());
 
         // V1: with exit monitoring
         let handle = tokio::spawn(async move {
             execution_task(
                 opportunity_rx,
                 executor,
-                vest_orderbooks,
-                paradex_orderbooks,
+                vest_bp,
+                paradex_bp,
                 "BTC-PERP".to_string(),
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
@@ -619,30 +601,12 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // Create SharedOrderbooks with prices that produce exit_spread >= target
+        // Create SharedBestPrices with prices that produce exit_spread >= target
         // For AOverB: exit_spread = (vest_bid - paradex_ask) / paradex_ask * 100
         // vest_bid = 42000, paradex_ask = 42000 => spread = 0%
         // Target = -0.05%, so 0% >= -0.05% triggers exit
-        let mut vest_books = HashMap::new();
-        vest_books.insert(
-            "BTC-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
-                timestamp: 1706000000000,
-            },
-        );
-        let mut paradex_books = HashMap::new();
-        paradex_books.insert(
-            "BTC-USD-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)], // Same as vest_bid
-                timestamp: 1706000000000,
-            },
-        );
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        let vest_bp = make_best_prices(42000.0, 42001.0);
+        let paradex_bp = make_best_prices(42000.0, 42000.0); // ask same as vest_bid
 
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
 
@@ -655,8 +619,8 @@ mod tests {
             exit_monitoring_loop(
                 &executor,
                 ExitMonitoringParams {
-                    vest_orderbooks,
-                    paradex_orderbooks,
+                    vest_best_prices: vest_bp,
+                    paradex_best_prices: paradex_bp,
                     vest_symbol: "BTC-PERP".to_string(),
                     paradex_symbol: "BTC-USD-PERP".to_string(),
                     pair: "BTC-PERP".to_string(),
@@ -695,28 +659,10 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // Create orderbooks with prices that will NEVER trigger exit
+        // Create best prices that will NEVER trigger exit
         // vest_bid = 40000, paradex_ask = 42000 => spread = -4.76% (never >= -0.05%)
-        let mut vest_books = HashMap::new();
-        vest_books.insert(
-            "BTC-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(40000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(40001.0, 1.0)],
-                timestamp: 1706000000000,
-            },
-        );
-        let mut paradex_books = HashMap::new();
-        paradex_books.insert(
-            "BTC-USD-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                timestamp: 1706000000000,
-            },
-        );
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        let vest_bp = make_best_prices(40000.0, 40001.0);
+        let paradex_bp = make_best_prices(42000.0, 42000.0);
 
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
 
@@ -725,8 +671,8 @@ mod tests {
             exit_monitoring_loop(
                 &executor,
                 ExitMonitoringParams {
-                    vest_orderbooks,
-                    paradex_orderbooks,
+                    vest_best_prices: vest_bp,
+                    paradex_best_prices: paradex_bp,
                     vest_symbol: "BTC-PERP".to_string(),
                     paradex_symbol: "BTC-USD-PERP".to_string(),
                     pair: "BTC-PERP".to_string(),
@@ -771,26 +717,8 @@ mod tests {
         // For BOverA: exit_spread = (paradex_bid - vest_ask) / vest_ask * 100
         // paradex_bid = 42000, vest_ask = 42000 => spread = 0%
         // Target = -0.05%, so 0% >= -0.05% triggers exit
-        let mut vest_books = HashMap::new();
-        vest_books.insert(
-            "BTC-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                timestamp: 1706000000000,
-            },
-        );
-        let mut paradex_books = HashMap::new();
-        paradex_books.insert(
-            "BTC-USD-PERP".to_string(),
-            Orderbook {
-                bids: vec![crate::adapters::types::OrderbookLevel::new(42000.0, 1.0)],
-                asks: vec![crate::adapters::types::OrderbookLevel::new(42001.0, 1.0)],
-                timestamp: 1706000000000,
-            },
-        );
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(vest_books));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(paradex_books));
+        let vest_bp = make_best_prices(42000.0, 42000.0);
+        let paradex_bp = make_best_prices(42000.0, 42001.0);
 
         let (_shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
 
@@ -803,14 +731,14 @@ mod tests {
             exit_monitoring_loop(
                 &executor,
                 ExitMonitoringParams {
-                    vest_orderbooks,
-                    paradex_orderbooks,
+                    vest_best_prices: vest_bp,
+                    paradex_best_prices: paradex_bp,
                     vest_symbol: "BTC-PERP".to_string(),
                     paradex_symbol: "BTC-USD-PERP".to_string(),
                     pair: "BTC-PERP".to_string(),
                     entry_spread: 0.35,
                     exit_spread_target: -0.05,
-                    direction: SpreadDirection::BOverA, // <-- Testing BOverA
+                    direction: SpreadDirection::BOverA,
                 },
                 &mut shutdown_rx,
             ),
@@ -850,15 +778,15 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let vest_bp = Arc::new(AtomicBestPrices::new());
+        let paradex_bp = Arc::new(AtomicBestPrices::new());
 
         let handle = tokio::spawn(async move {
             execution_task(
                 opportunity_rx,
                 executor,
-                vest_orderbooks,
-                paradex_orderbooks,
+                vest_bp,
+                paradex_bp,
                 "BTC-PERP".to_string(),
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
@@ -913,15 +841,15 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let vest_bp = Arc::new(AtomicBestPrices::new());
+        let paradex_bp = Arc::new(AtomicBestPrices::new());
 
         let handle = tokio::spawn(async move {
             execution_task(
                 opportunity_rx,
                 executor,
-                vest_orderbooks,
-                paradex_orderbooks,
+                vest_bp,
+                paradex_bp,
                 "BTC-PERP".to_string(),
                 "BTC-USD-PERP".to_string(),
                 shutdown_rx,
@@ -958,9 +886,9 @@ mod tests {
             "BTC-USD-PERP".to_string(),
         );
 
-        // Empty orderbooks (no keys)
-        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
-        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        // Empty best prices (0.0 = no data, will never trigger exit)
+        let vest_bp = Arc::new(AtomicBestPrices::new());
+        let paradex_bp = Arc::new(AtomicBestPrices::new());
 
         let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
 
@@ -968,8 +896,8 @@ mod tests {
             exit_monitoring_loop(
                 &executor,
                 ExitMonitoringParams {
-                    vest_orderbooks,
-                    paradex_orderbooks,
+                    vest_best_prices: vest_bp,
+                    paradex_best_prices: paradex_bp,
                     vest_symbol: "BTC-PERP".to_string(),
                     paradex_symbol: "BTC-USD-PERP".to_string(),
                     pair: "BTC-PERP".to_string(),

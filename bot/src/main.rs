@@ -286,9 +286,12 @@ async fn main() -> anyhow::Result<()> {
     // Get SharedOrderbooks for lock-free monitoring (NO Mutex!)
     let vest_shared_orderbooks = vest_adapter.get_shared_orderbooks();
     let paradex_shared_orderbooks = paradex_adapter.get_shared_orderbooks();
+    // Get AtomicBestPrices for hot-path monitoring (zero lock, zero allocation)
+    let vest_best_prices = vest_adapter.get_shared_best_prices();
+    let paradex_best_prices = paradex_adapter.get_shared_best_prices();
     info!(
         event_type = "RUNTIME",
-        "SharedOrderbooks extracted for lock-free monitoring"
+        "SharedOrderbooks + AtomicBestPrices extracted for lock-free monitoring"
     );
 
     // Create shutdown broadcast channel
@@ -371,8 +374,8 @@ async fn main() -> anyhow::Result<()> {
     // Spawn execution_task (V1: with exit monitoring)
     let execution_shutdown = shutdown_tx.subscribe();
     let exit_spread_target = bot.spread_exit;
-    let exec_vest_orderbooks = vest_shared_orderbooks.clone();
-    let exec_paradex_orderbooks = paradex_shared_orderbooks.clone();
+    let exec_vest_best_prices = vest_best_prices.clone();
+    let exec_paradex_best_prices = paradex_best_prices.clone();
     let exec_vest_symbol = vest_symbol.clone();
     let exec_paradex_symbol = paradex_symbol.clone();
     let exec_tui_state = app_state.clone();
@@ -380,8 +383,8 @@ async fn main() -> anyhow::Result<()> {
         execution_task(
             opportunity_rx,
             executor,
-            exec_vest_orderbooks,
-            exec_paradex_orderbooks,
+            exec_vest_best_prices,
+            exec_paradex_best_prices,
             exec_vest_symbol,
             exec_paradex_symbol,
             execution_shutdown,
@@ -409,8 +412,10 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(async move {
         monitoring_task(
-            vest_shared_orderbooks,
-            paradex_shared_orderbooks,
+            vest_best_prices.clone(),
+            paradex_best_prices.clone(),
+            vest_shared_orderbooks.clone(),
+            paradex_shared_orderbooks.clone(),
             monitoring_tx,
             monitoring_vest_symbol,
             monitoring_paradex_symbol,

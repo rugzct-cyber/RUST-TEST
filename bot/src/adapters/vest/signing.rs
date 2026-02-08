@@ -198,12 +198,12 @@ pub async fn sign_order(
     let is_buy = matches!(order.side, OrderSide::Buy);
 
     // Size and price as strings - MUST match exactly with place_order payload format
-    // Vest requires exactly 3 decimal places for both size and limitPrice
-    let size_str = format!("{:.3}", order.quantity);
+    // Precision is market-specific, from Vest /exchangeInfo (sizeDecimals, priceDecimals)
+    let size_str = super::adapter::format_vest_size(order.quantity, &order.symbol);
     let limit_price_str = order
         .price
-        .map(|p| format!("{:.3}", p))
-        .unwrap_or_else(|| "0.000".to_string());
+        .map(|p| super::adapter::format_vest_price(p, &order.symbol))
+        .unwrap_or_else(|| super::adapter::format_vest_price(0.0, &order.symbol));
 
     // reduceOnly - from order request (true for closing positions)
     let reduce_only = order.reduce_only;

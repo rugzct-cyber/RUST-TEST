@@ -29,7 +29,7 @@ pub mod spread;
 pub use spread::{SpreadCalculator, SpreadDirection, SpreadResult};
 
 // Explicit re-exports for channels module
-pub use channels::{SharedOrderbooks, SpreadOpportunity};
+pub use channels::{AtomicBestPrices, SharedBestPrices, SharedOrderbooks, SpreadOpportunity};
 
 // Explicit re-exports for execution module
 pub use execution::{DeltaNeutralExecutor, DeltaNeutralResult, LegStatus};

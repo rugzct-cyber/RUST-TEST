@@ -60,6 +60,9 @@ type WsReader = SplitStream<WsStream>;
 
 /// Shared orderbook storage for concurrent access (lock-free monitoring)
 pub use crate::core::channels::SharedOrderbooks;
+/// Lock-free atomic best prices for hot-path monitoring
+use crate::core::channels::SharedBestPrices;
+use crate::core::channels::AtomicBestPrices;
 
 // =============================================================================
 // Paradex Adapter
@@ -85,6 +88,8 @@ pub struct ParadexAdapter {
     ws_authenticated: bool,
     /// Shared orderbooks (thread-safe for background reader)
     shared_orderbooks: SharedOrderbooks,
+    /// Atomic best prices for lock-free hot-path monitoring
+    shared_best_prices: SharedBestPrices,
     /// Local reference for get_orderbook (synced from shared)
     orderbooks: HashMap<String, Orderbook>,
     /// Active subscriptions by symbol
@@ -116,6 +121,7 @@ impl ParadexAdapter {
             connected: false,
             ws_authenticated: false,
             shared_orderbooks: Arc::new(RwLock::new(HashMap::new())),
+            shared_best_prices: Arc::new(AtomicBestPrices::new()),
             orderbooks: HashMap::new(),
             subscriptions: Vec::new(),
             pending_subscriptions: HashMap::new(),
@@ -142,6 +148,11 @@ impl ParadexAdapter {
     /// without blocking execution.
     pub fn get_shared_orderbooks(&self) -> SharedOrderbooks {
         Arc::clone(&self.shared_orderbooks)
+    }
+
+    /// Get shared atomic best prices for lock-free hot-path monitoring
+    pub fn get_shared_best_prices(&self) -> SharedBestPrices {
+        Arc::clone(&self.shared_best_prices)
     }
 
     /// Authenticate with Paradex REST API to obtain JWT token
@@ -403,6 +414,7 @@ impl ParadexAdapter {
 
         // Clone Arc references for background tasks
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
+        let shared_best_prices = Arc::clone(&self.shared_best_prices);
         let last_data = Arc::clone(&self.connection_health.last_data);
         let reader_alive = Arc::clone(&self.connection_health.reader_alive);
         let usdc_rate_cache = self.usdc_rate_cache.clone();
@@ -412,7 +424,7 @@ impl ParadexAdapter {
 
         // Spawn background reader with shared orderbooks, health tracking, and USDC rate
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, last_data, reader_alive, usdc_rate_cache)
+            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, last_data, reader_alive, usdc_rate_cache)
                 .await;
         });
 
@@ -428,6 +440,7 @@ impl ParadexAdapter {
     async fn message_reader_loop(
         mut ws_receiver: WsReader,
         shared_orderbooks: SharedOrderbooks,
+        shared_best_prices: SharedBestPrices,
         last_data: Arc<AtomicU64>,
         reader_alive: Arc<AtomicBool>,
         usdc_rate_cache: Option<Arc<crate::core::UsdcRateCache>>,
@@ -496,6 +509,11 @@ impl ParadexAdapter {
                                     let usdc_rate = usdc_rate_cache.as_ref().map(|c| c.get_rate());
                                     match notif.params.data.to_orderbook(usdc_rate) {
                                         Ok(orderbook) => {
+                                            // Write atomic best prices FIRST (lock-free hot path)
+                                            shared_best_prices.store(
+                                                orderbook.best_bid().unwrap_or(0.0),
+                                                orderbook.best_ask().unwrap_or(0.0),
+                                            );
                                             // Update shared orderbook (acquire lock briefly)
                                             let mut books = shared_orderbooks.write().await;
                                             books.insert(symbol.clone(), orderbook);
@@ -520,6 +538,11 @@ impl ParadexAdapter {
                                     let usdc_rate = usdc_rate_cache.as_ref().map(|c| c.get_rate());
                                     match orderbook_msg.data.to_orderbook(usdc_rate) {
                                         Ok(orderbook) => {
+                                            // Write atomic best prices FIRST (lock-free hot path)
+                                            shared_best_prices.store(
+                                                orderbook.best_bid().unwrap_or(0.0),
+                                                orderbook.best_ask().unwrap_or(0.0),
+                                            );
                                             // Update shared orderbook (acquire lock briefly)
                                             let mut books = shared_orderbooks.write().await;
                                             books.insert(symbol.clone(), orderbook);
@@ -758,6 +781,35 @@ impl ParadexAdapter {
         }
 
         Ok(())
+    }
+}
+
+// =============================================================================
+// Size Precision Helpers
+// =============================================================================
+
+/// Format an order size with the correct number of decimal places for a Paradex market.
+///
+/// Paradex requires exact decimal precision per market:
+/// - BTC-USD-PERP: 4 decimal places (step 0.0001)
+/// - ETH-USD-PERP: 3 decimal places (step 0.001)
+/// - SOL-USD-PERP: 2 decimal places (step 0.01)
+///
+/// Sending the wrong precision causes a 400 "Size must have exactly N decimal places" error.
+fn format_paradex_size(quantity: f64, market: &str) -> String {
+    let decimals = paradex_size_decimals(market);
+    format!("{:.prec$}", quantity, prec = decimals)
+}
+
+/// Return the number of decimal places Paradex requires for order sizes on a given market.
+fn paradex_size_decimals(market: &str) -> usize {
+    if market.starts_with("BTC") {
+        4
+    } else if market.starts_with("ETH") {
+        3
+    } else {
+        // SOL, and any future market — Paradex default is 2
+        2
     }
 }
 
@@ -1109,7 +1161,7 @@ impl ExchangeAdapter for ParadexAdapter {
                 .map(|p| format!("{:.1}", p))
                 .unwrap_or_else(|| "0".to_string()),
         };
-        let size_str = order.quantity.to_string();
+        let size_str = format_paradex_size(order.quantity, &order.symbol);
 
         // 5. Get chain ID for signing (from system config, cached during auth)
         let chain_id = self.starknet_chain_id.as_ref().ok_or_else(|| {

@@ -1538,13 +1538,13 @@ mod tests {
 
     #[test]
     fn test_trade_timings_total_latency() {
-        let mut timings = TradeTimings::new();
-        timings.t_signal = 1000;
-        timings.t_order_sent = 1010;
-        timings.t_order_confirmed = 1025;
-
+        let timings = TradeTimings::new();
+        // total_latency_ms() returns start.elapsed() — wall-clock time since new()
+        // Sleep briefly to ensure it's measurable
+        std::thread::sleep(std::time::Duration::from_millis(5));
         let latency = timings.total_latency_ms();
-        assert_eq!(latency, 25, "Total latency should be t_confirmed - t_signal");
+        assert!(latency >= 5, "Total latency {}ms should be >= 5ms", latency);
+        assert!(latency < 500, "Total latency {}ms should be < 500ms (sanity)", latency);
     }
 
     #[test]

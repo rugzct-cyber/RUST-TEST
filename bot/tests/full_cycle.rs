@@ -22,7 +22,7 @@ use tokio::time::sleep;
 
 use hft_bot::adapters::errors::{ExchangeError, ExchangeResult};
 use hft_bot::adapters::types::{
-    FillInfo, OrderRequest, OrderResponse, OrderSide, OrderStatus, Orderbook, OrderbookLevel,
+    OrderRequest, OrderResponse, OrderSide, OrderStatus, Orderbook, OrderbookLevel,
     PositionInfo,
 };
 use hft_bot::adapters::ExchangeAdapter;
@@ -166,25 +166,6 @@ impl ExchangeAdapter for MockExchangeAdapter {
 
     async fn get_position(&self, _symbol: &str) -> ExchangeResult<Option<PositionInfo>> {
         Ok(None)
-    }
-
-    async fn get_order(&self, order_id: &str) -> ExchangeResult<OrderResponse> {
-        Ok(OrderResponse {
-            order_id: order_id.to_string(),
-            client_order_id: String::new(),
-            status: OrderStatus::Filled,
-            filled_quantity: 0.1,
-            avg_price: Some(42000.0),
-        })
-    }
-
-    async fn get_fills(&self, _order_id: &str, _symbol: &str) -> ExchangeResult<Vec<FillInfo>> {
-        Ok(vec![FillInfo {
-            fill_price: 42000.0,
-            filled_quantity: 0.1,
-            realized_pnl: Some(0.0),
-            fee: Some(0.01),
-        }])
     }
 
     fn exchange_name(&self) -> &'static str {

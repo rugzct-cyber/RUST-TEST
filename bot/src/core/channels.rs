@@ -6,12 +6,64 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::adapters::Orderbook;
 
 /// Type alias for shared orderbooks used across all modules
 ///
 /// Single source of truth — imported by adapters, runtime, and monitoring.
 pub type SharedOrderbooks = Arc<RwLock<HashMap<String, Orderbook>>>;
+
+/// Lock-free best bid/ask storage for hot-path monitoring
+///
+/// Stores best bid and best ask as `AtomicU64` (f64 bit patterns).
+/// The WebSocket reader writes to this on every orderbook update,
+/// and the monitoring task reads it without any lock or allocation.
+///
+/// # Safety
+/// Uses `f64::to_bits()` / `f64::from_bits()` for lossless atomic storage.
+/// `Ordering::Release` on store, `Ordering::Acquire` on load ensures
+/// the monitoring task always sees a consistent (bid, ask) pair.
+pub struct AtomicBestPrices {
+    best_bid_bits: AtomicU64,
+    best_ask_bits: AtomicU64,
+}
+
+impl AtomicBestPrices {
+    /// Create with initial values of 0.0 (invalid — no data yet)
+    pub fn new() -> Self {
+        Self {
+            best_bid_bits: AtomicU64::new(0f64.to_bits()),
+            best_ask_bits: AtomicU64::new(0f64.to_bits()),
+        }
+    }
+
+    /// Store best bid and ask prices (called by WebSocket reader)
+    #[inline]
+    pub fn store(&self, bid: f64, ask: f64) {
+        self.best_bid_bits.store(bid.to_bits(), Ordering::Release);
+        self.best_ask_bits.store(ask.to_bits(), Ordering::Release);
+    }
+
+    /// Load best bid and ask prices (called by monitoring/exit loop)
+    #[inline]
+    pub fn load(&self) -> (f64, f64) {
+        let bid = f64::from_bits(self.best_bid_bits.load(Ordering::Acquire));
+        let ask = f64::from_bits(self.best_ask_bits.load(Ordering::Acquire));
+        (bid, ask)
+    }
+
+    /// Check if prices have been initialized (both > 0.0)
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        let (bid, ask) = self.load();
+        bid > 0.0 && ask > 0.0
+    }
+}
+
+/// Type alias for shared atomic best prices
+pub type SharedBestPrices = Arc<AtomicBestPrices>;
 
 // Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
 pub use super::spread::SpreadDirection;

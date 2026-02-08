@@ -180,6 +180,57 @@ impl SpreadCalculator {
     }
 
     // =========================================================================
+    // Raw Price Calculation (used by AtomicBestPrices hot path)
+    // =========================================================================
+
+    /// Calculate spread from raw prices (lock-free hot path)
+    ///
+    /// Same logic as `calculate()` but takes 4 `f64` values directly
+    /// from `AtomicBestPrices`, avoiding `Orderbook` construction/cloning.
+    ///
+    /// Returns `None` if any price is 0.0 (uninitialized atomic data).
+    #[inline]
+    #[must_use]
+    pub fn calculate_from_prices(
+        &self,
+        bid_a: f64,
+        ask_a: f64,
+        bid_b: f64,
+        ask_b: f64,
+    ) -> Option<SpreadResult> {
+        // Guard: 0.0 means no data yet
+        if ask_a <= 0.0 || bid_a <= 0.0 || ask_b <= 0.0 || bid_b <= 0.0 {
+            return None;
+        }
+
+        let spread_a_to_b = ((bid_b - ask_a) / ask_a) * 100.0;
+        let spread_b_to_a = ((bid_a - ask_b) / ask_b) * 100.0;
+
+        let timestamp_ms = current_time_ms();
+        let midpoint = (ask_a + bid_b + ask_b + bid_a) / 4.0;
+
+        if spread_a_to_b >= spread_b_to_a {
+            Some(SpreadResult {
+                spread_pct: spread_a_to_b,
+                direction: SpreadDirection::AOverB,
+                ask_price: ask_a,
+                bid_price: bid_b,
+                midpoint,
+                timestamp_ms,
+            })
+        } else {
+            Some(SpreadResult {
+                spread_pct: spread_b_to_a,
+                direction: SpreadDirection::BOverA,
+                ask_price: ask_b,
+                bid_price: bid_a,
+                midpoint,
+                timestamp_ms,
+            })
+        }
+    }
+
+    // =========================================================================
     // Dual Spread Calculation Functions (used by monitor.rs)
     // =========================================================================
 
