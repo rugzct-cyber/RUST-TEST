@@ -69,6 +69,15 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 tempfile = "3"
 serial_test = "3"  # CR-1 fix: Forces sequential execution of env-dependent tests
 mockito = "1.7"
+proptest = "1"
+
+[dev-dependencies.criterion]
+version = "0.5"
+features = ["html_reports"]
+
+[[bench]]
+name = "spread_bench"
+harness = false
 
 [[bin]]
 name = "monitor"

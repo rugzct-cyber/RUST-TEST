@@ -1393,4 +1393,188 @@ mod tests {
         let expected = (100.0 / 42000.0) * 100.0;
         assert!((verification.captured_spread - expected).abs() < 0.0001);
     }
+
+    // =========================================================================
+    // Additional Tests (Task 7-14)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_position_guard_prevents_duplicate_trade() {
+        let vest = MockAdapter::new("vest");
+        let paradex = MockAdapter::new("paradex");
+        let vest_count = vest.order_count.clone();
+
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        // First trade should succeed
+        let opp1 = create_test_opportunity();
+        let result1 = executor.execute_delta_neutral(opp1).await;
+        assert!(result1.is_ok(), "First trade should succeed");
+
+        // Second trade on same executor should be blocked by position guard
+        let opp2 = create_test_opportunity();
+        let result2 = executor.execute_delta_neutral(opp2).await;
+        assert!(
+            result2.is_err(),
+            "Second trade should be rejected by position guard"
+        );
+
+        // Only 2 orders placed (vest + paradex from first trade)
+        assert_eq!(vest_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_single_leg_failure_triggers_rollback_state() {
+        let vest = MockAdapter::new("vest");
+        let paradex = MockAdapter::with_failure("paradex");
+
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        let opportunity = create_test_opportunity();
+        let result = executor.execute_delta_neutral(opportunity).await.unwrap();
+
+        // On single-leg failure, result exists but success=false
+        assert!(!result.success, "Result should indicate failure");
+        // One leg succeeded, one failed
+        let long_ok = result.long_order.is_success();
+        let short_ok = result.short_order.is_success();
+        assert!(
+            long_ok != short_ok,
+            "Exactly one leg should succeed in partial failure"
+        );
+    }
+
+    #[test]
+    fn test_result_to_leg_status_rejected_order() {
+        let response = OrderResponse {
+            order_id: "test-123".to_string(),
+            client_order_id: "client-123".to_string(),
+            status: OrderStatus::Rejected,
+            filled_quantity: 0.0,
+            avg_price: None,
+        };
+
+        let status = result_to_leg_status(Ok(response), "vest");
+        assert!(
+            !status.is_success(),
+            "Rejected order should be treated as failure"
+        );
+    }
+
+    #[test]
+    fn test_result_to_leg_status_cancelled_order() {
+        let response = OrderResponse {
+            order_id: "test-456".to_string(),
+            client_order_id: "client-456".to_string(),
+            status: OrderStatus::Cancelled,
+            filled_quantity: 0.0,
+            avg_price: None,
+        };
+
+        let status = result_to_leg_status(Ok(response), "paradex");
+        assert!(
+            !status.is_success(),
+            "Cancelled order should be treated as failure"
+        );
+    }
+
+    #[test]
+    fn test_result_to_leg_status_error() {
+        let err = ExchangeError::OrderRejected("insufficient margin".into());
+        let status = result_to_leg_status(Err(err), "vest");
+        assert!(!status.is_success(), "Error should be treated as failure");
+    }
+
+    #[tokio::test]
+    async fn test_force_reset_position_guard() {
+        let vest = MockAdapter::new("vest");
+        let paradex = MockAdapter::new("paradex");
+
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        // First trade succeeds and locks guard
+        let opp = create_test_opportunity();
+        let _ = executor.execute_delta_neutral(opp).await;
+
+        // Guard is now locked
+        assert!(
+            executor
+                .position_open
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "Guard should be set after trade"
+        );
+
+        // Force reset
+        executor
+            .position_open
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // Now another trade should succeed
+        let opp2 = create_test_opportunity();
+        let result = executor.execute_delta_neutral(opp2).await;
+        assert!(
+            result.is_ok(),
+            "Trade should succeed after guard reset"
+        );
+    }
+
+    #[test]
+    fn test_trade_timings_total_latency() {
+        let mut timings = TradeTimings::new();
+        timings.t_signal = 1000;
+        timings.t_order_sent = 1010;
+        timings.t_order_confirmed = 1025;
+
+        let latency = timings.total_latency_ms();
+        assert_eq!(latency, 25, "Total latency should be t_confirmed - t_signal");
+    }
+
+    #[test]
+    fn test_delta_neutral_result_fields() {
+        let result = DeltaNeutralResult {
+            long_order: LegStatus::Success(OrderResponse {
+                order_id: "long-1".to_string(),
+                client_order_id: "cl-long-1".to_string(),
+                status: OrderStatus::Filled,
+                filled_quantity: 0.01,
+                avg_price: Some(42000.0),
+            }),
+            short_order: LegStatus::Failed("test failure".to_string()),
+            execution_latency_ms: 15,
+            success: false,
+            spread_percent: 0.35,
+            long_exchange: "vest".to_string(),
+            short_exchange: "paradex".to_string(),
+            vest_fill_price: 42000.0,
+            paradex_fill_price: 0.0,
+            vest_realized_pnl: None,
+            paradex_realized_pnl: None,
+            timings: None,
+        };
+
+        assert!(result.long_order.is_success());
+        assert!(!result.short_order.is_success());
+        assert!(!result.success);
+        assert_eq!(result.execution_latency_ms, 15);
+        assert_eq!(result.long_exchange, "vest");
+        assert_eq!(result.short_exchange, "paradex");
+    }
 }

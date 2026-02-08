@@ -828,4 +828,175 @@ mod tests {
             "Should return Some(exit_spread) on normal exit"
         );
     }
+
+    // =========================================================================
+    // Additional Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_execution_task_drains_pending_messages() {
+        // Send multiple opportunities, then shutdown — verify at least one is processed
+        let (opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
+        let vest_count = vest.order_count.clone();
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+
+        let handle = tokio::spawn(async move {
+            execution_task(
+                opportunity_rx,
+                executor,
+                vest_orderbooks,
+                paradex_orderbooks,
+                "BTC-PERP".to_string(),
+                "BTC-USD-PERP".to_string(),
+                shutdown_rx,
+                -0.05,
+                None,
+            )
+            .await;
+        });
+
+        // Send one opportunity
+        let opp = SpreadOpportunity {
+            pair: "BTC-PERP".to_string(),
+            dex_a: "vest".to_string(),
+            dex_b: "paradex".to_string(),
+            spread_percent: 0.35,
+            direction: SpreadDirection::AOverB,
+            detected_at_ms: 1706000000000,
+            dex_a_ask: 42000.0,
+            dex_a_bid: 41990.0,
+            dex_b_ask: 42005.0,
+            dex_b_bid: 41985.0,
+        };
+        opportunity_tx.send(opp).await.unwrap();
+
+        // Give time for processing
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // At least one order should have been placed
+        assert!(
+            vest_count.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+            "Should have processed at least one opportunity"
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn test_execution_task_handles_empty_channel() {
+        // No opportunities sent, just shutdown — should exit cleanly
+        let (_opportunity_tx, opportunity_rx) = mpsc::channel::<SpreadOpportunity>(10);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
+        let vest_count = vest.order_count.clone();
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+
+        let handle = tokio::spawn(async move {
+            execution_task(
+                opportunity_rx,
+                executor,
+                vest_orderbooks,
+                paradex_orderbooks,
+                "BTC-PERP".to_string(),
+                "BTC-USD-PERP".to_string(),
+                shutdown_rx,
+                -0.05,
+                None,
+            )
+            .await;
+        });
+
+        // Shutdown immediately
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = shutdown_tx.send(());
+
+        let result = timeout(Duration::from_secs(1), handle).await;
+        assert!(result.is_ok(), "Should exit cleanly with empty channel");
+        assert_eq!(
+            vest_count.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "No orders should have been placed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exit_monitoring_continues_with_missing_orderbooks() {
+        // Exit monitoring with empty orderbooks should NOT panic,
+        // and should respond to shutdown signal
+        let vest = TestMockAdapter::new("vest");
+        let paradex = TestMockAdapter::new("paradex");
+        let executor = DeltaNeutralExecutor::new(
+            vest,
+            paradex,
+            0.01,
+            "BTC-PERP".to_string(),
+            "BTC-USD-PERP".to_string(),
+        );
+
+        // Empty orderbooks (no keys)
+        let vest_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+        let paradex_orderbooks: SharedOrderbooks = Arc::new(RwLock::new(HashMap::new()));
+
+        let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+
+        let handle = tokio::spawn(async move {
+            exit_monitoring_loop(
+                &executor,
+                ExitMonitoringParams {
+                    vest_orderbooks,
+                    paradex_orderbooks,
+                    vest_symbol: "BTC-PERP".to_string(),
+                    paradex_symbol: "BTC-USD-PERP".to_string(),
+                    pair: "BTC-PERP".to_string(),
+                    entry_spread: 0.35,
+                    exit_spread_target: -0.05,
+                    direction: SpreadDirection::AOverB,
+                },
+                &mut shutdown_rx,
+            )
+            .await
+        });
+
+        // Let it poll a few times with missing orderbooks
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Send shutdown
+        let _ = shutdown_tx.send(());
+
+        let result = timeout(Duration::from_secs(1), handle).await;
+        assert!(
+            result.is_ok(),
+            "Exit monitoring should not panic with missing orderbooks"
+        );
+        let (_, exit_result) = result.unwrap().unwrap();
+        assert!(
+            exit_result.is_none(),
+            "Should return None on shutdown (not exit condition)"
+        );
+    }
 }

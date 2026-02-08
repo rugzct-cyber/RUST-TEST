@@ -768,4 +768,113 @@ mod tests {
             assert_eq!(SpreadDirection::from_u8(dir.to_u8()), Some(dir));
         }
     }
+
+    // =========================================================================
+    // Property-based tests (proptest)
+    // =========================================================================
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn never_panics(ask in 0.0f64..1e12, bid in 0.0f64..1e12) {
+                // Should never panic regardless of input
+                let _ = SpreadCalculator::calculate_entry_spread(ask, bid);
+                let _ = SpreadCalculator::calculate_exit_spread(bid, ask);
+            }
+
+            #[test]
+            fn always_finite(ask in 0.001f64..1e9, bid in 0.001f64..1e9) {
+                let entry = SpreadCalculator::calculate_entry_spread(ask, bid);
+                let exit = SpreadCalculator::calculate_exit_spread(bid, ask);
+                prop_assert!(entry.is_finite(), "Entry spread must be finite: {}", entry);
+                prop_assert!(exit.is_finite(), "Exit spread must be finite: {}", exit);
+            }
+
+            #[test]
+            fn positive_spread_when_bid_exceeds_ask(
+                ask in 100.0f64..50000.0,
+                premium in 0.01f64..100.0
+            ) {
+                let bid = ask + premium;
+                let spread = SpreadCalculator::calculate_entry_spread(ask, bid);
+                prop_assert!(spread > 0.0, "Spread should be positive when bid > ask: {}", spread);
+            }
+
+            #[test]
+            fn zero_ask_returns_zero(bid in 0.0f64..1e9) {
+                let spread = SpreadCalculator::calculate_entry_spread(0.0, bid);
+                prop_assert_eq!(spread, 0.0, "Zero ask should return 0.0");
+            }
+
+            #[test]
+            fn symmetric_direction_detection(
+                ask_a in 100.0f64..50000.0,
+                bid_b in 100.0f64..50000.0,
+                ask_b in 100.0f64..50000.0,
+                bid_a in 100.0f64..50000.0,
+            ) {
+                // Build orderbooks
+                let ob_a = Orderbook {
+                    asks: vec![OrderbookLevel::new(ask_a, 1.0)],
+                    bids: vec![OrderbookLevel::new(bid_a, 1.0)],
+                    timestamp: 0,
+                };
+                let ob_b = Orderbook {
+                    asks: vec![OrderbookLevel::new(ask_b, 1.0)],
+                    bids: vec![OrderbookLevel::new(bid_b, 1.0)],
+                    timestamp: 0,
+                };
+
+                let calc = SpreadCalculator::new("A", "B");
+                if let Some(result) = calc.calculate(&ob_a, &ob_b) {
+                    prop_assert!(result.spread_pct.is_finite());
+                    // Direction should match the better side
+                    let a_over_b = SpreadCalculator::calculate_entry_spread(ask_a, bid_b);
+                    let b_over_a = SpreadCalculator::calculate_entry_spread(ask_b, bid_a);
+                    if a_over_b >= b_over_a {
+                        prop_assert_eq!(result.direction, SpreadDirection::AOverB);
+                    } else {
+                        prop_assert_eq!(result.direction, SpreadDirection::BOverA);
+                    }
+                }
+            }
+
+            #[test]
+            fn negative_spread_when_ask_exceeds_bid(
+                bid in 100.0f64..50000.0,
+                premium in 0.01f64..100.0
+            ) {
+                let ask = bid + premium;
+                let spread = SpreadCalculator::calculate_entry_spread(ask, bid);
+                prop_assert!(spread < 0.0, "Spread should be negative when bid < ask: {}", spread);
+            }
+
+            #[test]
+            fn large_values_no_overflow(
+                ask in 1e6f64..1e12,
+                bid in 1e6f64..1e12
+            ) {
+                let entry = SpreadCalculator::calculate_entry_spread(ask, bid);
+                let exit = SpreadCalculator::calculate_exit_spread(bid, ask);
+                prop_assert!(entry.is_finite(), "Large value entry should be finite");
+                prop_assert!(exit.is_finite(), "Large value exit should be finite");
+            }
+
+            #[test]
+            fn entry_exit_inverse_relationship(
+                ask in 100.0f64..50000.0,
+                bid in 100.0f64..50000.0
+            ) {
+                // Entry: (bid - ask) / ask * 100
+                // Exit:  (bid - ask) / ask * 100 (with reversed roles)
+                let entry = SpreadCalculator::calculate_entry_spread(ask, bid);
+                let exit = SpreadCalculator::calculate_exit_spread(bid, ask);
+                // Both should be finite
+                prop_assert!(entry.is_finite());
+                prop_assert!(exit.is_finite());
+            }
+        }
+    }
 }

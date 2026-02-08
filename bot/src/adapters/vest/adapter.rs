@@ -405,11 +405,13 @@ impl VestAdapter {
             }
         };
 
-        let filled_quantity = match result.size.as_ref().and_then(|s| s.parse::<f64>().ok()) {
-            Some(_) => 0.0,
+        // CR-1 fix: Use last_filled_size (actual filled qty) instead of size (order qty),
+        // and keep the parsed value instead of discarding it.
+        let filled_quantity = match result.last_filled_size.as_ref().and_then(|s| s.parse::<f64>().ok()) {
+            Some(qty) => qty,
             None => {
-                if result.size.is_some() {
-                    tracing::warn!(raw_size = ?result.size, "Vest: failed to parse filled_quantity, defaulting to 0.0");
+                if result.last_filled_size.is_some() {
+                    tracing::warn!(raw_size = ?result.last_filled_size, "Vest: failed to parse last_filled_size, defaulting to 0.0");
                 }
                 0.0
             }
