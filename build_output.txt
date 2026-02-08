@@ -1,9 +1,0 @@
-﻿cargo : src\core\runtime.rs:408:45: warning: unused variable: `position_size`: help: if this is intentional, prefix it with an underscore: `_position_size`
-Au caractère Ligne:1 : 1
-+ cargo check --message-format=short 2>&1 | Out-File -FilePath C:\Users ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (src\core\runtim..._position_size`:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-warning: `hft_bot` (lib) generated 1 warning (run `cargo fix --lib -p hft_bot` to apply 1 suggestion)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.63s
