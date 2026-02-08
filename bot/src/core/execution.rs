@@ -129,8 +129,12 @@ pub fn log_successful_trade(
     );
     log_event(&entry_event);
 
-    // Calculate execution spread from verified prices
-    let execution_spread = calculate_execution_spread(vest_price, paradex_price);
+    // Calculate execution spread from verified prices (direction-aware)
+    let (long_price, short_price) = match opportunity.direction {
+        crate::core::spread::SpreadDirection::AOverB => (vest_price, paradex_price),
+        crate::core::spread::SpreadDirection::BOverA => (paradex_price, vest_price),
+    };
+    let execution_spread = calculate_execution_spread(long_price, short_price);
 
     let timing = TimingBreakdown::new(
         opportunity.detected_at_ms,

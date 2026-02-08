@@ -35,8 +35,10 @@ use crate::core::channels::OrderbookNotify;
 /// Exit monitoring timeout — how long to wait for a Notify before checking anyway
 const EXIT_NOTIFY_TIMEOUT_MS: u64 = 100;
 
-/// Delay after trade entry to let exchange APIs settle before verifying positions (milliseconds)
-const API_SETTLE_DELAY_MS: u64 = 500;
+/// Delay between position verification retries (milliseconds)
+const API_SETTLE_DELAY_MS: u64 = 200;
+/// Maximum retries for position verification after trade entry
+const VERIFY_POSITION_RETRIES: u32 = 3;
 
 /// Log throttle — imported from channels (single source of truth)
 use super::channels::LOG_THROTTLE_POLLS;
@@ -326,10 +328,27 @@ pub async fn execution_task<V, P>(
                 match executor.execute_delta_neutral(opportunity.clone()).await {
                     Ok(result) => {
                         if result.success {
-                            // Verify positions on both exchanges and get entry prices
-                            // Add small delay to let Vest API update entry price
-                            tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
-                            let (vest_entry, paradex_entry) = executor.verify_positions(spread_pct, exit_spread_target).await;
+                            // Verify positions with retry — exchanges may need time to propagate
+                            let mut vest_entry = None;
+                            let mut paradex_entry = None;
+                            for attempt in 0..VERIFY_POSITION_RETRIES {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
+                                let (v, p) = executor.verify_positions(spread_pct, exit_spread_target).await;
+                                if vest_entry.is_none() { vest_entry = v; }
+                                if paradex_entry.is_none() { paradex_entry = p; }
+                                if vest_entry.is_some() && paradex_entry.is_some() {
+                                    break;
+                                }
+                                if attempt < VERIFY_POSITION_RETRIES - 1 {
+                                    debug!(
+                                        event_type = "VERIFY_RETRY",
+                                        attempt = attempt + 1,
+                                        vest_ok = vest_entry.is_some(),
+                                        paradex_ok = paradex_entry.is_some(),
+                                        "Position not yet propagated, retrying"
+                                    );
+                                }
+                            }
 
                             // Log TRADE_ENTRY + SLIPPAGE_ANALYSIS AFTER
                             // verify_positions() with real fill prices (not 0.0 from IOC response)
