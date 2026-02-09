@@ -16,10 +16,8 @@ WORKDIR /app
 COPY bot/Cargo.toml ./
 COPY bot/Cargo.lock* ./
 
-# Create dummy main.rs + bins to build dependencies
-RUN mkdir -p src/bin && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "fn main() {}" > src/bin/hft_bot.rs
+# Create dummy main.rs to pre-build dependencies
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release 2>/dev/null || true
 
 # Now copy real source code + config
@@ -30,7 +28,7 @@ COPY bot/config.yaml ./config.yaml
 RUN touch src/main.rs
 
 # Build the actual binary
-RUN cargo build --release --bin hft_bot
+RUN cargo build --release
 
 # --- Stage 2: Runtime ---
 FROM debian:bookworm-slim
