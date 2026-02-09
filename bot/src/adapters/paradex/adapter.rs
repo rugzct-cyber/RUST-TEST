@@ -1656,16 +1656,25 @@ impl ExchangeAdapter for ParadexAdapter {
                     }
 
                     let side = if pos.side == "LONG" { "long" } else { "short" };
-                    let entry_price: f64 = pos
+                    let mut entry_price: f64 = pos
                         .average_entry_price
                         .as_deref()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0.0);
-                    let unrealized_pnl: f64 = pos
+                    let mut unrealized_pnl: f64 = pos
                         .unrealized_pnl
                         .as_deref()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0.0);
+
+                    // Convert USD → USDC if rate available (Paradex REST API returns USD)
+                    if let Some(ref cache) = self.usdc_rate_cache {
+                        let rate = cache.get_rate();
+                        if rate > 0.0 && rate < 2.0 {
+                            entry_price /= rate;
+                            unrealized_pnl /= rate;
+                        }
+                    }
 
                     return Ok(Some(PositionInfo {
                         symbol: symbol.to_string(),
@@ -1790,21 +1799,31 @@ impl ParadexAdapter {
         if let Some(fills) = &fills_resp.results {
             for fill in fills {
                 if fill.order_id.as_deref() == Some(order_id) {
-                    let fill_price = fill
+                    let mut fill_price = fill
                         .price
                         .as_ref()
                         .and_then(|s| s.parse::<f64>().ok())
                         .unwrap_or(0.0);
 
-                    let fee = fill
+                    let mut fee = fill
                         .fee
                         .as_ref()
                         .and_then(|s| s.parse::<f64>().ok());
 
-                    let realized_pnl = fill
+                    let mut realized_pnl = fill
                         .realized_pnl
                         .as_ref()
                         .and_then(|s| s.parse::<f64>().ok());
+
+                    // Convert USD → USDC if rate available (Paradex REST API returns USD)
+                    if let Some(ref cache) = self.usdc_rate_cache {
+                        let rate = cache.get_rate();
+                        if rate > 0.0 && rate < 2.0 {
+                            fill_price /= rate;
+                            realized_pnl = realized_pnl.map(|p| p / rate);
+                            fee = fee.map(|f| f / rate);
+                        }
+                    }
 
                     if fill_price > 0.0 || realized_pnl.is_some() {
                         tracing::debug!(
@@ -1812,7 +1831,7 @@ impl ParadexAdapter {
                             fill_price = %fill_price,
                             realized_pnl = ?realized_pnl,
                             fee = ?fee,
-                            "Paradex: Retrieved fill info from GET /fills"
+                            "Paradex: Retrieved fill info from GET /fills (USD→USDC converted)"
                         );
                         return Ok(Some(crate::adapters::types::FillInfo {
                             fill_price,
