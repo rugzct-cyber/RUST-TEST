@@ -1661,18 +1661,18 @@ impl ExchangeAdapter for ParadexAdapter {
                         .as_deref()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0.0);
-                    let mut unrealized_pnl: f64 = pos
+                    let unrealized_pnl: f64 = pos
                         .unrealized_pnl
                         .as_deref()
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(0.0);
 
-                    // Convert USD → USDC if rate available (Paradex REST API returns USD)
+                    // Convert price USD → USDC (Paradex quotes in USD, settles in USDC)
+                    // PnL is already in USDC (settlement currency) — no conversion needed
                     if let Some(ref cache) = self.usdc_rate_cache {
                         let rate = cache.get_rate();
                         if rate > 0.0 && rate < 2.0 {
                             entry_price /= rate;
-                            unrealized_pnl /= rate;
                         }
                     }
 
@@ -1805,23 +1805,22 @@ impl ParadexAdapter {
                         .and_then(|s| s.parse::<f64>().ok())
                         .unwrap_or(0.0);
 
-                    let mut fee = fill
+                    let fee = fill
                         .fee
                         .as_ref()
                         .and_then(|s| s.parse::<f64>().ok());
 
-                    let mut realized_pnl = fill
+                    let realized_pnl = fill
                         .realized_pnl
                         .as_ref()
                         .and_then(|s| s.parse::<f64>().ok());
 
-                    // Convert USD → USDC if rate available (Paradex REST API returns USD)
+                    // Convert price USD → USDC (Paradex quotes in USD, settles in USDC)
+                    // PnL and fees are already in USDC (settlement currency) — no conversion
                     if let Some(ref cache) = self.usdc_rate_cache {
                         let rate = cache.get_rate();
                         if rate > 0.0 && rate < 2.0 {
                             fill_price /= rate;
-                            realized_pnl = realized_pnl.map(|p| p / rate);
-                            fee = fee.map(|f| f / rate);
                         }
                     }
 
@@ -1831,7 +1830,7 @@ impl ParadexAdapter {
                             fill_price = %fill_price,
                             realized_pnl = ?realized_pnl,
                             fee = ?fee,
-                            "Paradex: Retrieved fill info from GET /fills (USD→USDC converted)"
+                            "Paradex: fill price USD→USDC converted, PnL/fee already USDC"
                         );
                         return Ok(Some(crate::adapters::types::FillInfo {
                             fill_price,
