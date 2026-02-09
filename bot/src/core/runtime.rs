@@ -368,7 +368,7 @@ pub async fn execution_task<V, P>(
                                     let close_start = std::time::Instant::now();
 
                                     loop {
-                                        match executor.close_position(exit_spread, vest_bid, vest_ask).await {
+                                        match executor.close_position(exit_spread, vest_bid, vest_ask, paradex_bid, paradex_ask).await {
                                             Ok(close_result) => {
                                                 let execution_latency_ms = close_start.elapsed().as_millis() as u64;
                                                 let closed_event = TradingEvent::position_closed(

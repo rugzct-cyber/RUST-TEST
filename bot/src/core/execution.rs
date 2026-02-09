@@ -838,22 +838,26 @@ where
     /// Close the current position by executing inverse trades
     ///
     /// Vest: closes via opposite side + same quantity (reduce_only rejected by platform).
-    /// Paradex: uses reduce_only=true to ensure we only close, not open new positions.
+    /// Paradex: uses LIMIT IOC + reduce_only for price protection while closing.
     /// Resets position_open and entry_direction after successful close.
     ///
     /// # Arguments
     /// - `exit_spread`: The spread percentage at exit time
     /// - `vest_bid`: Current best bid from Vest orderbook (already in RAM)
     /// - `vest_ask`: Current best ask from Vest orderbook (already in RAM)
+    /// - `paradex_bid`: Current best bid from Paradex orderbook (already in RAM)
+    /// - `paradex_ask`: Current best ask from Paradex orderbook (already in RAM)
     ///
     /// # Pricing Strategy
     /// Uses live orderbook prices (0ms) instead of `get_position()` API call (200-500ms).
-    /// Applies SLIPPAGE_BUFFER_PCT to the live price, same pattern as entry.
+    /// Both legs use SLIPPAGE_BUFFER_PCT for price protection, same pattern as entry.
     pub async fn close_position(
         &mut self,
         exit_spread: f64,
         vest_bid: f64,
         vest_ask: f64,
+        paradex_bid: f64,
+        paradex_ask: f64,
     ) -> ExchangeResult<DeltaNeutralResult> {
         let start = Instant::now();
 
@@ -885,14 +889,28 @@ where
             vest_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
         };
 
+        // Paradex: LIMIT IOC with slippage buffer — same pattern as entry orders
+        // Previously used MARKET (price="0") which caused massive slippage
+        let paradex_limit_price = if paradex_side == OrderSide::Buy {
+            // Buying to close short → use ask + slippage buffer above
+            paradex_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
+        } else {
+            // Selling to close long → use bid - slippage buffer below
+            paradex_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
+        };
+
         debug!(
             event_type = "CLOSE_POSITION",
             vest_side = ?vest_side,
             vest_bid = %format!("{:.2}", vest_bid),
             vest_ask = %format!("{:.2}", vest_ask),
             vest_limit = %format!("{:.2}", vest_limit_price),
+            paradex_side = ?paradex_side,
+            paradex_bid = %format!("{:.2}", paradex_bid),
+            paradex_ask = %format!("{:.2}", paradex_ask),
+            paradex_limit = %format!("{:.2}", paradex_limit_price),
             slippage_pct = %format!("{:.3}", SLIPPAGE_BUFFER_PCT * 100.0),
-            "Vest close price from live orderbook"
+            "Close prices from live orderbook (LIMIT IOC both legs)"
         );
 
         let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, self.default_quantity)
@@ -903,10 +921,11 @@ where
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
+        // Paradex: LIMIT IOC with price protection + reduce_only
         let paradex_order =
             OrderBuilder::new(&self.paradex_symbol, paradex_side, self.default_quantity)
                 .client_order_id(format!("close-paradex-{}", timestamp))
-                .market()
+                .limit(paradex_limit_price)
                 .reduce_only()
                 .build()
                 .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
