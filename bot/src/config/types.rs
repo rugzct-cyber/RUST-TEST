@@ -41,12 +41,25 @@ impl std::fmt::Display for TradingPair {
     }
 }
 
+impl TradingPair {
+    /// Returns the base asset symbol (e.g. "BTC", "ETH", "SOL")
+    /// for use with `resolve_symbol()`.
+    pub fn base(&self) -> &'static str {
+        match self {
+            TradingPair::BtcPerp => "BTC",
+            TradingPair::EthPerp => "ETH",
+            TradingPair::SolPerp => "SOL",
+        }
+    }
+}
+
 /// Supported DEX exchanges
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Dex {
     Vest,
     Paradex,
+    Lighter,
 }
 
 impl std::fmt::Display for Dex {
@@ -54,6 +67,7 @@ impl std::fmt::Display for Dex {
         match self {
             Dex::Vest => write!(f, "vest"),
             Dex::Paradex => write!(f, "paradex"),
+            Dex::Lighter => write!(f, "lighter"),
         }
     }
 }

@@ -27,6 +27,7 @@ use hft_bot::adapters::types::{
 };
 use hft_bot::adapters::ExchangeAdapter;
 use hft_bot::core::channels::{SpreadDirection, SpreadOpportunity};
+use hft_bot::core::{SharedOrderbooks, SharedBestPrices, OrderbookNotify};
 
 // =============================================================================
 // Mock Exchange Adapter (Task 1.2)
@@ -170,6 +171,18 @@ impl ExchangeAdapter for MockExchangeAdapter {
 
     fn exchange_name(&self) -> &'static str {
         self.name
+    }
+
+    fn get_shared_orderbooks(&self) -> SharedOrderbooks {
+        Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
+    }
+
+    fn get_shared_best_prices(&self) -> SharedBestPrices {
+        Arc::new(hft_bot::core::AtomicBestPrices::new())
+    }
+
+    fn set_orderbook_notify(&mut self, _notify: OrderbookNotify) {
+        // No-op for mock
     }
 }
 

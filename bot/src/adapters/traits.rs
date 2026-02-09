@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use crate::adapters::errors::ExchangeResult;
 use crate::adapters::types::{FillInfo, OrderRequest, OrderResponse, Orderbook, PositionInfo};
+use crate::core::channels::{SharedOrderbooks, SharedBestPrices, OrderbookNotify};
 
 /// Common trait for all exchange adapters
 ///
@@ -150,8 +151,45 @@ pub trait ExchangeAdapter: Send + Sync {
 
     /// Get the exchange name identifier
     ///
-    /// Returns a static string like "vest", "paradex", "hyperliquid", etc.
+    /// Returns a static string like "vest", "paradex", "lighter", etc.
     fn exchange_name(&self) -> &'static str;
+
+    // =========================================================================
+    // Shared Data Access (for monitoring and runtime)
+    // =========================================================================
+
+    /// Get shared orderbooks for lock-free monitoring
+    ///
+    /// Returns Arc<RwLock<HashMap<String, Orderbook>>> for high-frequency
+    /// orderbook polling without blocking execution.
+    fn get_shared_orderbooks(&self) -> SharedOrderbooks;
+
+    /// Get shared atomic best prices for lock-free hot-path monitoring
+    fn get_shared_best_prices(&self) -> SharedBestPrices;
+
+    /// Set the shared orderbook notification (event-driven monitoring)
+    ///
+    /// Call this before `connect()` so the WebSocket reader can signal
+    /// the monitoring task when new data arrives.
+    fn set_orderbook_notify(&mut self, notify: OrderbookNotify);
+
+    // =========================================================================
+    // Optional Capabilities (default no-op implementations)
+    // =========================================================================
+
+    /// Subscribe to order confirmations via WebSocket
+    ///
+    /// Not all exchanges support this. Default: no-op.
+    async fn subscribe_orders(&self, _symbol: &str) -> ExchangeResult<()> {
+        Ok(())
+    }
+
+    /// Set leverage for a symbol on the exchange
+    ///
+    /// Not all exchanges support explicit leverage setting. Default: returns the requested value.
+    async fn set_leverage(&self, _symbol: &str, leverage: u32) -> ExchangeResult<u32> {
+        Ok(leverage)
+    }
 }
 
 #[cfg(any(test, doc))]

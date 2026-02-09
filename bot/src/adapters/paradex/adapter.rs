@@ -1701,6 +1701,27 @@ impl ExchangeAdapter for ParadexAdapter {
     fn exchange_name(&self) -> &'static str {
         "paradex"
     }
+
+    fn get_shared_orderbooks(&self) -> crate::core::channels::SharedOrderbooks {
+        Arc::clone(&self.shared_orderbooks)
+    }
+
+    fn get_shared_best_prices(&self) -> crate::core::channels::SharedBestPrices {
+        Arc::clone(&self.shared_best_prices)
+    }
+
+    fn set_orderbook_notify(&mut self, notify: crate::core::channels::OrderbookNotify) {
+        self.orderbook_notify = Some(notify);
+    }
+
+    async fn subscribe_orders(&self, symbol: &str) -> ExchangeResult<()> {
+        // Delegate to the concrete Paradex subscribe_orders, discard sub ID
+        ParadexAdapter::subscribe_orders(self, symbol).await.map(|_| ())
+    }
+
+    async fn set_leverage(&self, symbol: &str, leverage: u32) -> ExchangeResult<u32> {
+        ParadexAdapter::set_leverage(self, symbol, leverage).await
+    }
 }
 
 // =============================================================================

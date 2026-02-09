@@ -1,0 +1,10 @@
+[package]
+name = "poseidon-hash"
+version = "0.1.3"
+edition = "2021"
+description = "Poseidon2 hash function and Goldilocks field arithmetic (vendored from lighter-rust)"
+
+[dependencies]
+
+[dev-dependencies]
+hex = "0.4"

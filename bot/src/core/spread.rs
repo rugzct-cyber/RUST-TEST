@@ -25,12 +25,15 @@ pub enum SpreadDirection {
 }
 
 impl SpreadDirection {
-    /// Returns (long_exchange, short_exchange) for Vest/Paradex setup
+    /// Returns (long_exchange, short_exchange) given the dex_a/dex_b names
+    ///
+    /// AOverB: long on A, short on B
+    /// BOverA: long on B, short on A
     #[inline]
-    pub fn to_exchanges(&self) -> (&'static str, &'static str) {
+    pub fn to_exchanges<'a>(&self, dex_a: &'a str, dex_b: &'a str) -> (&'a str, &'a str) {
         match self {
-            SpreadDirection::AOverB => ("vest", "paradex"),
-            SpreadDirection::BOverA => ("paradex", "vest"),
+            SpreadDirection::AOverB => (dex_a, dex_b),
+            SpreadDirection::BOverA => (dex_b, dex_a),
         }
     }
 
@@ -753,8 +756,8 @@ mod tests {
 
     #[test]
     fn test_spread_direction_to_exchanges() {
-        assert_eq!(SpreadDirection::AOverB.to_exchanges(), ("vest", "paradex"));
-        assert_eq!(SpreadDirection::BOverA.to_exchanges(), ("paradex", "vest"));
+        assert_eq!(SpreadDirection::AOverB.to_exchanges("vest", "paradex"), ("vest", "paradex"));
+        assert_eq!(SpreadDirection::BOverA.to_exchanges("vest", "paradex"), ("paradex", "vest"));
     }
 
     #[test]

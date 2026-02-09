@@ -130,6 +130,8 @@ mod tests {
             0.05,
             0.001,
             10,
+            "vest".into(),
+            "paradex".into(),
         )));
         let layer = TuiLayer::new(Arc::clone(&state));
         // Layer created successfully - verify reference count

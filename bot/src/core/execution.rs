@@ -94,25 +94,25 @@ fn calculate_execution_spread(long_fill_price: f64, short_fill_price: f64) -> f6
 /// Log successful trade with timing and slippage analysis
 ///
 /// Called from runtime.rs AFTER verify_positions() returns real fill prices.
-/// The `verified_vest_price` and `verified_paradex_price` override the
+/// The `verified_dex_a_price` and `verified_dex_b_price` override the
 /// (often 0.0) avg_price from the initial order response.
 pub fn log_successful_trade(
     opportunity: &SpreadOpportunity,
     result: &DeltaNeutralResult,
     timings: &TradeTimings,
-    verified_vest_price: f64,
-    verified_paradex_price: f64,
+    verified_dex_a_price: f64,
+    verified_dex_b_price: f64,
 ) {
     // Use verified prices (from get_position) instead of avg_price (often None for IOC)
-    let vest_price = if verified_vest_price > 0.0 {
-        verified_vest_price
+    let dex_a_price = if verified_dex_a_price > 0.0 {
+        verified_dex_a_price
     } else {
-        result.vest_fill_price
+        result.dex_a_fill_price
     };
-    let paradex_price = if verified_paradex_price > 0.0 {
-        verified_paradex_price
+    let dex_b_price = if verified_dex_b_price > 0.0 {
+        verified_dex_b_price
     } else {
-        result.paradex_fill_price
+        result.dex_b_fill_price
     };
 
     let direction_str = format!("{:?}", opportunity.direction);
@@ -124,15 +124,15 @@ pub fn log_successful_trade(
         &result.long_exchange,
         &result.short_exchange,
         result.execution_latency_ms,
-        vest_price,
-        paradex_price,
+        dex_a_price,
+        dex_b_price,
     );
     log_event(&entry_event);
 
     // Calculate execution spread from verified prices (direction-aware)
     let (long_price, short_price) = match opportunity.direction {
-        crate::core::spread::SpreadDirection::AOverB => (vest_price, paradex_price),
-        crate::core::spread::SpreadDirection::BOverA => (paradex_price, vest_price),
+        crate::core::spread::SpreadDirection::AOverB => (dex_a_price, dex_b_price),
+        crate::core::spread::SpreadDirection::BOverA => (dex_b_price, dex_a_price),
     };
     let execution_spread = calculate_execution_spread(long_price, short_price);
 
@@ -167,30 +167,25 @@ pub fn log_successful_trade(
 /// Note: Intentionally private to this module - fields accessed only
 /// within module scope (including tests).
 struct PositionVerification {
-    vest_price: f64,
-    paradex_price: f64,
+    price_a: f64,
+    price_b: f64,
     captured_spread: f64,
 }
 
 impl PositionVerification {
-    /// Create from already-fetched position results
-    ///
-    /// # Red Team V1 Fix
-    /// This method is pure and takes results that were already fetched.
-    /// It does NOT acquire any locks, preventing deadlock risk.
     fn from_positions(
-        vest_pos: &ExchangeResult<Option<crate::adapters::types::PositionInfo>>,
-        paradex_pos: &ExchangeResult<Option<crate::adapters::types::PositionInfo>>,
+        pos_a: &ExchangeResult<Option<crate::adapters::types::PositionInfo>>,
+        pos_b: &ExchangeResult<Option<crate::adapters::types::PositionInfo>>,
         direction: Option<SpreadDirection>,
     ) -> Self {
-        let vest_price = vest_pos
+        let price_a = pos_a
             .as_ref()
             .ok()
             .and_then(|p| p.as_ref())
             .map(|p| p.entry_price)
             .unwrap_or(0.0);
 
-        let paradex_price = paradex_pos
+        let price_b = pos_b
             .as_ref()
             .ok()
             .and_then(|p| p.as_ref())
@@ -199,25 +194,22 @@ impl PositionVerification {
 
         let captured_spread = direction
             .map(|dir| match dir {
-                // AOverB: long Vest (buy), short Paradex (sell)
-                SpreadDirection::AOverB => dir.calculate_captured_spread(vest_price, paradex_price),
-                // BOverA: long Paradex (buy), short Vest (sell)
-                SpreadDirection::BOverA => dir.calculate_captured_spread(paradex_price, vest_price),
+                SpreadDirection::AOverB => dir.calculate_captured_spread(price_a, price_b),
+                SpreadDirection::BOverA => dir.calculate_captured_spread(price_b, price_a),
             })
             .unwrap_or(0.0);
 
         Self {
-            vest_price,
-            paradex_price,
+            price_a,
+            price_b,
             captured_spread,
         }
     }
 
-    /// Log structured entry verification summary
     fn log_summary(&self, entry_spread: f64, exit_target: f64, direction: Option<SpreadDirection>) {
         log_system_event(&SystemEvent::position_verified(
-            self.vest_price,
-            self.paradex_price,
+            self.price_a,
+            self.price_b,
             self.captured_spread,
         ));
         debug!(
@@ -266,14 +258,14 @@ pub struct DeltaNeutralResult {
     pub long_exchange: String,
     /// Exchange that received the short order
     pub short_exchange: String,
-    /// Fill price from Vest order (avg_fill_price)
-    pub vest_fill_price: f64,
-    /// Fill price from Paradex order (avg_fill_price)
-    pub paradex_fill_price: f64,
-    /// Exchange-reported realized PnL from Vest (includes funding + fees)
-    pub vest_realized_pnl: Option<f64>,
-    /// Exchange-reported realized PnL from Paradex
-    pub paradex_realized_pnl: Option<f64>,
+    /// Fill price from DEX A order (avg_fill_price)
+    pub dex_a_fill_price: f64,
+    /// Fill price from DEX B order (avg_fill_price)
+    pub dex_b_fill_price: f64,
+    /// Exchange-reported realized PnL from DEX A (includes funding + fees)
+    pub dex_a_realized_pnl: Option<f64>,
+    /// Exchange-reported realized PnL from DEX B
+    pub dex_b_realized_pnl: Option<f64>,
     /// Trade timing breakdown for deferred logging
     pub timings: Option<TradeTimings>,
 }
@@ -285,44 +277,52 @@ pub struct DeltaNeutralResult {
 /// Executor for delta-neutral trades across two exchanges
 ///
 /// Uses `tokio::join!` for parallel order placement to minimize latency.
-pub struct DeltaNeutralExecutor<V, P>
+pub struct DeltaNeutralExecutor<A, B>
 where
-    V: ExchangeAdapter + Send + Sync,
-    P: ExchangeAdapter + Send + Sync,
+    A: ExchangeAdapter + Send + Sync,
+    B: ExchangeAdapter + Send + Sync,
 {
-    vest_adapter: V,
-    paradex_adapter: P,
+    adapter_a: A,
+    adapter_b: B,
     /// Fixed quantity for MVP
     default_quantity: f64,
-    /// Symbol for Vest (e.g., "BTC-PERP")
-    vest_symbol: String,
-    /// Symbol for Paradex (e.g., "BTC-USD-PERP")
-    paradex_symbol: String,
+    /// Symbol for DEX A (e.g., "BTC-PERP")
+    symbol_a: String,
+    /// Symbol for DEX B (e.g., "BTC-USD-PERP")
+    symbol_b: String,
+    /// Human-readable name for DEX A (e.g., "vest")
+    dex_a_name: String,
+    /// Human-readable name for DEX B (e.g., "paradex")
+    dex_b_name: String,
     /// Atomic guard: true = position open, false = can trade
     position_open: AtomicBool,
-    /// Entry direction: 0=none, 1=AOverB (long Vest), 2=BOverA (long Paradex)
+    /// Entry direction: 0=none, 1=AOverB (long A), 2=BOverA (long B)
     entry_direction: AtomicU8,
 }
 
-impl<V, P> DeltaNeutralExecutor<V, P>
+impl<A, B> DeltaNeutralExecutor<A, B>
 where
-    V: ExchangeAdapter + Send + Sync,
-    P: ExchangeAdapter + Send + Sync,
+    A: ExchangeAdapter + Send + Sync,
+    B: ExchangeAdapter + Send + Sync,
 {
     /// Create a new DeltaNeutralExecutor with both adapters
     pub fn new(
-        vest_adapter: V,
-        paradex_adapter: P,
+        adapter_a: A,
+        adapter_b: B,
         default_quantity: f64,
-        vest_symbol: String,
-        paradex_symbol: String,
+        symbol_a: String,
+        symbol_b: String,
+        dex_a_name: String,
+        dex_b_name: String,
     ) -> Self {
         Self {
-            vest_adapter,
-            paradex_adapter,
+            adapter_a,
+            adapter_b,
             default_quantity,
-            vest_symbol,
-            paradex_symbol,
+            symbol_a,
+            symbol_b,
+            dex_a_name,
+            dex_b_name,
             position_open: AtomicBool::new(false),
             entry_direction: AtomicU8::new(0), // 0 = no position
         }
@@ -338,22 +338,22 @@ where
     /// Calls reconnect() on adapters if they are stale or need JWT refresh.
     /// This is critical for Paradex which has JWT expiry.
     pub async fn ensure_ready(&mut self) -> ExchangeResult<()> {
-        // Check and refresh Paradex adapter if needed
-        if self.paradex_adapter.is_stale() {
+        // Check and refresh adapter B if needed
+        if self.adapter_b.is_stale() {
             log_system_event(&SystemEvent::adapter_reconnect(
-                "paradex",
+                &self.dex_b_name,
                 "stale - reconnecting",
             ));
-            self.paradex_adapter.reconnect().await?;
+            self.adapter_b.reconnect().await?;
         }
 
-        // Check Vest adapter
-        if self.vest_adapter.is_stale() {
+        // Check adapter A
+        if self.adapter_a.is_stale() {
             log_system_event(&SystemEvent::adapter_reconnect(
-                "vest",
+                &self.dex_a_name,
                 "stale - reconnecting",
             ));
-            self.vest_adapter.reconnect().await?;
+            self.adapter_a.reconnect().await?;
         }
 
         Ok(())
@@ -385,33 +385,33 @@ where
 
     /// Recover an existing position from exchange state at startup.
     ///
-    /// Queries both Vest and Paradex for open positions on the configured symbols.
+    /// Queries both adapters for open positions on the configured symbols.
     /// If positions are found on both exchanges, determines the SpreadDirection
     /// and sets internal state so the bot can resume exit monitoring.
     ///
-    /// Returns `Some((direction, quantity, vest_entry_price, paradex_entry_price))` if recovered.
+    /// Returns `Some((direction, quantity, dex_a_entry_price, dex_b_entry_price))` if recovered.
     pub async fn recover_position(&mut self) -> Option<(SpreadDirection, f64, f64, f64)> {
         tracing::info!(
             event_type = "POSITION_RECOVERY",
-            vest_symbol = %self.vest_symbol,
-            paradex_symbol = %self.paradex_symbol,
+            symbol_a = %self.symbol_a,
+            symbol_b = %self.symbol_b,
             "Checking for existing positions on startup..."
         );
 
-        let (vest_pos, paradex_pos) = tokio::join!(
-            self.vest_adapter.get_position(&self.vest_symbol),
-            self.paradex_adapter.get_position(&self.paradex_symbol)
+        let (pos_a, pos_b) = tokio::join!(
+            self.adapter_a.get_position(&self.symbol_a),
+            self.adapter_b.get_position(&self.symbol_b)
         );
 
-        let vest_position = match vest_pos {
+        let position_a = match pos_a {
             Ok(Some(pos)) => {
                 tracing::info!(
                     event_type = "POSITION_RECOVERY",
-                    exchange = "vest",
+                    exchange = %self.dex_a_name,
                     side = %pos.side,
                     quantity = %format!("{:.6}", pos.quantity),
                     entry_price = %format!("{:.2}", pos.entry_price),
-                    "Found existing Vest position"
+                    "Found existing position on DEX A"
                 );
                 pos
             }
@@ -426,28 +426,31 @@ where
                 tracing::warn!(
                     event_type = "POSITION_RECOVERY",
                     error = %e,
-                    "Failed to query Vest position — starting fresh"
+                    exchange = %self.dex_a_name,
+                    "Failed to query position — starting fresh"
                 );
                 return None;
             }
         };
 
-        let paradex_position = match paradex_pos {
+        let position_b = match pos_b {
             Ok(Some(pos)) => {
                 tracing::info!(
                     event_type = "POSITION_RECOVERY",
-                    exchange = "paradex",
+                    exchange = %self.dex_b_name,
                     side = %pos.side,
                     quantity = %format!("{:.6}", pos.quantity),
                     entry_price = %format!("{:.2}", pos.entry_price),
-                    "Found existing Paradex position"
+                    "Found existing position on DEX B"
                 );
                 pos
             }
             Ok(None) => {
                 tracing::warn!(
                     event_type = "POSITION_RECOVERY",
-                    "Vest has position but Paradex does not — ORPHANED position!"
+                    dex_a = %self.dex_a_name,
+                    dex_b = %self.dex_b_name,
+                    "DEX A has position but DEX B does not — ORPHANED position!"
                 );
                 return None;
             }
@@ -455,31 +458,32 @@ where
                 tracing::warn!(
                     event_type = "POSITION_RECOVERY",
                     error = %e,
-                    "Failed to query Paradex position — starting fresh"
+                    exchange = %self.dex_b_name,
+                    "Failed to query position — starting fresh"
                 );
                 return None;
             }
         };
 
         // Determine direction from position sides
-        // AOverB: vest=long, paradex=short (vest price > paradex)
-        // BOverA: vest=short, paradex=long (paradex price > vest)
-        let direction = if vest_position.side == "long" && paradex_position.side == "short" {
+        // AOverB: A=long, B=short
+        // BOverA: A=short, B=long
+        let direction = if position_a.side == "long" && position_b.side == "short" {
             SpreadDirection::AOverB
-        } else if vest_position.side == "short" && paradex_position.side == "long" {
+        } else if position_a.side == "short" && position_b.side == "long" {
             SpreadDirection::BOverA
         } else {
             tracing::error!(
                 event_type = "POSITION_RECOVERY",
-                vest_side = %vest_position.side,
-                paradex_side = %paradex_position.side,
+                dex_a_side = %position_a.side,
+                dex_b_side = %position_b.side,
                 "Unexpected position sides — both same direction? Cannot recover"
             );
             return None;
         };
 
         // Use the larger quantity (should be equal, but be safe)
-        let quantity = vest_position.quantity.max(paradex_position.quantity);
+        let quantity = position_a.quantity.max(position_b.quantity);
 
         // Set executor state
         self.mark_position_open(direction);
@@ -489,12 +493,12 @@ where
             event_type = "POSITION_RECOVERY",
             direction = ?direction,
             quantity = %format!("{:.6}", quantity),
-            vest_entry = %format!("{:.2}", vest_position.entry_price),
-            paradex_entry = %format!("{:.2}", paradex_position.entry_price),
+            dex_a_entry = %format!("{:.2}", position_a.entry_price),
+            dex_b_entry = %format!("{:.2}", position_b.entry_price),
             "✅ Position recovered — will resume exit monitoring"
         );
 
-        Some((direction, quantity, vest_position.entry_price, paradex_position.entry_price))
+        Some((direction, quantity, position_a.entry_price, position_b.entry_price))
     }
 
     /// Execute delta-neutral trade based on spread opportunity
@@ -523,7 +527,7 @@ where
         let mut timings = TradeTimings::new();
 
         // Determine which exchange gets long vs short based on direction
-        let (long_exchange, short_exchange) = opportunity.direction.to_exchanges();
+        let (long_exchange, short_exchange) = opportunity.direction.to_exchanges(&self.dex_a_name, &self.dex_b_name);
 
         // Create unique client order IDs
         let timestamp = std::time::SystemTime::now()
@@ -534,7 +538,7 @@ where
         let short_order_id = format!("dn-short-{}", timestamp);
 
         // Create order requests based on direction
-        let (vest_order, paradex_order) =
+        let (order_a, order_b) =
             self.create_orders(&opportunity, long_exchange, &long_order_id, &short_order_id)?;
 
         // Capture t_signal AFTER create_orders (critical fix)
@@ -546,32 +550,28 @@ where
         // Mark order sent timestamp
         timings.mark_order_sent();
 
-        let (vest_result, paradex_result) = tokio::join!(
-            self.vest_adapter.place_order(vest_order),
-            self.paradex_adapter.place_order(paradex_order)
+        let (result_a, result_b) = tokio::join!(
+            self.adapter_a.place_order(order_a),
+            self.adapter_b.place_order(order_b)
         );
 
         // Mark order confirmed timestamp
         timings.mark_order_confirmed();
         let execution_latency_ms = timings.total_latency_ms();
 
-        // Convert results to LegStatus based on which exchange got which side
-        let (long_status, short_status) = if long_exchange == "vest" {
-            (
-                result_to_leg_status(vest_result, "vest"),
-                result_to_leg_status(paradex_result, "paradex"),
-            )
+        // Convert results to LegStatus — A is always first, B is always second
+        let status_a = result_to_leg_status(result_a, &self.dex_a_name);
+        let status_b = result_to_leg_status(result_b, &self.dex_b_name);
+        let (long_status, short_status) = if long_exchange == self.dex_a_name {
+            (status_a, status_b)
         } else {
-            (
-                result_to_leg_status(paradex_result, "paradex"),
-                result_to_leg_status(vest_result, "vest"),
-            )
+            (status_b, status_a)
         };
 
         let success = long_status.is_success() && short_status.is_success();
 
-        // Extract fill prices by exchange (use vest/paradex instead of long/short)
-        let vest_fill_price = if long_exchange == "vest" {
+        // Extract fill prices by exchange (A/B, not long/short)
+        let dex_a_fill_price = if long_exchange == self.dex_a_name {
             match &long_status {
                 LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
                 _ => 0.0,
@@ -582,7 +582,7 @@ where
                 _ => 0.0,
             }
         };
-        let paradex_fill_price = if long_exchange == "paradex" {
+        let dex_b_fill_price = if long_exchange == self.dex_b_name {
             match &long_status {
                 LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
                 _ => 0.0,
@@ -604,10 +604,10 @@ where
             spread_percent: opportunity.spread_percent,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            vest_fill_price,
-            paradex_fill_price,
-            vest_realized_pnl: None,
-            paradex_realized_pnl: None,
+            dex_a_fill_price,
+            dex_b_fill_price,
+            dex_a_realized_pnl: None,
+            dex_b_realized_pnl: None,
             timings: Some(timings),
         };
 
@@ -635,35 +635,34 @@ where
             // Attempt rollback of the filled leg
             if long_ok && !short_ok {
                 // Long leg filled, short failed → close the long (sell on long_exchange)
-                let rollback_result = if long_exchange == "vest" {
+                let rollback_result = if long_exchange == self.dex_a_name {
                     let order = OrderBuilder::new(
-                        &self.vest_symbol,
+                        &self.symbol_a,
                         OrderSide::Sell,
                         self.default_quantity,
                     )
-                    .client_order_id(format!("rollback-vest-{}", timestamp))
+                    .client_order_id(format!("rollback-a-{}", timestamp))
                     .market()
                     .price(opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT))
-                    // Vest rejects reduce_only - use correct side+qty instead
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => self.vest_adapter.place_order(o).await,
+                        Ok(o) => self.adapter_a.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 } else {
                     let order = OrderBuilder::new(
-                        &self.paradex_symbol,
+                        &self.symbol_b,
                         OrderSide::Sell,
                         self.default_quantity,
                     )
-                    .client_order_id(format!("rollback-paradex-{}", timestamp))
+                    .client_order_id(format!("rollback-b-{}", timestamp))
                     .market()
                     .reduce_only()
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => self.paradex_adapter.place_order(o).await,
+                        Ok(o) => self.adapter_b.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 };
@@ -677,32 +676,31 @@ where
                 }
             } else if short_ok && !long_ok {
                 // Short leg filled, long failed → close the short (buy on short_exchange)
-                let rollback_result = if short_exchange == "vest" {
+                let rollback_result = if short_exchange == self.dex_a_name {
                     let order =
-                        OrderBuilder::new(&self.vest_symbol, OrderSide::Buy, self.default_quantity)
-                            .client_order_id(format!("rollback-vest-{}", timestamp))
+                        OrderBuilder::new(&self.symbol_a, OrderSide::Buy, self.default_quantity)
+                            .client_order_id(format!("rollback-a-{}", timestamp))
                             .market()
                             .price(opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT))
-                            // Vest rejects reduce_only - use correct side+qty instead
                             .build()
                             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => self.vest_adapter.place_order(o).await,
+                        Ok(o) => self.adapter_a.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 } else {
                     let order = OrderBuilder::new(
-                        &self.paradex_symbol,
+                        &self.symbol_b,
                         OrderSide::Buy,
                         self.default_quantity,
                     )
-                    .client_order_id(format!("rollback-paradex-{}", timestamp))
+                    .client_order_id(format!("rollback-b-{}", timestamp))
                     .market()
                     .reduce_only()
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
-                        Ok(o) => self.paradex_adapter.place_order(o).await,
+                        Ok(o) => self.adapter_b.place_order(o).await,
                         Err(e) => Err(e),
                     }
                 };
@@ -771,7 +769,7 @@ where
         );
         let mut timings = TradeTimings::new();
 
-        let (long_exchange, short_exchange) = opportunity.direction.to_exchanges();
+        let (long_exchange, short_exchange) = opportunity.direction.to_exchanges(&self.dex_a_name, &self.dex_b_name);
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -780,7 +778,7 @@ where
         let long_order_id = format!("dn-L{}-long-{}", layer_index, timestamp);
         let short_order_id = format!("dn-L{}-short-{}", layer_index, timestamp);
 
-        let (vest_order, paradex_order) = self.create_orders_with_quantity(
+        let (order_a, order_b) = self.create_orders_with_quantity(
             &opportunity,
             long_exchange,
             &long_order_id,
@@ -791,29 +789,25 @@ where
         timings.mark_signal_received();
         timings.mark_order_sent();
 
-        let (vest_result, paradex_result) = tokio::join!(
-            self.vest_adapter.place_order(vest_order),
-            self.paradex_adapter.place_order(paradex_order)
+        let (result_a, result_b) = tokio::join!(
+            self.adapter_a.place_order(order_a),
+            self.adapter_b.place_order(order_b)
         );
 
         timings.mark_order_confirmed();
         let execution_latency_ms = timings.total_latency_ms();
 
-        let (long_status, short_status) = if long_exchange == "vest" {
-            (
-                result_to_leg_status(vest_result, "vest"),
-                result_to_leg_status(paradex_result, "paradex"),
-            )
+        let status_a = result_to_leg_status(result_a, &self.dex_a_name);
+        let status_b = result_to_leg_status(result_b, &self.dex_b_name);
+        let (long_status, short_status) = if long_exchange == self.dex_a_name {
+            (status_a, status_b)
         } else {
-            (
-                result_to_leg_status(paradex_result, "paradex"),
-                result_to_leg_status(vest_result, "vest"),
-            )
+            (status_b, status_a)
         };
 
         let success = long_status.is_success() && short_status.is_success();
 
-        let vest_fill_price = if long_exchange == "vest" {
+        let dex_a_fill_price = if long_exchange == self.dex_a_name {
             match &long_status {
                 LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
                 _ => 0.0,
@@ -824,7 +818,7 @@ where
                 _ => 0.0,
             }
         };
-        let paradex_fill_price = if long_exchange == "paradex" {
+        let dex_b_fill_price = if long_exchange == self.dex_b_name {
             match &long_status {
                 LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
                 _ => 0.0,
@@ -844,10 +838,10 @@ where
             spread_percent: opportunity.spread_percent,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            vest_fill_price,
-            paradex_fill_price,
-            vest_realized_pnl: None,
-            paradex_realized_pnl: None,
+            dex_a_fill_price,
+            dex_b_fill_price,
+            dex_a_realized_pnl: None,
+            dex_b_realized_pnl: None,
             timings: Some(timings),
         };
 
@@ -884,69 +878,69 @@ where
     /// Verify positions on both exchanges after trade execution
     ///
     /// Logs entry prices, entry spread, and exit target to confirm trade placement.
-    /// Returns (vest_entry_price, paradex_entry_price) for TUI display.
+    /// Returns (dex_a_entry_price, dex_b_entry_price) for TUI display.
     pub async fn verify_positions(
         &mut self,
         entry_spread: f64,
         exit_spread_target: f64,
     ) -> (Option<f64>, Option<f64>) {
-        let (vest_pos, paradex_pos) = tokio::join!(
-            self.vest_adapter.get_position(&self.vest_symbol),
-            self.paradex_adapter.get_position(&self.paradex_symbol)
+        let (pos_a, pos_b) = tokio::join!(
+            self.adapter_a.get_position(&self.symbol_a),
+            self.adapter_b.get_position(&self.symbol_b)
         );
 
         // Use PositionVerification struct for extraction and logging (Task 4)
         let entry_direction = self.get_entry_direction();
         let verification =
-            PositionVerification::from_positions(&vest_pos, &paradex_pos, entry_direction);
+            PositionVerification::from_positions(&pos_a, &pos_b, entry_direction);
         verification.log_summary(entry_spread, exit_spread_target, entry_direction);
 
         // Extract entry prices for TUI
-        let vest_entry = match &vest_pos {
+        let entry_a = match &pos_a {
             Ok(Some(pos)) => Some(pos.entry_price),
             _ => None,
         };
-        let paradex_entry = match &paradex_pos {
+        let entry_b = match &pos_b {
             Ok(Some(pos)) => Some(pos.entry_price),
             _ => None,
         };
 
         // Individual position logging stays inline (different event_type)
-        match vest_pos {
+        match pos_a {
             Ok(Some(pos)) => log_system_event(&SystemEvent::position_detail(
-                "vest",
+                &self.dex_a_name,
                 &pos.side,
                 pos.quantity,
                 pos.entry_price,
             )),
             Ok(None) => warn!(
                 event_type = "POSITION_DETAIL",
-                exchange = "vest",
+                exchange = %self.dex_a_name,
                 "No position"
             ),
             Err(e) => {
-                warn!(event_type = "POSITION_DETAIL", exchange = "vest", error = %e, "Position check failed")
+                warn!(event_type = "POSITION_DETAIL", exchange = %self.dex_a_name, error = %e, "Position check failed")
             }
         }
 
-        match paradex_pos {
+        match pos_b {
             Ok(Some(pos)) => log_system_event(&SystemEvent::position_detail(
-                "paradex",
+                &self.dex_b_name,
                 &pos.side,
                 pos.quantity,
                 pos.entry_price,
             )),
             Ok(None) => warn!(
                 event_type = "POSITION_DETAIL",
-                exchange = "paradex",
+                exchange = %self.dex_b_name,
                 "No position"
             ),
             Err(e) => {
-                warn!(event_type = "POSITION_DETAIL", exchange = "paradex", error = %e, "Position check failed")
+                warn!(event_type = "POSITION_DETAIL", exchange = %self.dex_b_name, error = %e, "Position check failed")
             }
         }
 
-        (vest_entry, paradex_entry)
+        (entry_a, entry_b)
     }
 
     /// Get the entry direction (0=none, 1=AOverB, 2=BOverA)
@@ -956,16 +950,16 @@ where
 
     /// Close the current position by executing inverse trades
     ///
-    /// Vest: closes via opposite side + same quantity (reduce_only rejected by platform).
-    /// Paradex: uses LIMIT IOC + reduce_only for price protection while closing.
+    /// DEX A: closes via opposite side + same quantity.
+    /// DEX B: uses LIMIT IOC + reduce_only for price protection while closing.
     /// Resets position_open and entry_direction after successful close.
     ///
     /// # Arguments
     /// - `exit_spread`: The spread percentage at exit time
-    /// - `vest_bid`: Current best bid from Vest orderbook (already in RAM)
-    /// - `vest_ask`: Current best ask from Vest orderbook (already in RAM)
-    /// - `paradex_bid`: Current best bid from Paradex orderbook (already in RAM)
-    /// - `paradex_ask`: Current best ask from Paradex orderbook (already in RAM)
+    /// - `dex_a_bid`: Current best bid from DEX A orderbook
+    /// - `dex_a_ask`: Current best ask from DEX A orderbook
+    /// - `dex_b_bid`: Current best bid from DEX B orderbook
+    /// - `dex_b_ask`: Current best ask from DEX B orderbook
     ///
     /// # Pricing Strategy
     /// Uses live orderbook prices (0ms) instead of `get_position()` API call (200-500ms).
@@ -973,10 +967,10 @@ where
     pub async fn close_position(
         &mut self,
         exit_spread: f64,
-        vest_bid: f64,
-        vest_ask: f64,
-        paradex_bid: f64,
-        paradex_ask: f64,
+        dex_a_bid: f64,
+        dex_a_ask: f64,
+        dex_b_bid: f64,
+        dex_b_ask: f64,
     ) -> ExchangeResult<DeltaNeutralResult> {
         let start = Instant::now();
 
@@ -991,79 +985,71 @@ where
         };
 
         // Determine close direction (inverse of entry)
-        let (vest_side, paradex_side) = entry_dir.to_close_sides();
+        let (side_a, side_b) = entry_dir.to_close_sides();
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
 
-        // Vest requires a limit price even for MARKET orders (slippage protection)
-        // Use live orderbook price + slippage buffer (same pattern as entry)
-        let vest_limit_price = if vest_side == OrderSide::Buy {
-            // Buying to close short → use ask + slippage buffer above
-            vest_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
+        // DEX A requires a limit price even for MARKET orders (slippage protection)
+        let limit_price_a = if side_a == OrderSide::Buy {
+            dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
         } else {
-            // Selling to close long → use bid - slippage buffer below
-            vest_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
+            dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
         };
 
-        // Paradex: LIMIT IOC with slippage buffer — same pattern as entry orders
-        // Previously used MARKET (price="0") which caused massive slippage
-        let paradex_limit_price = if paradex_side == OrderSide::Buy {
-            // Buying to close short → use ask + slippage buffer above
-            paradex_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
+        // DEX B: LIMIT IOC with slippage buffer
+        let limit_price_b = if side_b == OrderSide::Buy {
+            dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
         } else {
-            // Selling to close long → use bid - slippage buffer below
-            paradex_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
+            dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
         };
 
         debug!(
             event_type = "CLOSE_POSITION",
-            vest_side = ?vest_side,
-            vest_bid = %format!("{:.2}", vest_bid),
-            vest_ask = %format!("{:.2}", vest_ask),
-            vest_limit = %format!("{:.2}", vest_limit_price),
-            paradex_side = ?paradex_side,
-            paradex_bid = %format!("{:.2}", paradex_bid),
-            paradex_ask = %format!("{:.2}", paradex_ask),
-            paradex_limit = %format!("{:.2}", paradex_limit_price),
+            side_a = ?side_a,
+            dex_a_bid = %format!("{:.2}", dex_a_bid),
+            dex_a_ask = %format!("{:.2}", dex_a_ask),
+            limit_a = %format!("{:.2}", limit_price_a),
+            side_b = ?side_b,
+            dex_b_bid = %format!("{:.2}", dex_b_bid),
+            dex_b_ask = %format!("{:.2}", dex_b_ask),
+            limit_b = %format!("{:.2}", limit_price_b),
             slippage_pct = %format!("{:.3}", SLIPPAGE_BUFFER_PCT * 100.0),
             "Close prices from live orderbook (LIMIT IOC both legs)"
         );
 
-        let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, self.default_quantity)
-            .client_order_id(format!("close-vest-{}", timestamp))
+        let order_a = OrderBuilder::new(&self.symbol_a, side_a, self.default_quantity)
+            .client_order_id(format!("close-a-{}", timestamp))
             .market()
-            .price(vest_limit_price) // Vest requires limit price for all orders
-            // Vest rejects reduce_only - use correct side+qty instead
+            .price(limit_price_a)
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
-        // Paradex: LIMIT IOC with price protection + reduce_only
-        let paradex_order =
-            OrderBuilder::new(&self.paradex_symbol, paradex_side, self.default_quantity)
-                .client_order_id(format!("close-paradex-{}", timestamp))
-                .limit(paradex_limit_price)
+        // DEX B: LIMIT IOC with price protection + reduce_only
+        let order_b =
+            OrderBuilder::new(&self.symbol_b, side_b, self.default_quantity)
+                .client_order_id(format!("close-b-{}", timestamp))
+                .limit(limit_price_b)
                 .reduce_only()
                 .build()
                 .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
         // Execute close orders in parallel (no lock — Axe 7)
 
-        let (vest_result, paradex_result) = tokio::join!(
-            self.vest_adapter.place_order(vest_order),
-            self.paradex_adapter.place_order(paradex_order)
+        let (result_a, result_b) = tokio::join!(
+            self.adapter_a.place_order(order_a),
+            self.adapter_b.place_order(order_b)
         );
 
         let execution_latency_ms = start.elapsed().as_millis() as u64;
 
-        let vest_status = result_to_leg_status(vest_result, "vest");
-        let paradex_status = result_to_leg_status(paradex_result, "paradex");
-        let success = vest_status.is_success() && paradex_status.is_success();
+        let status_a = result_to_leg_status(result_a, &self.dex_a_name);
+        let status_b = result_to_leg_status(result_b, &self.dex_b_name);
+        let success = status_a.is_success() && status_b.is_success();
 
         if success {
-            // Reset position state
             self.position_open.store(false, Ordering::SeqCst);
             self.entry_direction.store(0, Ordering::SeqCst);
 
@@ -1076,8 +1062,8 @@ where
         } else {
             warn!(
                 event_type = "TRADE_EXIT_FAILED",
-                vest_success = vest_status.is_success(),
-                paradex_success = paradex_status.is_success(),
+                dex_a_success = status_a.is_success(),
+                dex_b_success = status_b.is_success(),
                 latency_ms = execution_latency_ms,
                 "Close failed - manual intervention required"
             );
@@ -1085,11 +1071,11 @@ where
 
         // Determine which leg was long/short based on entry direction
         // For close: the "long" side is closing the long (i.e. selling), "short" is closing the short (buying)
-        let (long_exchange, short_exchange) = entry_dir.to_exchanges();
+        let (long_exchange, short_exchange) = entry_dir.to_exchanges(&self.dex_a_name, &self.dex_b_name);
         let (long_status, short_status) = if matches!(entry_dir, SpreadDirection::AOverB) {
-            (vest_status, paradex_status)
+            (status_a, status_b)
         } else {
-            (paradex_status.clone(), vest_status.clone())
+            (status_b.clone(), status_a.clone())
         };
 
         // Extract fill prices from close order responses for PnL calculation
@@ -1097,27 +1083,26 @@ where
         // First, get fallback prices and order IDs from the immediate response,
         // then query the exchange APIs for the real fill prices.
 
-        // Determine which leg is vest vs paradex based on entry direction
-        let (vest_leg, paradex_leg) = if matches!(entry_dir, SpreadDirection::AOverB) {
+        // Determine which leg is A vs B based on entry direction
+        let (leg_a, leg_b) = if matches!(entry_dir, SpreadDirection::AOverB) {
             (&long_status, &short_status)
         } else {
             (&short_status, &long_status)
         };
 
-        // Extract fallback prices and order IDs from the immediate ACK
-        let vest_fallback = match vest_leg {
+        let fallback_a = match leg_a {
             LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
             _ => 0.0,
         };
-        let paradex_fallback = match paradex_leg {
+        let fallback_b = match leg_b {
             LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
             _ => 0.0,
         };
-        let vest_order_id = match vest_leg {
+        let order_id_a = match leg_a {
             LegStatus::Success(resp) => Some(resp.order_id.clone()),
             _ => None,
         };
-        let paradex_order_id = match paradex_leg {
+        let order_id_b = match leg_b {
             LegStatus::Success(resp) => Some(resp.order_id.clone()),
             _ => None,
         };
@@ -1125,79 +1110,79 @@ where
         // No guard drops needed (Axe 7 — no Mutex)
 
         // Query real fill info from exchange APIs (best-effort, fallback to ACK price)
-        let mut vest_realized_pnl: Option<f64> = None;
-        let mut paradex_realized_pnl: Option<f64> = None;
+        let mut pnl_a: Option<f64> = None;
+        let mut pnl_b: Option<f64> = None;
 
-        let vest_fill = if let Some(oid) = &vest_order_id {
-            match self.vest_adapter.get_fill_info(&self.vest_symbol, oid).await {
+        let fill_a = if let Some(oid) = &order_id_a {
+            match self.adapter_a.get_fill_info(&self.symbol_a, oid).await {
                 Ok(Some(info)) => {
                     tracing::info!(
                         order_id = %oid,
                         fill_price = %info.fill_price,
                         realized_pnl = ?info.realized_pnl,
                         fee = ?info.fee,
-                        fallback = %vest_fallback,
-                        "CR-11 fix: Using real Vest fill info from API"
+                        fallback = %fallback_a,
+                        "CR-11 fix: Using real DEX A fill info from API"
                     );
-                    vest_realized_pnl = info.realized_pnl;
+                    pnl_a = info.realized_pnl;
                     info.fill_price
                 }
                 Ok(None) => {
                     tracing::warn!(
                         order_id = %oid,
-                        fallback = %vest_fallback,
-                        "Vest fill info not found, using fallback"
+                        fallback = %fallback_a,
+                        "DEX A fill info not found, using fallback"
                     );
-                    vest_fallback
+                    fallback_a
                 }
                 Err(e) => {
                     tracing::warn!(
                         order_id = %oid,
                         error = %e,
-                        fallback = %vest_fallback,
-                        "Vest fill info query failed, using fallback"
+                        fallback = %fallback_a,
+                        "DEX A fill info query failed, using fallback"
                     );
-                    vest_fallback
+                    fallback_a
                 }
             }
         } else {
-            vest_fallback
+            fallback_a
         };
 
-        let paradex_fill = if let Some(oid) = &paradex_order_id {
-            match self.paradex_adapter.get_fill_info(&self.paradex_symbol, oid).await {
+        let fill_b = if let Some(oid) = &order_id_b {
+            match self.adapter_b.get_fill_info(&self.symbol_b, oid).await {
                 Ok(Some(info)) => {
                     tracing::info!(
                         order_id = %oid,
                         fill_price = %info.fill_price,
                         realized_pnl = ?info.realized_pnl,
                         fee = ?info.fee,
-                        fallback = %paradex_fallback,
-                        "CR-11 fix: Using real Paradex fill info from API"
+                        fallback = %fallback_b,
+                        "CR-11 fix: Using real DEX B fill info from API"
                     );
-                    paradex_realized_pnl = info.realized_pnl;
+                    pnl_b = info.realized_pnl;
                     info.fill_price
                 }
                 Ok(None) => {
                     tracing::warn!(
                         order_id = %oid,
-                        fallback = %paradex_fallback,
-                        "Paradex fill info not found, using fallback"
+                        fallback = %fallback_b,
+                        "DEX B fill info not found, using fallback"
                     );
-                    paradex_fallback
+                    fallback_b
                 }
                 Err(e) => {
                     tracing::warn!(
                         order_id = %oid,
                         error = %e,
-                        fallback = %paradex_fallback,
-                        "Paradex fill info query failed, using fallback"
+                        fallback = %fallback_b,
+                        "DEX B fill info query failed, using fallback"
                     );
-                    paradex_fallback
+                    fallback_b
                 }
             }
         } else {
-            paradex_fallback
+            fallback_b
         };
 
         Ok(DeltaNeutralResult {
@@ -1208,10 +1193,10 @@ where
             spread_percent: exit_spread,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            vest_fill_price: vest_fill,
-            paradex_fill_price: paradex_fill,
-            vest_realized_pnl,
-            paradex_realized_pnl,
+            dex_a_fill_price: fill_a,
+            dex_b_fill_price: fill_b,
+            dex_a_realized_pnl: pnl_a,
+            dex_b_realized_pnl: pnl_b,
             timings: None,
         })
     }
@@ -1243,60 +1228,58 @@ where
         quantity: f64,
     ) -> Result<(OrderRequest, OrderRequest), ExchangeError> {
 
-        // Vest order
-        let vest_side = if long_exchange == "vest" {
+        // DEX A order
+        let side_a = if long_exchange == self.dex_a_name {
             OrderSide::Buy
         } else {
             OrderSide::Sell
         };
-        let vest_order_id = if long_exchange == "vest" {
+        let order_id_a = if long_exchange == self.dex_a_name {
             long_order_id.to_string()
         } else {
             short_order_id.to_string()
         };
 
-        // Paradex order
-        let paradex_side = if long_exchange == "paradex" {
+        // DEX B order
+        let side_b = if long_exchange == self.dex_b_name {
             OrderSide::Buy
         } else {
             OrderSide::Sell
         };
-        let paradex_order_id = if long_exchange == "paradex" {
+        let order_id_b = if long_exchange == self.dex_b_name {
             long_order_id.to_string()
         } else {
             short_order_id.to_string()
         };
 
-        // Vest: Use MARKET orders with limitPrice as slippage protection
-        // Add 0.5% buffer to ensure fill while protecting against extreme slippage
-        let vest_price = match vest_side {
+        // DEX A: Use MARKET orders with limitPrice as slippage protection
+        let price_a = match side_a {
             OrderSide::Buy => opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
             OrderSide::Sell => opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
         };
 
-        // Paradex: Use LIMIT IOC with slippage buffer to ensure fill
-        // Without buffer, IOC orders get cancelled if price moves before arrival
-        let paradex_price = match paradex_side {
+        // DEX B: Use LIMIT IOC with slippage buffer to ensure fill
+        let price_b = match side_b {
             OrderSide::Buy => opportunity.dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
             OrderSide::Sell => opportunity.dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
         };
 
-        // Vest: MARKET order (limitPrice acts as slippage protection)
-        let vest_order = OrderBuilder::new(&self.vest_symbol, vest_side, quantity)
-            .client_order_id(vest_order_id)
+        // DEX A: MARKET order (limitPrice acts as slippage protection)
+        let order_a = OrderBuilder::new(&self.symbol_a, side_a, quantity)
+            .client_order_id(order_id_a)
             .market()
-            .price(vest_price) // Required by Vest as slippage protection (keeps Market type)
+            .price(price_a)
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
-        // Paradex: LIMIT IOC for immediate fill with price protection
-        let paradex_order = OrderBuilder::new(&self.paradex_symbol, paradex_side, quantity)
-            .client_order_id(paradex_order_id)
-            .limit(paradex_price)
+        // DEX B: LIMIT IOC for immediate fill with price protection
+        let order_b = OrderBuilder::new(&self.symbol_b, side_b, quantity)
+            .client_order_id(order_id_b)
+            .limit(price_b)
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
-        Ok((vest_order, paradex_order))
+        Ok((order_a, order_b))
     }
 }
 
@@ -1365,11 +1348,13 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         assert_eq!(executor.default_quantity, 0.01);
-        assert_eq!(executor.vest_symbol, "BTC-PERP");
-        assert_eq!(executor.paradex_symbol, "BTC-USD-PERP");
+        assert_eq!(executor.symbol_a, "BTC-PERP");
+        assert_eq!(executor.symbol_b, "BTC-USD-PERP");
     }
 
     /// Test TradeTimings sequence (Red Team F3)
@@ -1418,6 +1403,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = create_test_opportunity();
@@ -1444,6 +1431,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = create_test_opportunity();
@@ -1470,6 +1459,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = create_test_opportunity();
@@ -1494,6 +1485,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = SpreadOpportunity {
@@ -1527,6 +1520,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = SpreadOpportunity {
@@ -1575,6 +1570,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = create_test_opportunity();
@@ -1621,8 +1618,8 @@ mod tests {
             Some(SpreadDirection::AOverB),
         );
 
-        assert_eq!(verification.vest_price, 42000.0);
-        assert_eq!(verification.paradex_price, 42100.0);
+        assert_eq!(verification.price_a, 42000.0);
+        assert_eq!(verification.price_b, 42100.0);
         // AOverB: (paradex - vest) / vest * 100 = (42100 - 42000) / 42000 * 100
         // Exact: 100.0 / 42000.0 = 0.00238095... (as percentage)
         let expected = (100.0 / 42000.0) * 100.0;
@@ -1656,8 +1653,8 @@ mod tests {
         );
 
         // Missing position defaults to 0.0
-        assert_eq!(verification.vest_price, 0.0);
-        assert_eq!(verification.paradex_price, 42100.0);
+        assert_eq!(verification.price_a, 0.0);
+        assert_eq!(verification.price_b, 42100.0);
         // Spread calculation handles gracefully (no panic)
         assert!(verification.captured_spread.is_finite());
     }
@@ -1714,6 +1711,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // First trade should succeed
@@ -1744,6 +1743,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let opportunity = create_test_opportunity();
@@ -1812,6 +1813,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // First trade succeeds and locks guard
@@ -1867,10 +1870,10 @@ mod tests {
             spread_percent: 0.35,
             long_exchange: "vest".to_string(),
             short_exchange: "paradex".to_string(),
-            vest_fill_price: 42000.0,
-            paradex_fill_price: 0.0,
-            vest_realized_pnl: None,
-            paradex_realized_pnl: None,
+            dex_a_fill_price: 42000.0,
+            dex_b_fill_price: 0.0,
+            dex_a_realized_pnl: None,
+            dex_b_realized_pnl: None,
             timings: None,
         };
 

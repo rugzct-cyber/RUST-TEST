@@ -126,6 +126,8 @@ mod tests {
             0.05,
             0.001,
             10,
+            "vest".into(),
+            "paradex".into(),
         )));
 
         // Test scroll offset modification
@@ -148,6 +150,8 @@ mod tests {
             0.05,
             0.001,
             10,
+            "vest".into(),
+            "paradex".into(),
         )));
 
         // Default should be false
@@ -176,6 +180,8 @@ mod tests {
             0.05,
             0.001,
             10,
+            "vest".into(),
+            "paradex".into(),
         )));
         let (tx, _rx) = broadcast::channel(1);
 
@@ -192,6 +198,8 @@ mod tests {
             0.05,
             0.001,
             10,
+            "vest".into(),
+            "paradex".into(),
         )));
         state.lock().unwrap().log_scroll_offset = 3;
         let (tx, _rx) = broadcast::channel(1);

@@ -28,19 +28,23 @@ pub struct TradeRecord {
     pub entry_spread: f64,
     pub exit_spread: f64,
     pub pnl_usd: f64,
-    pub vest_exit_price: f64,
-    pub paradex_exit_price: f64,
+    pub dex_a_exit_price: f64,
+    pub dex_b_exit_price: f64,
     pub timestamp: String,
 }
 
 /// Central application state shared between TUI and bot tasks
 #[derive(Debug)]
 pub struct AppState {
+    // Exchange labels (dynamic from config)
+    pub dex_a_label: String,
+    pub dex_b_label: String,
+
     // Orderbooks live
-    pub vest_best_bid: f64,
-    pub vest_best_ask: f64,
-    pub paradex_best_bid: f64,
-    pub paradex_best_ask: f64,
+    pub dex_a_best_bid: f64,
+    pub dex_a_best_ask: f64,
+    pub dex_b_best_bid: f64,
+    pub dex_b_best_ask: f64,
 
     // Spread actuel (live from orderbooks, in percentage e.g. 0.34 = 0.34%)
     pub current_spread_pct: f64,
@@ -52,8 +56,8 @@ pub struct AppState {
     pub position_open: bool,
     pub entry_spread: Option<f64>,
     pub entry_direction: Option<SpreadDirection>,
-    pub entry_vest_price: Option<f64>,
-    pub entry_paradex_price: Option<f64>,
+    pub entry_price_a: Option<f64>,
+    pub entry_price_b: Option<f64>,
     pub position_polls: u64,
 
     // Config
@@ -90,12 +94,16 @@ impl AppState {
         spread_exit: f64,
         position_size: f64,
         leverage: u32,
+        dex_a_label: String,
+        dex_b_label: String,
     ) -> Self {
         Self {
-            vest_best_bid: 0.0,
-            vest_best_ask: 0.0,
-            paradex_best_bid: 0.0,
-            paradex_best_ask: 0.0,
+            dex_a_label,
+            dex_b_label,
+            dex_a_best_bid: 0.0,
+            dex_a_best_ask: 0.0,
+            dex_b_best_bid: 0.0,
+            dex_b_best_ask: 0.0,
             current_spread_pct: 0.0,
             spread_direction: None,
             live_entry_spread: 0.0,
@@ -103,8 +111,8 @@ impl AppState {
             position_open: false,
             entry_spread: None,
             entry_direction: None,
-            entry_vest_price: None,
-            entry_paradex_price: None,
+            entry_price_a: None,
+            entry_price_b: None,
             position_polls: 0,
             pair,
             spread_entry_threshold: spread_entry,
@@ -143,15 +151,15 @@ impl AppState {
     /// Update orderbook prices
     pub fn update_prices(
         &mut self,
-        vest_bid: f64,
-        vest_ask: f64,
-        paradex_bid: f64,
-        paradex_ask: f64,
+        bid_a: f64,
+        ask_a: f64,
+        bid_b: f64,
+        ask_b: f64,
     ) {
-        self.vest_best_bid = vest_bid;
-        self.vest_best_ask = vest_ask;
-        self.paradex_best_bid = paradex_bid;
-        self.paradex_best_ask = paradex_ask;
+        self.dex_a_best_bid = bid_a;
+        self.dex_a_best_ask = ask_a;
+        self.dex_b_best_bid = bid_b;
+        self.dex_b_best_ask = ask_b;
     }
 
     /// Update spread info
@@ -166,17 +174,17 @@ impl AppState {
     /// Exit spread: When in position, shows spread for closing that specific position direction
     pub fn update_live_spreads(&mut self) {
         // Calculate spreads for both directions
-        // AOverB: buy on Vest (at ask), sell on Paradex (at bid) => (paradex_bid - vest_ask) / vest_ask
-        // BOverA: buy on Paradex (at ask), sell on Vest (at bid) => (vest_bid - paradex_ask) / paradex_ask
+        // AOverB: buy on DEX A (at ask), sell on DEX B (at bid) => (dex_b_bid - dex_a_ask) / dex_a_ask
+        // BOverA: buy on DEX B (at ask), sell on DEX A (at bid) => (dex_a_bid - dex_b_ask) / dex_b_ask
 
-        let spread_a_over_b = if self.vest_best_ask > 0.0 {
-            ((self.paradex_best_bid - self.vest_best_ask) / self.vest_best_ask) * 100.0
+        let spread_a_over_b = if self.dex_a_best_ask > 0.0 {
+            ((self.dex_b_best_bid - self.dex_a_best_ask) / self.dex_a_best_ask) * 100.0
         } else {
             f64::NEG_INFINITY
         };
 
-        let spread_b_over_a = if self.paradex_best_ask > 0.0 {
-            ((self.vest_best_bid - self.paradex_best_ask) / self.paradex_best_ask) * 100.0
+        let spread_b_over_a = if self.dex_b_best_ask > 0.0 {
+            ((self.dex_a_best_bid - self.dex_b_best_ask) / self.dex_b_best_ask) * 100.0
         } else {
             f64::NEG_INFINITY
         };
@@ -187,32 +195,32 @@ impl AppState {
         // Exit spread: Based on position direction (inverse of entry)
         match self.entry_direction {
             Some(SpreadDirection::AOverB) => {
-                // Entry was Long Vest / Short Paradex
-                // Exit: Sell Vest (at bid), Buy Paradex (at ask)
-                if self.paradex_best_ask > 0.0 {
-                    self.live_exit_spread = ((self.vest_best_bid - self.paradex_best_ask)
-                        / self.paradex_best_ask)
+                // Entry was Long DEX A / Short DEX B
+                // Exit: Sell DEX A (at bid), Buy DEX B (at ask)
+                if self.dex_b_best_ask > 0.0 {
+                    self.live_exit_spread = ((self.dex_a_best_bid - self.dex_b_best_ask)
+                        / self.dex_b_best_ask)
                         * 100.0;
                 }
             }
             Some(SpreadDirection::BOverA) => {
-                // Entry was Long Paradex / Short Vest
-                // Exit: Sell Paradex (at bid), Buy Vest (at ask)
-                if self.vest_best_ask > 0.0 {
+                // Entry was Long DEX B / Short DEX A
+                // Exit: Sell DEX B (at bid), Buy DEX A (at ask)
+                if self.dex_a_best_ask > 0.0 {
                     self.live_exit_spread =
-                        ((self.paradex_best_bid - self.vest_best_ask) / self.vest_best_ask) * 100.0;
+                        ((self.dex_b_best_bid - self.dex_a_best_ask) / self.dex_a_best_ask) * 100.0;
                 }
             }
             None => {
                 // No position, show the exit spread for best direction
                 // (opposite of entry spread direction)
-                if spread_a_over_b >= spread_b_over_a && self.paradex_best_ask > 0.0 {
-                    self.live_exit_spread = ((self.vest_best_bid - self.paradex_best_ask)
-                        / self.paradex_best_ask)
+                if spread_a_over_b >= spread_b_over_a && self.dex_b_best_ask > 0.0 {
+                    self.live_exit_spread = ((self.dex_a_best_bid - self.dex_b_best_ask)
+                        / self.dex_b_best_ask)
                         * 100.0;
-                } else if self.vest_best_ask > 0.0 {
+                } else if self.dex_a_best_ask > 0.0 {
                     self.live_exit_spread =
-                        ((self.paradex_best_bid - self.vest_best_ask) / self.vest_best_ask) * 100.0;
+                        ((self.dex_b_best_bid - self.dex_a_best_ask) / self.dex_a_best_ask) * 100.0;
                 }
             }
         }
@@ -223,19 +231,19 @@ impl AppState {
         &mut self,
         spread: f64,
         direction: SpreadDirection,
-        vest_price: f64,
-        paradex_price: f64,
+        price_a: f64,
+        price_b: f64,
     ) {
         self.position_open = true;
         self.entry_spread = Some(spread);
         self.entry_direction = Some(direction);
-        self.entry_vest_price = Some(vest_price);
-        self.entry_paradex_price = Some(paradex_price);
+        self.entry_price_a = Some(price_a);
+        self.entry_price_b = Some(price_b);
         self.position_polls = 0;
     }
 
     /// Record trade exit
-    pub fn record_exit(&mut self, exit_spread: f64, pnl_usd: f64, latency_ms: u64, vest_exit_price: f64, paradex_exit_price: f64) {
+    pub fn record_exit(&mut self, exit_spread: f64, pnl_usd: f64, latency_ms: u64, dex_a_exit_price: f64, dex_b_exit_price: f64) {
         // Save trade to history BEFORE resetting position fields
         if let (Some(direction), Some(entry_spread)) = (self.entry_direction, self.entry_spread) {
             let record = TradeRecord {
@@ -243,8 +251,8 @@ impl AppState {
                 entry_spread,
                 exit_spread,
                 pnl_usd,
-                vest_exit_price,
-                paradex_exit_price,
+                dex_a_exit_price,
+                dex_b_exit_price,
                 timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
             };
 
@@ -258,8 +266,8 @@ impl AppState {
         self.position_open = false;
         self.entry_spread = None;
         self.entry_direction = None;
-        self.entry_vest_price = None;
-        self.entry_paradex_price = None;
+        self.entry_price_a = None;
+        self.entry_price_b = None;
         self.position_polls = 0;
         self.trades_count += 1;
         self.total_profit_usd += pnl_usd;
@@ -273,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_app_state_creation() {
-        let state = AppState::new("BTC-PERP".to_string(), 0.15, 0.05, 0.001, 10);
+        let state = AppState::new("BTC-PERP".to_string(), 0.15, 0.05, 0.001, 10, "vest".to_string(), "paradex".to_string());
         assert_eq!(state.pair, "BTC-PERP");
         assert_eq!(state.spread_entry_threshold, 0.15);
         assert!(!state.position_open);
@@ -282,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_log_rotation() {
-        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10);
+        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10, "vest".into(), "paradex".into());
 
         // Fill beyond capacity
         for i in 0..150 {
@@ -302,21 +310,21 @@ mod tests {
 
     #[test]
     fn test_trade_recording() {
-        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10);
+        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10, "vest".into(), "paradex".into());
 
         state.record_entry(0.12, SpreadDirection::AOverB, 97000.0, 97100.0);
         assert!(state.position_open);
         assert_eq!(state.entry_spread, Some(0.12));
-        assert_eq!(state.entry_vest_price, Some(97000.0));
-        assert_eq!(state.entry_paradex_price, Some(97100.0));
+        assert_eq!(state.entry_price_a, Some(97000.0));
+        assert_eq!(state.entry_price_b, Some(97100.0));
 
-        state.record_exit(-0.04, 0.08, 45, 97050.0, 97150.0); // exit_spread, pnl_usd, latency_ms, vest_exit, paradex_exit
+        state.record_exit(-0.04, 0.08, 45, 97050.0, 97150.0);
         assert!(!state.position_open);
         assert_eq!(state.trades_count, 1);
         assert_eq!(state.total_profit_usd, 0.08);
         assert_eq!(state.last_latency_ms, Some(45));
-        assert_eq!(state.entry_vest_price, None);
-        assert_eq!(state.entry_paradex_price, None);
+        assert_eq!(state.entry_price_a, None);
+        assert_eq!(state.entry_price_b, None);
 
         // Verify trade was added to history
         assert_eq!(state.trade_history.len(), 1);
@@ -327,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_uptime_str_format() {
-        let state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10);
+        let state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10, "vest".into(), "paradex".into());
         let uptime = state.uptime_str();
         // Format should be "Xh00m" or similar
         assert!(uptime.contains('h'));
@@ -336,24 +344,24 @@ mod tests {
 
     #[test]
     fn test_update_prices() {
-        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10);
+        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10, "vest".into(), "paradex".into());
         state.update_prices(97000.0, 97010.0, 97100.0, 97110.0);
 
-        assert_eq!(state.vest_best_bid, 97000.0);
-        assert_eq!(state.vest_best_ask, 97010.0);
-        assert_eq!(state.paradex_best_bid, 97100.0);
-        assert_eq!(state.paradex_best_ask, 97110.0);
+        assert_eq!(state.dex_a_best_bid, 97000.0);
+        assert_eq!(state.dex_a_best_ask, 97010.0);
+        assert_eq!(state.dex_b_best_bid, 97100.0);
+        assert_eq!(state.dex_b_best_ask, 97110.0);
     }
 
     #[test]
     fn test_trade_history_ring_buffer() {
-        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10);
+        let mut state = AppState::new("BTC".into(), 0.1, 0.05, 0.001, 10, "vest".into(), "paradex".into());
 
         // Simulate 11 trades to test ring buffer behavior (AC2)
         for i in 0..11 {
             let spread = 0.10 + (i as f64 * 0.01); // Varying entry spreads
             state.record_entry(spread, SpreadDirection::AOverB, 97000.0, 97100.0);
-            state.record_exit(-0.02, 0.05, 30, 97050.0, 97150.0); // exit_spread, pnl_usd, latency, vest_exit, paradex_exit
+            state.record_exit(-0.02, 0.05, 30, 97050.0, 97150.0);
         }
 
         // Should be capped at MAX_TRADE_HISTORY (10)

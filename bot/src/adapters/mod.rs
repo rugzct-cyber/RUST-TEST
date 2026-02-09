@@ -1,9 +1,11 @@
-//! Exchange adapters for Vest and Paradex
+//! Exchange adapters for Vest, Paradex, and Lighter
 //!
 //! This module provides the core abstractions for connecting to
 //! various cryptocurrency exchanges via WebSocket.
 
 pub mod errors;
+pub mod factory;
+pub mod lighter;
 pub mod paradex;
 pub mod shared;
 pub mod traits;
@@ -15,6 +17,8 @@ pub mod test_utils;
 
 // Re-export commonly used types for convenience
 pub use errors::{ExchangeError, ExchangeResult};
+pub use factory::{AnyAdapter, create_adapter, resolve_symbol};
+pub use lighter::{LighterAdapter, LighterConfig};
 pub use paradex::{ParadexAdapter, ParadexConfig};
 pub use traits::ExchangeAdapter;
 pub use types::{

@@ -52,10 +52,10 @@ use super::channels::LOG_THROTTLE_POLLS;
 /// Exit monitoring result with exit fill prices for PnL calculation
 struct ExitResult {
     exit_spread: f64,
-    vest_exit_price: f64,
-    paradex_exit_price: f64,
-    vest_realized_pnl: Option<f64>,
-    paradex_realized_pnl: Option<f64>,
+    dex_a_exit_price: f64,
+    dex_b_exit_price: f64,
+    dex_a_realized_pnl: Option<f64>,
+    dex_b_realized_pnl: Option<f64>,
     execution_latency_ms: u64,
 }
 
@@ -75,10 +75,10 @@ struct ExitResult {
 pub async fn execution_task<V, P>(
     mut opportunity_rx: watch::Receiver<Option<SpreadOpportunity>>,
     mut executor: DeltaNeutralExecutor<V, P>,
-    vest_best_prices: SharedBestPrices,
-    paradex_best_prices: SharedBestPrices,
-    _vest_symbol: String,
-    _paradex_symbol: String,
+    dex_a_best_prices: SharedBestPrices,
+    dex_b_best_prices: SharedBestPrices,
+    _symbol_a: String,
+    _symbol_b: String,
     mut shutdown_rx: broadcast::Receiver<()>,
     exit_spread_target: f64,
     tui_state: Option<Arc<StdMutex<TuiState>>>,
@@ -123,16 +123,16 @@ pub async fn execution_task<V, P>(
     // =========================================================================
     // POSITION RECOVERY: Check for existing positions before entering main loop
     // =========================================================================
-    let mut recovered = false;
-    if let Some((direction, quantity, vest_entry, paradex_entry)) = executor.recover_position().await {
+    let mut _recovered = false;
+    if let Some((direction, quantity, entry_a, entry_b)) = executor.recover_position().await {
         // We have an existing position — jump directly to hybrid monitoring
-        let filled_layers = layers.len(); // assume all layers filled (recovery = full position)
+        let _filled_layers = layers.len(); // assume all layers filled (recovery = full position)
 
         // Calculate approximate entry spread from recovered entry prices
-        let entry_spread = if vest_entry > 0.0 && paradex_entry > 0.0 {
+        let entry_spread = if entry_a > 0.0 && entry_b > 0.0 {
             match direction {
-                SpreadDirection::AOverB => ((paradex_entry - vest_entry) / vest_entry) * 100.0,
-                SpreadDirection::BOverA => ((vest_entry - paradex_entry) / paradex_entry) * 100.0,
+                SpreadDirection::AOverB => ((entry_b - entry_a) / entry_a) * 100.0,
+                SpreadDirection::BOverA => ((entry_a - entry_b) / entry_b) * 100.0,
             }
         } else {
             0.0
@@ -141,7 +141,7 @@ pub async fn execution_task<V, P>(
         // Update TUI with recovered position
         if let Some(ref tui) = tui_state {
             if let Ok(mut state) = tui.lock() {
-                state.record_entry(entry_spread, direction, vest_entry, paradex_entry);
+                state.record_entry(entry_spread, direction, entry_a, entry_b);
             }
         }
 
@@ -182,10 +182,10 @@ pub async fn execution_task<V, P>(
                     }
 
                     // Read live prices
-                    let (vest_bid, vest_ask) = vest_best_prices.load();
-                    let (paradex_bid, paradex_ask) = paradex_best_prices.load();
+                    let (bid_a, ask_a) = dex_a_best_prices.load();
+                    let (bid_b, ask_b) = dex_b_best_prices.load();
 
-                    if vest_bid == 0.0 || paradex_bid == 0.0 {
+                    if bid_a == 0.0 || bid_b == 0.0 {
                         if poll_count % LOG_THROTTLE_POLLS == 0 {
                             debug!(event_type = "EXIT_CHECK", "Waiting for orderbook data...");
                         }
@@ -195,10 +195,10 @@ pub async fn execution_task<V, P>(
                     // Calculate exit spread
                     let exit_spread = match direction {
                         SpreadDirection::AOverB => {
-                            SpreadCalculator::calculate_exit_spread(vest_bid, paradex_ask)
+                            SpreadCalculator::calculate_exit_spread(bid_a, ask_b)
                         }
                         SpreadDirection::BOverA => {
-                            SpreadCalculator::calculate_exit_spread(paradex_bid, vest_ask)
+                            SpreadCalculator::calculate_exit_spread(bid_b, ask_a)
                         }
                     };
 
@@ -222,7 +222,7 @@ pub async fn execution_task<V, P>(
                         let close_start = std::time::Instant::now();
 
                         loop {
-                            match executor.close_position(exit_spread, vest_bid, vest_ask, paradex_bid, paradex_ask).await {
+                            match executor.close_position(exit_spread, bid_a, ask_a, bid_b, ask_b).await {
                                 Ok(close_result) => {
                                     let execution_latency_ms = close_start.elapsed().as_millis() as u64;
                                     let closed_event = TradingEvent::position_closed(
@@ -232,10 +232,10 @@ pub async fn execution_task<V, P>(
 
                                     exit_result_final = Some(ExitResult {
                                         exit_spread,
-                                        vest_exit_price: close_result.vest_fill_price,
-                                        paradex_exit_price: close_result.paradex_fill_price,
-                                        vest_realized_pnl: close_result.vest_realized_pnl,
-                                        paradex_realized_pnl: close_result.paradex_realized_pnl,
+                                        dex_a_exit_price: close_result.dex_a_fill_price,
+                                        dex_b_exit_price: close_result.dex_b_fill_price,
+                                        dex_a_realized_pnl: close_result.dex_a_realized_pnl,
+                                        dex_b_realized_pnl: close_result.dex_b_realized_pnl,
                                         execution_latency_ms,
                                     });
                                     break;
@@ -272,14 +272,14 @@ pub async fn execution_task<V, P>(
         // Update TUI trade history
         if let (Some(exit_result), Some(ref tui)) = (exit_result_final, &tui_state) {
             if let Ok(mut state) = tui.lock() {
-                let vest_rpnl = exit_result.vest_realized_pnl;
-                let paradex_rpnl = exit_result.paradex_realized_pnl;
+                let vest_rpnl = exit_result.dex_a_realized_pnl;
+                let paradex_rpnl = exit_result.dex_b_realized_pnl;
                 let pnl_usd = if vest_rpnl.is_some() || paradex_rpnl.is_some() {
                     let total = vest_rpnl.unwrap_or(0.0) + paradex_rpnl.unwrap_or(0.0);
                     tracing::info!(
                         event_type = "PNL_FROM_EXCHANGE",
-                        vest_realized_pnl = ?vest_rpnl,
-                        paradex_realized_pnl = ?paradex_rpnl,
+                        dex_a_realized_pnl = ?vest_rpnl,
+                        dex_b_realized_pnl = ?paradex_rpnl,
                         total_pnl = %format!("{:.6}", total),
                         "PnL from exchange-reported realized PnL (recovered)"
                     );
@@ -288,11 +288,11 @@ pub async fn execution_task<V, P>(
                     tracing::warn!(event_type = "PNL_UNAVAILABLE", "No realized PnL returned");
                     0.0
                 };
-                state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms, exit_result.vest_exit_price, exit_result.paradex_exit_price);
+                state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms, exit_result.dex_a_exit_price, exit_result.dex_b_exit_price);
             }
         }
 
-        recovered = true;
+        _recovered = true;
         tracing::info!(event_type = "RECOVERY_COMPLETE", "Recovered position closed — resuming normal operation");
     }
 
@@ -499,10 +499,10 @@ pub async fn execution_task<V, P>(
                                     }
                                 }
 
-                                let (vest_bid, vest_ask) = vest_best_prices.load();
-                                let (paradex_bid, paradex_ask) = paradex_best_prices.load();
+                                let (bid_a, ask_a) = dex_a_best_prices.load();
+                                let (bid_b, ask_b) = dex_b_best_prices.load();
 
-                                if vest_bid <= 0.0 || vest_ask <= 0.0 || paradex_bid <= 0.0 || paradex_ask <= 0.0 {
+                                if bid_a <= 0.0 || ask_a <= 0.0 || bid_b <= 0.0 || ask_b <= 0.0 {
                                     if poll_count % LOG_THROTTLE_POLLS == 0 {
                                         debug!(event_type = "POSITION_MONITORING", poll = poll_count, "Missing orderbook data");
                                     }
@@ -511,14 +511,14 @@ pub async fn execution_task<V, P>(
 
                                 // Calculate exit spread
                                 let exit_spread = match direction {
-                                    SpreadDirection::AOverB => SpreadCalculator::calculate_exit_spread(vest_bid, paradex_ask),
-                                    SpreadDirection::BOverA => SpreadCalculator::calculate_exit_spread(paradex_bid, vest_ask),
+                                    SpreadDirection::AOverB => SpreadCalculator::calculate_exit_spread(bid_a, ask_b),
+                                    SpreadDirection::BOverA => SpreadCalculator::calculate_exit_spread(bid_b, ask_a),
                                 };
 
                                 // Calculate entry spread for layer checks
                                 let entry_spread_live = match direction {
-                                    SpreadDirection::AOverB => SpreadCalculator::calculate_entry_spread(vest_ask, paradex_bid),
-                                    SpreadDirection::BOverA => SpreadCalculator::calculate_entry_spread(paradex_ask, vest_bid),
+                                    SpreadDirection::AOverB => SpreadCalculator::calculate_entry_spread(ask_a, bid_b),
+                                    SpreadDirection::BOverA => SpreadCalculator::calculate_entry_spread(ask_b, bid_a),
                                 };
 
                                 // POSITION_MONITORING log (throttled)
@@ -544,7 +544,7 @@ pub async fn execution_task<V, P>(
                                     let close_start = std::time::Instant::now();
 
                                     loop {
-                                        match executor.close_position(exit_spread, vest_bid, vest_ask, paradex_bid, paradex_ask).await {
+                                        match executor.close_position(exit_spread, bid_a, ask_a, bid_b, ask_b).await {
                                             Ok(close_result) => {
                                                 let execution_latency_ms = close_start.elapsed().as_millis() as u64;
                                                 let closed_event = TradingEvent::position_closed(
@@ -553,10 +553,10 @@ pub async fn execution_task<V, P>(
                                                 log_event(&closed_event);
                                                 exit_result_final = Some(ExitResult {
                                                     exit_spread,
-                                                    vest_exit_price: close_result.vest_fill_price,
-                                                    paradex_exit_price: close_result.paradex_fill_price,
-                                                    vest_realized_pnl: close_result.vest_realized_pnl,
-                                                    paradex_realized_pnl: close_result.paradex_realized_pnl,
+                                                    dex_a_exit_price: close_result.dex_a_fill_price,
+                                                    dex_b_exit_price: close_result.dex_b_fill_price,
+                                                    dex_a_realized_pnl: close_result.dex_a_realized_pnl,
+                                                    dex_b_realized_pnl: close_result.dex_b_realized_pnl,
                                                     execution_latency_ms,
                                                 });
                                                 break;
@@ -572,8 +572,8 @@ pub async fn execution_task<V, P>(
                                                     let execution_latency_ms = close_start.elapsed().as_millis() as u64;
                                                     error!(event_type = "CLOSE_ABANDONED", retries = close_retries, "CRITICAL: manual intervention required");
                                                     exit_result_final = Some(ExitResult {
-                                                        exit_spread, vest_exit_price: 0.0, paradex_exit_price: 0.0,
-                                                        vest_realized_pnl: None, paradex_realized_pnl: None, execution_latency_ms,
+                                                        exit_spread, dex_a_exit_price: 0.0, dex_b_exit_price: 0.0,
+                                                        dex_a_realized_pnl: None, dex_b_realized_pnl: None, execution_latency_ms,
                                                     });
                                                     break;
                                                 }
@@ -606,10 +606,10 @@ pub async fn execution_task<V, P>(
                                             spread_percent: entry_spread_live,
                                             direction,
                                             detected_at_ms: crate::core::events::current_timestamp_ms(),
-                                            dex_a_ask: vest_ask,
-                                            dex_a_bid: vest_bid,
-                                            dex_b_ask: paradex_ask,
-                                            dex_b_bid: paradex_bid,
+                                            dex_a_ask: ask_a,
+                                            dex_a_bid: bid_a,
+                                            dex_b_ask: ask_b,
+                                            dex_b_bid: bid_b,
                                         };
 
                                         match executor.execute_delta_neutral_with_quantity(
@@ -648,8 +648,8 @@ pub async fn execution_task<V, P>(
                                                         tracing::debug!(
                                                             event_type = "TUI_ENTRY_UPDATE",
                                                             layer = layer.index,
-                                                            vest_avg = %format!("{:.2}", ve),
-                                                            paradex_avg = %format!("{:.2}", pe),
+                                                            dex_a_avg = %format!("{:.2}", ve),
+                                                            dex_b_avg = %format!("{:.2}", pe),
                                                             actual_spread = %format!("{:.4}", actual_spread),
                                                             "Updated TUI entry prices after deeper layer"
                                                         );
@@ -692,14 +692,14 @@ pub async fn execution_task<V, P>(
                     if let (Some(exit_result), Some(ref tui)) = (exit_result_final, &tui_state) {
                         match tui.lock() {
                             Ok(mut state) => {
-                                let vest_rpnl = exit_result.vest_realized_pnl;
-                                let paradex_rpnl = exit_result.paradex_realized_pnl;
+                                let vest_rpnl = exit_result.dex_a_realized_pnl;
+                                let paradex_rpnl = exit_result.dex_b_realized_pnl;
                                 let pnl_usd = if vest_rpnl.is_some() || paradex_rpnl.is_some() {
                                     let total = vest_rpnl.unwrap_or(0.0) + paradex_rpnl.unwrap_or(0.0);
                                     tracing::info!(
                                         event_type = "PNL_FROM_EXCHANGE",
-                                        vest_realized_pnl = ?vest_rpnl,
-                                        paradex_realized_pnl = ?paradex_rpnl,
+                                        dex_a_realized_pnl = ?vest_rpnl,
+                                        dex_b_realized_pnl = ?paradex_rpnl,
                                         total_pnl = %format!("{:.6}", total),
                                         "PnL from exchange-reported realized PnL"
                                     );
@@ -708,7 +708,7 @@ pub async fn execution_task<V, P>(
                                     tracing::warn!(event_type = "PNL_UNAVAILABLE", "No realized PnL returned");
                                     0.0
                                 };
-                                state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms, exit_result.vest_exit_price, exit_result.paradex_exit_price);
+                                state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms, exit_result.dex_a_exit_price, exit_result.dex_b_exit_price);
                             }
                             Err(e) => {
                                 error!(event_type = "TUI_STATE_ERROR", error = %e, "Failed to record trade exit in TUI state");
@@ -755,6 +755,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // Create SharedBestPrices with data that triggers exit (spread = 0 >= -0.05)
@@ -820,6 +822,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // Create empty SharedBestPrices for test
@@ -865,6 +869,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // Create SharedBestPrices with prices that produce exit_spread >= target
@@ -942,6 +948,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // Prices that will NEVER trigger exit
@@ -1006,6 +1014,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // For BOverA: entry should work, exit immediately triggers
@@ -1071,6 +1081,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let vest_bp = Arc::new(AtomicBestPrices::new());
@@ -1138,6 +1150,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         let vest_bp = Arc::new(AtomicBestPrices::new());
@@ -1189,6 +1203,8 @@ mod tests {
             0.01,
             "BTC-PERP".to_string(),
             "BTC-USD-PERP".to_string(),
+            "vest".to_string(),
+            "paradex".to_string(),
         );
 
         // Empty best prices (0.0)

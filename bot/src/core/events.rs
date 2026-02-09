@@ -134,8 +134,8 @@ pub enum EventPayload {
         latency_ms: u64,
         long_exchange: String,
         short_exchange: String,
-        vest_fill_price: f64,
-        paradex_fill_price: f64,
+        dex_a_fill_price: f64,
+        dex_b_fill_price: f64,
     },
     /// Position closed
     TradeExit {
@@ -237,8 +237,8 @@ impl TradingEvent {
         long_exchange: &str,
         short_exchange: &str,
         latency_ms: u64,
-        vest_fill_price: f64,
-        paradex_fill_price: f64,
+        dex_a_fill_price: f64,
+        dex_b_fill_price: f64,
     ) -> Self {
         let mut event = Self::with_pair(TradingEventType::TradeEntry, pair);
         event.exchange = Some(format!("long:{},short:{}", long_exchange, short_exchange));
@@ -249,8 +249,8 @@ impl TradingEvent {
             latency_ms,
             long_exchange: long_exchange.to_string(),
             short_exchange: short_exchange.to_string(),
-            vest_fill_price,
-            paradex_fill_price,
+            dex_a_fill_price,
+            dex_b_fill_price,
         };
         event
     }
@@ -453,8 +453,8 @@ pub fn log_event(event: &TradingEvent) {
         EventPayload::TradeEntry {
             entry_spread,
             latency_ms,
-            vest_fill_price,
-            paradex_fill_price,
+            dex_a_fill_price,
+            dex_b_fill_price,
             long_exchange,
             short_exchange,
             ..
@@ -463,8 +463,8 @@ pub fn log_event(event: &TradingEvent) {
                 "ENTRY",
                 &[
                     ("EntrySpread", format_pct_compact(*entry_spread)),
-                    ("VestPrice", format!("{:.0}", vest_fill_price)),
-                    ("ParadexPrice", format!("{:.0}", paradex_fill_price)),
+                    ("DexAPrice", format!("{:.0}", dex_a_fill_price)),
+                    ("DexBPrice", format!("{:.0}", dex_b_fill_price)),
                     ("Latency", format!("{}ms", latency_ms)),
                 ],
             );
@@ -689,15 +689,15 @@ impl SystemEvent {
     }
 
     /// Position verified event (DEBUG level)
-    pub fn position_verified(vest_price: f64, paradex_price: f64, captured_spread: f64) -> Self {
+    pub fn position_verified(price_a: f64, price_b: f64, captured_spread: f64) -> Self {
         Self {
             event_type: SystemEventType::PositionVerified,
             task_name: None,
             exchange: None,
             message: "Entry positions verified".to_string(),
             details: Some(format!(
-                "vest={:.2} paradex={:.2} spread={:.4}%",
-                vest_price, paradex_price, captured_spread
+                "dex_a={:.2} dex_b={:.2} spread={:.4}%",
+                price_a, price_b, captured_spread
             )),
         }
     }
@@ -825,14 +825,14 @@ mod tests {
             EventPayload::TradeEntry {
                 entry_spread,
                 latency_ms,
-                vest_fill_price,
-                paradex_fill_price,
+                dex_a_fill_price,
+                dex_b_fill_price,
                 ..
             } => {
                 assert_eq!(*entry_spread, 0.35);
                 assert_eq!(*latency_ms, 150);
-                assert_eq!(*vest_fill_price, 42000.0);
-                assert_eq!(*paradex_fill_price, 42100.0);
+                assert_eq!(*dex_a_fill_price, 42000.0);
+                assert_eq!(*dex_b_fill_price, 42100.0);
             }
             _ => panic!("Expected TradeEntry payload"),
         }

@@ -2,7 +2,7 @@
 //!
 //! Renders the terminal UI using ratatui with 4 zones:
 //! - Header: pair, spread, position status
-//! - Orderbooks: Vest and Paradex prices side by side
+//! - Orderbooks: DEX A and DEX B prices side by side
 //! - Stats: entry, PnL, latency, trades, uptime
 //! - Logs: scrollable log entries
 
@@ -90,63 +90,65 @@ fn draw_orderbooks(frame: &mut Frame, area: Rect, state: &AppState) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    // Vest orderbook
-    let vest_mid = (state.vest_best_bid + state.vest_best_ask) / 2.0;
-    let vest_content = vec![
+    // DEX A orderbook
+    let dex_a_mid = (state.dex_a_best_bid + state.dex_a_best_ask) / 2.0;
+    let dex_a_content = vec![
         Line::from(vec![
             Span::raw("Ask: "),
             Span::styled(
-                format!("${:.2}", state.vest_best_ask),
+                format!("${:.2}", state.dex_a_best_ask),
                 Style::default().fg(Color::Red),
             ),
         ]),
         Line::from(vec![
             Span::raw("Bid: "),
             Span::styled(
-                format!("${:.2}", state.vest_best_bid),
+                format!("${:.2}", state.dex_a_best_bid),
                 Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
             Span::raw("Mid: "),
             Span::styled(
-                format!("${:.2}", vest_mid),
+                format!("${:.2}", dex_a_mid),
                 Style::default().fg(Color::White),
             ),
         ]),
     ];
-    let vest_block =
-        Paragraph::new(vest_content).block(Block::default().borders(Borders::ALL).title("VEST"));
-    frame.render_widget(vest_block, chunks[0]);
+    let dex_a_title = state.dex_a_label.to_uppercase();
+    let dex_a_block =
+        Paragraph::new(dex_a_content).block(Block::default().borders(Borders::ALL).title(dex_a_title));
+    frame.render_widget(dex_a_block, chunks[0]);
 
-    // Paradex orderbook
-    let paradex_mid = (state.paradex_best_bid + state.paradex_best_ask) / 2.0;
-    let paradex_content = vec![
+    // DEX B orderbook
+    let dex_b_mid = (state.dex_b_best_bid + state.dex_b_best_ask) / 2.0;
+    let dex_b_content = vec![
         Line::from(vec![
             Span::raw("Ask: "),
             Span::styled(
-                format!("${:.2}", state.paradex_best_ask),
+                format!("${:.2}", state.dex_b_best_ask),
                 Style::default().fg(Color::Red),
             ),
         ]),
         Line::from(vec![
             Span::raw("Bid: "),
             Span::styled(
-                format!("${:.2}", state.paradex_best_bid),
+                format!("${:.2}", state.dex_b_best_bid),
                 Style::default().fg(Color::Green),
             ),
         ]),
         Line::from(vec![
             Span::raw("Mid: "),
             Span::styled(
-                format!("${:.2}", paradex_mid),
+                format!("${:.2}", dex_b_mid),
                 Style::default().fg(Color::White),
             ),
         ]),
     ];
-    let paradex_block = Paragraph::new(paradex_content)
-        .block(Block::default().borders(Borders::ALL).title("PARADEX"));
-    frame.render_widget(paradex_block, chunks[1]);
+    let dex_b_title = state.dex_b_label.to_uppercase();
+    let dex_b_block = Paragraph::new(dex_b_content)
+        .block(Block::default().borders(Borders::ALL).title(dex_b_title));
+    frame.render_widget(dex_b_block, chunks[1]);
 }
 
 /// Draw trade history panel
@@ -186,14 +188,14 @@ fn draw_trade_history(frame: &mut Frame, area: Rect, state: &AppState) {
                     format!("{:+.2}%", record.exit_spread),
                     Style::default().fg(Color::Yellow),
                 ),
-                Span::raw(" │ V:"),
+                Span::raw(" │ A:"),
                 Span::styled(
-                    format!("${:.1}", record.vest_exit_price),
+                    format!("${:.1}", record.dex_a_exit_price),
                     Style::default().fg(Color::White),
                 ),
-                Span::raw(" P:"),
+                Span::raw(" B:"),
                 Span::styled(
-                    format!("${:.1}", record.paradex_exit_price),
+                    format!("${:.1}", record.dex_b_exit_price),
                     Style::default().fg(Color::White),
                 ),
                 Span::raw(" │ "),
@@ -266,12 +268,12 @@ fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
 
     let line2 = if state.position_open {
         // Show position entry prices when open
-        let entry_vest = state
-            .entry_vest_price
+        let entry_a = state
+            .entry_price_a
             .map(|p| format!("${:.2}", p))
             .unwrap_or_else(|| "-".to_string());
-        let entry_paradex = state
-            .entry_paradex_price
+        let entry_b = state
+            .entry_price_b
             .map(|p| format!("${:.2}", p))
             .unwrap_or_else(|| "-".to_string());
         let entry_spread = state
@@ -287,10 +289,10 @@ fn draw_stats(frame: &mut Frame, area: Rect, state: &AppState) {
             ),
             Span::raw("Entry@"),
             Span::styled(entry_spread, Style::default().fg(Color::Cyan)),
-            Span::raw(" V:"),
-            Span::styled(entry_vest, Style::default().fg(Color::Yellow)),
-            Span::raw(" P:"),
-            Span::styled(entry_paradex, Style::default().fg(Color::Yellow)),
+            Span::raw(" A:"),
+            Span::styled(entry_a, Style::default().fg(Color::Yellow)),
+            Span::raw(" B:"),
+            Span::styled(entry_b, Style::default().fg(Color::Yellow)),
             Span::raw("  │  Trades: "),
             Span::styled(
                 format!("{}", state.trades_count),
@@ -375,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_app_state_for_ui() {
-        let state = AppState::new("BTC-PERP".into(), 0.15, 0.05, 0.001, 10);
+        let state = AppState::new("BTC-PERP".into(), 0.15, 0.05, 0.001, 10, "vest".into(), "paradex".into());
         // Just verify state can be used for UI - actual rendering requires terminal
         assert_eq!(state.pair, "BTC-PERP");
     }

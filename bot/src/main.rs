@@ -32,9 +32,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 // ratatui accessed via full path in spawn block for Terminal
-use hft_bot::adapters::paradex::{ParadexAdapter, ParadexConfig};
-use hft_bot::adapters::vest::{VestAdapter, VestConfig};
-use hft_bot::adapters::ExchangeAdapter;
+use hft_bot::adapters::{create_adapter, resolve_symbol, ExchangeAdapter};
 use hft_bot::config;
 use hft_bot::core::channels::SpreadOpportunity;
 use hft_bot::core::events::{format_pct, log_event, TradingEvent};
@@ -98,6 +96,8 @@ async fn main() -> anyhow::Result<()> {
             bot.spread_exit,
             bot.position_size,
             bot.leverage as u32,
+            bot.dex_a.to_string(),
+            bot.dex_b.to_string(),
         )));
 
         // Initialize terminal in raw mode with alternate screen
@@ -140,21 +140,19 @@ async fn main() -> anyhow::Result<()> {
         "Active bot configuration"
     );
 
-    // Create adapters with real credentials
+    // Create adapters dynamically from config
+    let dex_a_name = bot.dex_a.to_string();
+    let dex_b_name = bot.dex_b.to_string();
     info!(
         event_type = "ADAPTER_INIT",
+        dex_a = %dex_a_name,
+        dex_b = %dex_b_name,
         "Initializing exchange adapters"
     );
 
-    // Subtask 1.1: Create VestAdapter with credentials from .env
-    let vest_config = VestConfig::from_env()
-        .expect("VEST credentials must be configured in .env (VEST_PRIMARY_ADDR, VEST_PRIMARY_KEY, VEST_SIGNING_KEY)");
-    let mut vest_adapter = VestAdapter::new(vest_config);
-    info!(
-        event_type = "ADAPTER_INIT",
-        exchange = "vest",
-        "Adapter initialized"
-    );
+    let mut dex_a_adapter = create_adapter(&dex_a_name)
+        .unwrap_or_else(|e| panic!("Failed to create {} adapter: {}", dex_a_name, e));
+    info!(event_type = "ADAPTER_INIT", exchange = %dex_a_name, "Adapter initialized");
 
     // Initialize Pyth USDC rate cache for USD→USDC price conversion
     let usdc_rate_cache = std::sync::Arc::new(hft_bot::core::UsdcRateCache::new());
@@ -179,120 +177,94 @@ async fn main() -> anyhow::Result<()> {
         "USDC rate cache initialized with 15-minute refresh"
     );
 
-    // Subtask 1.2: Create ParadexAdapter with credentials from .env
-    let paradex_config = ParadexConfig::from_env()
-        .expect("PARADEX credentials must be configured in .env (PARADEX_PRIVATE_KEY, PARADEX_ACCOUNT_ADDRESS)");
-    let mut paradex_adapter = ParadexAdapter::new(paradex_config);
-    paradex_adapter.set_usdc_rate_cache(std::sync::Arc::clone(&usdc_rate_cache));
-    info!(
-        event_type = "ADAPTER_INIT",
-        exchange = "paradex",
-        "Adapter initialized with USDC conversion"
-    );
+    let mut dex_b_adapter = create_adapter(&dex_b_name)
+        .unwrap_or_else(|e| panic!("Failed to create {} adapter: {}", dex_b_name, e));
+    // Set USDC rate cache on Paradex adapters (if either dex is Paradex)
+    if let Some(paradex) = dex_a_adapter.as_paradex_mut() {
+        paradex.set_usdc_rate_cache(std::sync::Arc::clone(&usdc_rate_cache));
+    }
+    if let Some(paradex) = dex_b_adapter.as_paradex_mut() {
+        paradex.set_usdc_rate_cache(std::sync::Arc::clone(&usdc_rate_cache));
+    }
+    info!(event_type = "ADAPTER_INIT", exchange = %dex_b_name, "Adapter initialized");
 
-    // Task 2: Create channels for data pipeline
-
-    // Create spread_opportunity channel
+    // Create channels for data pipeline
     let (opportunity_tx, opportunity_rx) = watch::channel(None::<SpreadOpportunity>);
 
-    // Task 3: Connect to exchanges
+    // Connect to exchanges
     info!(event_type = "CONNECTION", "Connecting to exchanges");
 
-    vest_adapter
+    dex_a_adapter
         .connect()
         .await
-        .expect("Failed to connect to Vest");
-    info!(event_type = "CONNECTION", exchange = "vest", "Connected");
+        .unwrap_or_else(|e| panic!("Failed to connect to {}: {}", dex_a_name, e));
+    info!(event_type = "CONNECTION", exchange = %dex_a_name, "Connected");
 
-    paradex_adapter
+    dex_b_adapter
         .connect()
         .await
-        .expect("Failed to connect to Paradex");
-    info!(event_type = "CONNECTION", exchange = "paradex", "Connected");
+        .unwrap_or_else(|e| panic!("Failed to connect to {}: {}", dex_b_name, e));
+    info!(event_type = "CONNECTION", exchange = %dex_b_name, "Connected");
 
-    // Subtask 3.3: Subscribe to orderbooks
-    let vest_symbol = bot.pair.to_string(); // e.g., "BTC-PERP"
-    let paradex_symbol = format!(
-        "{}-USD-PERP",
-        bot.pair.to_string().split('-').next().unwrap_or("BTC")
-    ); // e.g., "BTC-USD-PERP"
+    // Resolve exchange-specific symbols from base pair
+    let base = bot.pair.base();
+    let dex_a_symbol = resolve_symbol(&dex_a_name, base);
+    let dex_b_symbol = resolve_symbol(&dex_b_name, base);
 
-    vest_adapter
-        .subscribe_orderbook(&vest_symbol)
+    dex_a_adapter
+        .subscribe_orderbook(&dex_a_symbol)
         .await
-        .expect("Failed to subscribe to Vest orderbook");
-    paradex_adapter
-        .subscribe_orderbook(&paradex_symbol)
+        .unwrap_or_else(|e| panic!("Failed to subscribe to {} orderbook: {}", dex_a_name, e));
+    dex_b_adapter
+        .subscribe_orderbook(&dex_b_symbol)
         .await
-        .expect("Failed to subscribe to Paradex orderbook");
+        .unwrap_or_else(|e| panic!("Failed to subscribe to {} orderbook: {}", dex_b_name, e));
 
-    // Subscribe to Paradex order confirmations via WebSocket
-    paradex_adapter
-        .subscribe_orders(&paradex_symbol)
+    // Subscribe to order confirmations (no-op for exchanges that don't support it)
+    dex_a_adapter
+        .subscribe_orders(&dex_a_symbol)
         .await
-        .expect("Failed to subscribe to Paradex order channel");
+        .unwrap_or_else(|e| warn!(event_type = "SUBSCRIPTION", exchange = %dex_a_name, error = %e, "Order subscription not available"));
+    dex_b_adapter
+        .subscribe_orders(&dex_b_symbol)
+        .await
+        .unwrap_or_else(|e| warn!(event_type = "SUBSCRIPTION", exchange = %dex_b_name, error = %e, "Order subscription not available"));
 
     info!(
         event_type = "SUBSCRIPTION",
-        vest_symbol = %vest_symbol,
-        paradex_symbol = %paradex_symbol,
+        dex_a_symbol = %dex_a_symbol,
+        dex_b_symbol = %dex_b_symbol,
         "Subscribed to orderbooks"
     );
-    info!(
-        event_type = "SUBSCRIPTION",
-        channel = "orders",
-        exchange = "paradex",
-        "Subscribed to order confirmations"
-    );
 
-    // DEBUG: Check current positions at startup to verify entry prices
-    info!(
-        event_type = "STARTUP_CHECK",
-        "Checking current positions at startup..."
-    );
-    if let Ok(Some(vest_pos)) = vest_adapter.get_position(&vest_symbol).await {
-        info!(
-            event_type = "STARTUP_POSITION",
-            exchange = "vest",
-            entry_price = vest_pos.entry_price,
-            side = %vest_pos.side,
-            quantity = vest_pos.quantity,
-            "Vest position found at startup"
-        );
-    } else {
-        info!(
-            event_type = "STARTUP_POSITION",
-            exchange = "vest",
-            "No position"
-        );
-    }
-    if let Ok(Some(paradex_pos)) = paradex_adapter.get_position(&paradex_symbol).await {
-        info!(
-            event_type = "STARTUP_POSITION",
-            exchange = "paradex",
-            entry_price = paradex_pos.entry_price,
-            side = %paradex_pos.side,
-            quantity = paradex_pos.quantity,
-            "Paradex position found at startup"
-        );
-    } else {
-        info!(
-            event_type = "STARTUP_POSITION",
-            exchange = "paradex",
-            "No position"
-        );
+    // Check current positions at startup
+    info!(event_type = "STARTUP_CHECK", "Checking current positions at startup...");
+    for (adapter, name, symbol) in [
+        (&dex_a_adapter as &dyn ExchangeAdapter, dex_a_name.as_str(), dex_a_symbol.as_str()),
+        (&dex_b_adapter as &dyn ExchangeAdapter, dex_b_name.as_str(), dex_b_symbol.as_str()),
+    ] {
+        match adapter.get_position(symbol).await {
+            Ok(Some(pos)) => info!(
+                event_type = "STARTUP_POSITION",
+                exchange = %name,
+                entry_price = pos.entry_price,
+                side = %pos.side,
+                quantity = pos.quantity,
+                "Position found at startup"
+            ),
+            _ => info!(event_type = "STARTUP_POSITION", exchange = %name, "No position"),
+        }
     }
 
-    // Get SharedOrderbooks for lock-free monitoring (NO Mutex!)
-    let vest_shared_orderbooks = vest_adapter.get_shared_orderbooks();
-    let paradex_shared_orderbooks = paradex_adapter.get_shared_orderbooks();
-    // Get AtomicBestPrices for hot-path monitoring (zero lock, zero allocation)
-    let vest_best_prices = vest_adapter.get_shared_best_prices();
-    let paradex_best_prices = paradex_adapter.get_shared_best_prices();
-    // Create shared Notify for event-driven monitoring (Axe 5)
+    // Get shared data from monitoring adapters
+    let dex_a_shared_orderbooks = dex_a_adapter.get_shared_orderbooks();
+    let dex_b_shared_orderbooks = dex_b_adapter.get_shared_orderbooks();
+    let dex_a_best_prices = dex_a_adapter.get_shared_best_prices();
+    let dex_b_best_prices = dex_b_adapter.get_shared_best_prices();
+    // Create shared Notify for event-driven monitoring
     let orderbook_notify: hft_bot::core::OrderbookNotify = Arc::new(tokio::sync::Notify::new());
-    vest_adapter.set_orderbook_notify(orderbook_notify.clone());
-    paradex_adapter.set_orderbook_notify(orderbook_notify.clone());
+    dex_a_adapter.set_orderbook_notify(orderbook_notify.clone());
+    dex_b_adapter.set_orderbook_notify(orderbook_notify.clone());
     info!(
         event_type = "RUNTIME",
         "SharedOrderbooks + AtomicBestPrices + OrderbookNotify configured for event-driven monitoring"
@@ -302,86 +274,62 @@ async fn main() -> anyhow::Result<()> {
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
     // Initialize execution adapters (separate from monitoring adapters)
-    info!(
-        event_type = "ADAPTER_INIT",
-        "Initializing execution adapters"
-    );
+    info!(event_type = "ADAPTER_INIT", "Initializing execution adapters");
 
-    let execution_vest_config =
-        VestConfig::from_env().expect("VEST credentials must be configured for execution adapter");
-    let mut execution_vest = VestAdapter::new(execution_vest_config);
-    execution_vest
+    let mut exec_dex_a = create_adapter(&dex_a_name)
+        .unwrap_or_else(|e| panic!("Failed to create {} execution adapter: {}", dex_a_name, e));
+    // Set USDC rate cache on Paradex execution adapters
+    if let Some(paradex) = exec_dex_a.as_paradex_mut() {
+        paradex.set_usdc_rate_cache(std::sync::Arc::clone(&usdc_rate_cache));
+    }
+    exec_dex_a
         .connect()
         .await
-        .expect("Failed to connect Vest execution adapter");
-    info!(
-        event_type = "CONNECTION",
-        adapter = "vest_execution",
-        "Connected"
-    );
+        .unwrap_or_else(|e| panic!("Failed to connect {} execution adapter: {}", dex_a_name, e));
+    info!(event_type = "CONNECTION", adapter = %format!("{}_execution", dex_a_name), "Connected");
 
-    let execution_paradex_config = ParadexConfig::from_env()
-        .expect("PARADEX credentials must be configured for execution adapter");
-    let mut execution_paradex = ParadexAdapter::new(execution_paradex_config);
-    execution_paradex
+    let mut exec_dex_b = create_adapter(&dex_b_name)
+        .unwrap_or_else(|e| panic!("Failed to create {} execution adapter: {}", dex_b_name, e));
+    if let Some(paradex) = exec_dex_b.as_paradex_mut() {
+        paradex.set_usdc_rate_cache(std::sync::Arc::clone(&usdc_rate_cache));
+    }
+    exec_dex_b
         .connect()
         .await
-        .expect("Failed to connect Paradex execution adapter");
-    info!(
-        event_type = "CONNECTION",
-        adapter = "paradex_execution",
-        "Connected"
-    );
+        .unwrap_or_else(|e| panic!("Failed to connect {} execution adapter: {}", dex_b_name, e));
+    info!(event_type = "CONNECTION", adapter = %format!("{}_execution", dex_b_name), "Connected");
 
     // Set leverage on both execution adapters (from config)
     let target_leverage = bot.leverage as u32;
     info!(event_type = "LEVERAGE_SETUP", leverage = %format!("{}x", target_leverage), "Setting leverage on execution adapters");
 
-    match execution_vest
-        .set_leverage(&vest_symbol, target_leverage)
-        .await
-    {
-        Ok(lev) => info!(
-            event_type = "LEVERAGE_SETUP",
-            exchange = "vest",
-            leverage = lev,
-            "Leverage configured"
-        ),
-        Err(e) => {
-            warn!(event_type = "LEVERAGE_SETUP", exchange = "vest", error = %e, "Failed to set leverage (continuing)")
-        }
-    }
-
-    match execution_paradex
-        .set_leverage(&paradex_symbol, target_leverage)
-        .await
-    {
-        Ok(lev) => info!(
-            event_type = "LEVERAGE_SETUP",
-            exchange = "paradex",
-            leverage = lev,
-            "Leverage configured"
-        ),
-        Err(e) => {
-            warn!(event_type = "LEVERAGE_SETUP", exchange = "paradex", error = %e, "Failed to set leverage (continuing)")
+    for (adapter, name, symbol) in [
+        (&exec_dex_a as &dyn ExchangeAdapter, dex_a_name.as_str(), dex_a_symbol.as_str()),
+        (&exec_dex_b as &dyn ExchangeAdapter, dex_b_name.as_str(), dex_b_symbol.as_str()),
+    ] {
+        match adapter.set_leverage(symbol, target_leverage).await {
+            Ok(lev) => info!(event_type = "LEVERAGE_SETUP", exchange = %name, leverage = lev, "Leverage configured"),
+            Err(e) => warn!(event_type = "LEVERAGE_SETUP", exchange = %name, error = %e, "Failed to set leverage (continuing)"),
         }
     }
 
     let executor = DeltaNeutralExecutor::new(
-        execution_vest,
-        execution_paradex,
+        exec_dex_a,
+        exec_dex_b,
         bot.position_size,
-        vest_symbol.clone(),
-        paradex_symbol.clone(),
+        dex_a_symbol.clone(),
+        dex_b_symbol.clone(),
+        dex_a_name.clone(),
+        dex_b_name.clone(),
     );
 
     // Spawn execution_task (V1: with exit monitoring)
     let execution_shutdown = shutdown_tx.subscribe();
     let exit_spread_target = bot.spread_exit;
-    let exec_vest_best_prices = vest_best_prices.clone();
-    let exec_paradex_best_prices = paradex_best_prices.clone();
-    let exec_vest_symbol = vest_symbol.clone();
-    let exec_paradex_symbol = paradex_symbol.clone();
+    let exec_dex_a_best_prices = dex_a_best_prices.clone();
+    let exec_dex_b_best_prices = dex_b_best_prices.clone();
+    let exec_dex_a_symbol = dex_a_symbol.clone();
+    let exec_dex_b_symbol = dex_b_symbol.clone();
     let exec_tui_state = app_state.clone();
     let exec_orderbook_notify = orderbook_notify.clone();
     let exec_spread_entry = bot.spread_entry;
@@ -391,10 +339,10 @@ async fn main() -> anyhow::Result<()> {
         execution_task(
             opportunity_rx,
             executor,
-            exec_vest_best_prices,
-            exec_paradex_best_prices,
-            exec_vest_symbol,
-            exec_paradex_symbol,
+            exec_dex_a_best_prices,
+            exec_dex_b_best_prices,
+            exec_dex_a_symbol,
+            exec_dex_b_symbol,
             execution_shutdown,
             exit_spread_target,
             exec_tui_state,
@@ -411,10 +359,9 @@ async fn main() -> anyhow::Result<()> {
         "Task spawned (V1 HFT mode with exit monitoring)"
     );
 
-    // Spawn monitoring task (using SharedOrderbooks - NO Mutex!)
-    // watch::Sender is moved directly (no clone — single sender)
-    let monitoring_vest_symbol = vest_symbol.clone();
-    let monitoring_paradex_symbol = paradex_symbol.clone();
+    // Spawn monitoring task
+    let monitoring_dex_a_symbol = dex_a_symbol.clone();
+    let monitoring_dex_b_symbol = dex_b_symbol.clone();
     let monitoring_config = MonitoringConfig {
         pair: Arc::from(bot.pair.to_string().as_str()),
         spread_entry: bot.spread_entry,
@@ -424,13 +371,13 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(async move {
         monitoring_task(
-            vest_best_prices.clone(),
-            paradex_best_prices.clone(),
-            vest_shared_orderbooks.clone(),
-            paradex_shared_orderbooks.clone(),
+            dex_a_best_prices.clone(),
+            dex_b_best_prices.clone(),
+            dex_a_shared_orderbooks.clone(),
+            dex_b_shared_orderbooks.clone(),
             opportunity_tx,
-            monitoring_vest_symbol,
-            monitoring_paradex_symbol,
+            monitoring_dex_a_symbol,
+            monitoring_dex_b_symbol,
             monitoring_config,
             orderbook_notify,
             monitoring_shutdown,
@@ -441,7 +388,7 @@ async fn main() -> anyhow::Result<()> {
         event_type = "RUNTIME",
         task = "monitoring",
         mode = "event-driven",
-        "Task spawned (event-driven, Axe 5)"
+        "Task spawned (event-driven)"
     );
 
     // Spawn TUI render task (if TUI mode enabled)
@@ -449,11 +396,10 @@ async fn main() -> anyhow::Result<()> {
         let tui_state = Arc::clone(state);
         let tui_shutdown = shutdown_tx.subscribe();
         let tui_shutdown_tx = shutdown_tx.clone();
-        // Clone SharedOrderbooks for TUI data feed
-        let tui_vest_orderbooks = vest_adapter.get_shared_orderbooks();
-        let tui_paradex_orderbooks = paradex_adapter.get_shared_orderbooks();
-        let tui_vest_symbol = vest_symbol.clone();
-        let tui_paradex_symbol = paradex_symbol.clone();
+        let tui_dex_a_orderbooks = dex_a_adapter.get_shared_orderbooks();
+        let tui_dex_b_orderbooks = dex_b_adapter.get_shared_orderbooks();
+        let tui_dex_a_symbol = dex_a_symbol.clone();
+        let tui_dex_b_symbol = dex_b_symbol.clone();
 
         tokio::spawn(async move {
             let mut terminal =
@@ -471,38 +417,34 @@ async fn main() -> anyhow::Result<()> {
 
                 // Update AppState with latest orderbook data
                 // Clone data out of each RwLock individually to minimize lock hold time
-                let vest_ob_data = tui_vest_orderbooks
+                let dex_a_ob_data = tui_dex_a_orderbooks
                     .read()
                     .await
-                    .get(&tui_vest_symbol)
+                    .get(&tui_dex_a_symbol)
                     .cloned();
-                let paradex_ob_data = tui_paradex_orderbooks
+                let dex_b_ob_data = tui_dex_b_orderbooks
                     .read()
                     .await
-                    .get(&tui_paradex_symbol)
+                    .get(&tui_dex_b_symbol)
                     .cloned();
 
-                if let (Some(vest_ob), Some(paradex_ob)) = (vest_ob_data, paradex_ob_data) {
+                if let (Some(dex_a_ob), Some(dex_b_ob)) = (dex_a_ob_data, dex_b_ob_data) {
                     if let Ok(mut state) = tui_state.try_lock() {
-                        // Update prices
                         state.update_prices(
-                            vest_ob.best_bid().unwrap_or(0.0),
-                            vest_ob.best_ask().unwrap_or(0.0),
-                            paradex_ob.best_bid().unwrap_or(0.0),
-                            paradex_ob.best_ask().unwrap_or(0.0),
+                            dex_a_ob.best_bid().unwrap_or(0.0),
+                            dex_a_ob.best_ask().unwrap_or(0.0),
+                            dex_b_ob.best_bid().unwrap_or(0.0),
+                            dex_b_ob.best_ask().unwrap_or(0.0),
                         );
-
-                        // Calculate live entry/exit spreads
                         state.update_live_spreads();
 
-                        // Determine best direction for header display
                         let entry_spread = state.live_entry_spread;
-                        let best_dir = if state.vest_best_ask > 0.0 && state.paradex_best_ask > 0.0
+                        let best_dir = if state.dex_a_best_ask > 0.0 && state.dex_b_best_ask > 0.0
                         {
-                            let a_over_b = (state.paradex_best_bid - state.vest_best_ask)
-                                / state.vest_best_ask;
-                            let b_over_a = (state.vest_best_bid - state.paradex_best_ask)
-                                / state.paradex_best_ask;
+                            let a_over_b = (state.dex_b_best_bid - state.dex_a_best_ask)
+                                / state.dex_a_best_ask;
+                            let b_over_a = (state.dex_a_best_bid - state.dex_b_best_ask)
+                                / state.dex_b_best_ask;
                             if a_over_b >= b_over_a {
                                 Some(hft_bot::core::spread::SpreadDirection::AOverB)
                             } else {
@@ -600,11 +542,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Graceful shutdown - disconnect from exchanges
     info!(event_type = "BOT_SHUTDOWN", "Disconnecting from exchanges");
-    vest_adapter.disconnect().await.unwrap_or_else(
-        |e| warn!(event_type = "BOT_SHUTDOWN", error = %e, "Failed to disconnect from Vest"),
+    dex_a_adapter.disconnect().await.unwrap_or_else(
+        |e| warn!(event_type = "BOT_SHUTDOWN", exchange = %dex_a_name, error = %e, "Failed to disconnect"),
     );
-    paradex_adapter.disconnect().await.unwrap_or_else(
-        |e| warn!(event_type = "BOT_SHUTDOWN", error = %e, "Failed to disconnect from Paradex"),
+    dex_b_adapter.disconnect().await.unwrap_or_else(
+        |e| warn!(event_type = "BOT_SHUTDOWN", exchange = %dex_b_name, error = %e, "Failed to disconnect"),
     );
     info!(event_type = "BOT_SHUTDOWN", "Disconnected from exchanges");
 

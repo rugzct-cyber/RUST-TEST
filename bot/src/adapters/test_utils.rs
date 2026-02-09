@@ -153,4 +153,17 @@ impl ExchangeAdapter for TestMockAdapter {
     fn exchange_name(&self) -> &'static str {
         self.name
     }
+
+    fn get_shared_orderbooks(&self) -> crate::core::channels::SharedOrderbooks {
+        // Tests don't use shared orderbooks — return fresh empty one
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
+    }
+
+    fn get_shared_best_prices(&self) -> crate::core::channels::SharedBestPrices {
+        std::sync::Arc::new(crate::core::channels::AtomicBestPrices::new())
+    }
+
+    fn set_orderbook_notify(&mut self, _notify: crate::core::channels::OrderbookNotify) {
+        // No-op for tests
+    }
 }
