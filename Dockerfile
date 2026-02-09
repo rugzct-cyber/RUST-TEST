@@ -12,22 +12,10 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 
 WORKDIR /app
 
-# Copy Cargo manifest (and lock if present) for dependency caching
-COPY bot/Cargo.toml ./
-COPY bot/Cargo.lock* ./
+# Copy entire bot directory (source, benches, bins, config)
+COPY bot/ ./
 
-# Create dummy main.rs to pre-build dependencies
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release 2>/dev/null || true
-
-# Now copy real source code + config
-COPY bot/src ./src
-COPY bot/config.yaml ./config.yaml
-
-# Touch main to force rebuild of our code (not deps)
-RUN touch src/main.rs
-
-# Build the actual binary
+# Build release binary
 RUN cargo build --release
 
 # --- Stage 2: Runtime ---
