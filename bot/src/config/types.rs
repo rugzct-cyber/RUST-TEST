@@ -75,11 +75,16 @@ pub struct BotConfig {
     pub dex_b: Dex,
     /// Spread threshold to enter position (percentage, e.g., 0.30 = 0.30%)
     pub spread_entry: f64,
+    /// Maximum spread for scaling-in layers (percentage, e.g., 0.70 = 0.70%)
+    /// Layers are linearly spaced between spread_entry and spread_entry_max.
+    /// Defaults to spread_entry (single-layer behavior) if not specified.
+    #[serde(default)]
+    pub spread_entry_max: f64,
     /// Spread threshold to exit position (percentage, e.g., 0.05 = 0.05%)
     pub spread_exit: f64,
     /// Leverage multiplier (1-100)
     pub leverage: u8,
-    /// Position size in base asset (e.g., 0.001 BTC)
+    /// Total position size across all scaling layers (e.g., 0.15 ETH)
     pub position_size: f64,
 }
 
@@ -96,6 +101,20 @@ impl BotConfig {
             return Err(AppError::Config(format!(
                 "Bot '{}': spread_entry must be > 0 and < 100% (got {})",
                 self.id, self.spread_entry
+            )));
+        }
+
+        // Rule: spread_entry_max must be >= spread_entry (or 0.0 = unset = default to spread_entry)
+        if self.spread_entry_max != 0.0 && self.spread_entry_max < self.spread_entry {
+            return Err(AppError::Config(format!(
+                "Bot '{}': spread_entry_max ({}) must be >= spread_entry ({})",
+                self.id, self.spread_entry_max, self.spread_entry
+            )));
+        }
+        if self.spread_entry_max >= 100.0 {
+            return Err(AppError::Config(format!(
+                "Bot '{}': spread_entry_max must be < 100% (got {})",
+                self.id, self.spread_entry_max
             )));
         }
 
@@ -139,13 +158,14 @@ impl BotConfig {
 
         // Rule: no NaN or Infinity in numeric fields (YAML allows .nan, .inf)
         if !self.spread_entry.is_finite()
+            || !self.spread_entry_max.is_finite()
             || !self.spread_exit.is_finite()
             || !self.position_size.is_finite()
         {
             return Err(AppError::Config(format!(
-                "Bot '{}': spread_entry, spread_exit and position_size must be finite numbers \
-                 (got entry={}, exit={}, size={})",
-                self.id, self.spread_entry, self.spread_exit, self.position_size
+                "Bot '{}': spread_entry, spread_entry_max, spread_exit and position_size must be finite numbers \
+                 (got entry={}, entry_max={}, exit={}, size={})",
+                self.id, self.spread_entry, self.spread_entry_max, self.spread_exit, self.position_size
             )));
         }
 
@@ -210,6 +230,7 @@ mod tests {
             dex_a: Dex::Vest,
             dex_b: Dex::Paradex,
             spread_entry: 0.30,
+            spread_entry_max: 0.70,
             spread_exit: 0.05,
             leverage: 10,
             position_size: 0.001,
@@ -430,6 +451,7 @@ bots:
     fn test_spread_thresholds_at_boundaries() {
         let mut bot = create_valid_bot_config();
         bot.spread_entry = 99.99; // Just below 100%
+        bot.spread_entry_max = 99.99; // Must be >= spread_entry
         bot.spread_exit = 0.01; // Just above 0%
 
         let result = bot.validate();

@@ -1,12 +1,13 @@
 bots:
   - id: main_bot
-    pair: ETH-PERP      # Options: BTC-PERP, ETH-PERP, SOL-PERP
+    pair: BTC-PERP      # Options: BTC-PERP, ETH-PERP, SOL-PERP
     dex_a: vest
     dex_b: paradex
-    spread_entry: 0.25
-    spread_exit: -0.21
+    spread_entry: 0.17
+    spread_entry_max: 0.35  # Scaling layers linearly spaced 0.25%..0.70%
+    spread_exit: -0.03
     leverage: 50
-    position_size: 0.15  # BTC: 0.02 | ETH: 0.1 | SOL: 1.0
+    position_size: 0.02  # BTC: 0.02 | ETH: 0.1 | SOL: 1.0
 
 api:
   port: 8080

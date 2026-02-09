@@ -384,6 +384,9 @@ async fn main() -> anyhow::Result<()> {
     let exec_paradex_symbol = paradex_symbol.clone();
     let exec_tui_state = app_state.clone();
     let exec_orderbook_notify = orderbook_notify.clone();
+    let exec_spread_entry = bot.spread_entry;
+    let exec_spread_entry_max = bot.spread_entry_max;
+    let exec_position_size = bot.position_size;
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
@@ -396,6 +399,9 @@ async fn main() -> anyhow::Result<()> {
             exit_spread_target,
             exec_tui_state,
             exec_orderbook_notify,
+            exec_spread_entry,
+            exec_spread_entry_max,
+            exec_position_size,
         )
         .await;
     });

@@ -364,6 +364,12 @@ where
         self.default_quantity
     }
 
+    /// Update the stored quantity (used after scaling layers fill)
+    /// This ensures close_position uses the correct total filled size.
+    pub fn set_quantity(&mut self, qty: f64) {
+        self.default_quantity = qty;
+    }
+
     /// Test helper: simulate an open position so close_position can work
     #[cfg(test)]
     pub fn simulate_open_position(&self, direction: SpreadDirection) {
@@ -595,6 +601,162 @@ where
             // Reset position guard so bot can continue trading
             self.position_open.store(false, Ordering::SeqCst);
             self.entry_direction.store(0, Ordering::SeqCst);
+        }
+
+        Ok(partial_result)
+    }
+
+    /// Execute delta-neutral trade with explicit quantity (for scaling layers)
+    ///
+    /// Same as `execute_delta_neutral` but uses the provided quantity instead
+    /// of `self.default_quantity`. The position_open guard is NOT checked here
+    /// because the runtime manages layer-level state. The caller must ensure
+    /// this is only called as part of an active scaling-in sequence.
+    pub async fn execute_delta_neutral_with_quantity(
+        &mut self,
+        opportunity: SpreadOpportunity,
+        quantity: f64,
+        layer_index: usize,
+        is_first_layer: bool,
+    ) -> ExchangeResult<DeltaNeutralResult> {
+        // For the first layer, use the normal atomic guard
+        if is_first_layer {
+            if self
+                .position_open
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                debug!(
+                    event_type = "TRADE_SKIPPED",
+                    reason = "position_already_open",
+                    "Position already open - skipping entry"
+                );
+                return Err(ExchangeError::OrderRejected("Position already open".into()));
+            }
+        } else {
+            // Subsequent layers: verify position IS open
+            if !self.position_open.load(Ordering::SeqCst) {
+                return Err(ExchangeError::OrderRejected(
+                    "No position open for layer add-on".into(),
+                ));
+            }
+        }
+
+        log_system_event(&SystemEvent::trade_started());
+        info!(
+            event_type = "LAYER_ENTRY",
+            layer = layer_index,
+            quantity = %format!("{:.6}", quantity),
+            spread = %format_pct(opportunity.spread_percent),
+            "Entering scaling layer"
+        );
+        let mut timings = TradeTimings::new();
+
+        let (long_exchange, short_exchange) = opportunity.direction.to_exchanges();
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let long_order_id = format!("dn-L{}-long-{}", layer_index, timestamp);
+        let short_order_id = format!("dn-L{}-short-{}", layer_index, timestamp);
+
+        let (vest_order, paradex_order) = self.create_orders_with_quantity(
+            &opportunity,
+            long_exchange,
+            &long_order_id,
+            &short_order_id,
+            quantity,
+        )?;
+
+        timings.mark_signal_received();
+        timings.mark_order_sent();
+
+        let (vest_result, paradex_result) = tokio::join!(
+            self.vest_adapter.place_order(vest_order),
+            self.paradex_adapter.place_order(paradex_order)
+        );
+
+        timings.mark_order_confirmed();
+        let execution_latency_ms = timings.total_latency_ms();
+
+        let (long_status, short_status) = if long_exchange == "vest" {
+            (
+                result_to_leg_status(vest_result, "vest"),
+                result_to_leg_status(paradex_result, "paradex"),
+            )
+        } else {
+            (
+                result_to_leg_status(paradex_result, "paradex"),
+                result_to_leg_status(vest_result, "vest"),
+            )
+        };
+
+        let success = long_status.is_success() && short_status.is_success();
+
+        let vest_fill_price = if long_exchange == "vest" {
+            match &long_status {
+                LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+                _ => 0.0,
+            }
+        } else {
+            match &short_status {
+                LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+                _ => 0.0,
+            }
+        };
+        let paradex_fill_price = if long_exchange == "paradex" {
+            match &long_status {
+                LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+                _ => 0.0,
+            }
+        } else {
+            match &short_status {
+                LegStatus::Success(resp) => resp.avg_price.unwrap_or(0.0),
+                _ => 0.0,
+            }
+        };
+
+        let partial_result = DeltaNeutralResult {
+            long_order: long_status.clone(),
+            short_order: short_status.clone(),
+            execution_latency_ms,
+            success,
+            spread_percent: opportunity.spread_percent,
+            long_exchange: long_exchange.to_string(),
+            short_exchange: short_exchange.to_string(),
+            vest_fill_price,
+            paradex_fill_price,
+            vest_realized_pnl: None,
+            paradex_realized_pnl: None,
+            timings: Some(timings),
+        };
+
+        if success {
+            self.entry_direction
+                .store(opportunity.direction.to_u8(), Ordering::SeqCst);
+            info!(
+                event_type = "LAYER_FILLED",
+                layer = layer_index,
+                quantity = %format!("{:.6}", quantity),
+                latency_ms = execution_latency_ms,
+                "Layer filled successfully"
+            );
+        } else {
+            warn!(
+                event_type = "LAYER_FAILED",
+                layer = layer_index,
+                spread = %format_pct(opportunity.spread_percent),
+                latency_ms = execution_latency_ms,
+                "Layer entry failed"
+            );
+            // If first layer failed, reset position guard
+            if is_first_layer {
+                self.position_open.store(false, Ordering::SeqCst);
+                self.entry_direction.store(0, Ordering::SeqCst);
+            }
+            // Note: for subsequent layer failures, we keep the position open
+            // since earlier layers are already filled
         }
 
         Ok(partial_result)
@@ -924,7 +1086,24 @@ where
         long_order_id: &str,
         short_order_id: &str,
     ) -> Result<(OrderRequest, OrderRequest), ExchangeError> {
-        let quantity = self.default_quantity;
+        self.create_orders_with_quantity(
+            opportunity,
+            long_exchange,
+            long_order_id,
+            short_order_id,
+            self.default_quantity,
+        )
+    }
+
+    /// Create order requests with explicit quantity (for scaling layers)
+    fn create_orders_with_quantity(
+        &self,
+        opportunity: &SpreadOpportunity,
+        long_exchange: &str,
+        long_order_id: &str,
+        short_order_id: &str,
+        quantity: f64,
+    ) -> Result<(OrderRequest, OrderRequest), ExchangeError> {
 
         // Vest order
         let vest_side = if long_exchange == "vest" {

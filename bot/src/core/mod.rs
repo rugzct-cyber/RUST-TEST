@@ -23,6 +23,7 @@ pub mod execution;
 pub mod monitoring;
 pub mod pyth;
 pub mod runtime;
+pub mod scaling;
 pub mod spread;
 
 // Explicit re-exports for spread module (SpreadMonitor, SpreadTick, SpreadThresholds removed - unused)
