@@ -124,15 +124,24 @@ pub async fn execution_task<V, P>(
     // POSITION RECOVERY: Check for existing positions before entering main loop
     // =========================================================================
     let mut recovered = false;
-    if let Some((direction, quantity)) = executor.recover_position().await {
+    if let Some((direction, quantity, vest_entry, paradex_entry)) = executor.recover_position().await {
         // We have an existing position — jump directly to hybrid monitoring
         let filled_layers = layers.len(); // assume all layers filled (recovery = full position)
+
+        // Calculate approximate entry spread from recovered entry prices
+        let entry_spread = if vest_entry > 0.0 && paradex_entry > 0.0 {
+            match direction {
+                SpreadDirection::AOverB => ((paradex_entry - vest_entry) / vest_entry) * 100.0,
+                SpreadDirection::BOverA => ((vest_entry - paradex_entry) / paradex_entry) * 100.0,
+            }
+        } else {
+            0.0
+        };
 
         // Update TUI with recovered position
         if let Some(ref tui) = tui_state {
             if let Ok(mut state) = tui.lock() {
-                // Use 0.0 for entry spread since we don't know the original
-                state.record_entry(0.0, direction, 0.0, 0.0);
+                state.record_entry(entry_spread, direction, vest_entry, paradex_entry);
             }
         }
 

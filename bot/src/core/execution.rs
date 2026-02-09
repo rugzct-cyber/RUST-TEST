@@ -389,8 +389,8 @@ where
     /// If positions are found on both exchanges, determines the SpreadDirection
     /// and sets internal state so the bot can resume exit monitoring.
     ///
-    /// Returns `Some((direction, quantity))` if a position was recovered, `None` otherwise.
-    pub async fn recover_position(&mut self) -> Option<(SpreadDirection, f64)> {
+    /// Returns `Some((direction, quantity, vest_entry_price, paradex_entry_price))` if recovered.
+    pub async fn recover_position(&mut self) -> Option<(SpreadDirection, f64, f64, f64)> {
         tracing::info!(
             event_type = "POSITION_RECOVERY",
             vest_symbol = %self.vest_symbol,
@@ -494,7 +494,7 @@ where
             "✅ Position recovered — will resume exit monitoring"
         );
 
-        Some((direction, quantity))
+        Some((direction, quantity, vest_position.entry_price, paradex_position.entry_price))
     }
 
     /// Execute delta-neutral trade based on spread opportunity
