@@ -120,6 +120,173 @@ pub async fn execution_task<V, P>(
     // Track execution statistics
     let mut execution_count: u64 = 0;
 
+    // =========================================================================
+    // POSITION RECOVERY: Check for existing positions before entering main loop
+    // =========================================================================
+    let mut recovered = false;
+    if let Some((direction, quantity)) = executor.recover_position().await {
+        // We have an existing position — jump directly to hybrid monitoring
+        let filled_layers = layers.len(); // assume all layers filled (recovery = full position)
+
+        // Update TUI with recovered position
+        if let Some(ref tui) = tui_state {
+            if let Ok(mut state) = tui.lock() {
+                // Use 0.0 for entry spread since we don't know the original
+                state.record_entry(0.0, direction, 0.0, 0.0);
+            }
+        }
+
+        // === HYBRID MONITORING LOOP (recovered) ===
+        let mut poll_count: u64 = 0;
+        let mut last_jwt_refresh = std::time::Instant::now();
+        let mut exit_result_final: Option<ExitResult> = None;
+        let mut shutdown_triggered = false;
+
+        tracing::info!(
+            event_type = "RECOVERY_MONITORING",
+            direction = ?direction,
+            quantity = %format!("{:.6}", quantity),
+            exit_target = %format_pct(exit_spread_target),
+            "Starting exit monitoring for recovered position"
+        );
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    log_system_event(&SystemEvent::task_shutdown("hybrid_monitoring", "shutdown_signal"));
+                    shutdown_triggered = true;
+                    break;
+                }
+                _ = tokio::time::timeout(
+                    Duration::from_millis(EXIT_NOTIFY_TIMEOUT_MS),
+                    orderbook_notify.notified()
+                ) => {
+                    poll_count += 1;
+
+                    // JWT refresh every ~2 min
+                    const JWT_REFRESH_INTERVAL_SECS: u64 = 120;
+                    if last_jwt_refresh.elapsed().as_secs() >= JWT_REFRESH_INTERVAL_SECS {
+                        last_jwt_refresh = std::time::Instant::now();
+                        if let Err(e) = executor.ensure_ready().await {
+                            warn!(event_type = "JWT_REFRESH_FAILED", error = %e, "Adapter refresh failed");
+                        }
+                    }
+
+                    // Read live prices
+                    let (vest_bid, vest_ask) = vest_best_prices.load();
+                    let (paradex_bid, paradex_ask) = paradex_best_prices.load();
+
+                    if vest_bid == 0.0 || paradex_bid == 0.0 {
+                        if poll_count % LOG_THROTTLE_POLLS == 0 {
+                            debug!(event_type = "EXIT_CHECK", "Waiting for orderbook data...");
+                        }
+                        continue;
+                    }
+
+                    // Calculate exit spread
+                    let exit_spread = match direction {
+                        SpreadDirection::AOverB => {
+                            SpreadCalculator::calculate_exit_spread(vest_bid, paradex_ask)
+                        }
+                        SpreadDirection::BOverA => {
+                            SpreadCalculator::calculate_exit_spread(paradex_bid, vest_ask)
+                        }
+                    };
+
+                    // Update TUI live exit spread
+                    if let Some(ref tui) = tui_state {
+                        if let Ok(mut state) = tui.lock() {
+                            state.live_exit_spread = exit_spread;
+                            state.position_polls += 1;
+                        }
+                    }
+
+                    // Check exit condition
+                    if exit_spread >= exit_spread_target {
+                        tracing::info!(
+                            event_type = "EXIT_TRIGGERED",
+                            exit_spread = %format!("{:.4}", exit_spread),
+                            target = %format!("{:.4}", exit_spread_target),
+                            "Exit condition met for recovered position"
+                        );
+
+                        let close_start = std::time::Instant::now();
+
+                        loop {
+                            match executor.close_position(exit_spread, vest_bid, vest_ask, paradex_bid, paradex_ask).await {
+                                Ok(close_result) => {
+                                    let execution_latency_ms = close_start.elapsed().as_millis() as u64;
+                                    let closed_event = TradingEvent::position_closed(
+                                        "recovered", 0.0, exit_spread, 0.0,
+                                    );
+                                    log_event(&closed_event);
+
+                                    exit_result_final = Some(ExitResult {
+                                        exit_spread,
+                                        vest_exit_price: close_result.vest_fill_price,
+                                        paradex_exit_price: close_result.paradex_fill_price,
+                                        vest_realized_pnl: close_result.vest_realized_pnl,
+                                        paradex_realized_pnl: close_result.paradex_realized_pnl,
+                                        execution_latency_ms,
+                                    });
+                                    break;
+                                }
+                                Err(e) => {
+                                    error!(event_type = "CLOSE_FAILED", error = ?e, "Close failed, retrying...");
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    continue;
+                                }
+                            }
+                        }
+                        break; // Exit the monitoring loop
+                    }
+
+                    // Near-exit debug log (throttled)
+                    if exit_spread >= exit_spread_target - 0.02 && poll_count % LOG_THROTTLE_POLLS == 0 {
+                        debug!(
+                            event_type = "EXIT_CHECK",
+                            exit_spread = %format!("{:.4}", exit_spread),
+                            target = %format!("{:.4}", exit_spread_target),
+                            "Near exit threshold (recovered)"
+                        );
+                    }
+                }
+            }
+        }
+
+        if shutdown_triggered {
+            return;
+        }
+
+        log_system_event(&SystemEvent::task_stopped("hybrid_monitoring"));
+
+        // Update TUI trade history
+        if let (Some(exit_result), Some(ref tui)) = (exit_result_final, &tui_state) {
+            if let Ok(mut state) = tui.lock() {
+                let vest_rpnl = exit_result.vest_realized_pnl;
+                let paradex_rpnl = exit_result.paradex_realized_pnl;
+                let pnl_usd = if vest_rpnl.is_some() || paradex_rpnl.is_some() {
+                    let total = vest_rpnl.unwrap_or(0.0) + paradex_rpnl.unwrap_or(0.0);
+                    tracing::info!(
+                        event_type = "PNL_FROM_EXCHANGE",
+                        vest_realized_pnl = ?vest_rpnl,
+                        paradex_realized_pnl = ?paradex_rpnl,
+                        total_pnl = %format!("{:.6}", total),
+                        "PnL from exchange-reported realized PnL (recovered)"
+                    );
+                    total
+                } else {
+                    tracing::warn!(event_type = "PNL_UNAVAILABLE", "No realized PnL returned");
+                    0.0
+                };
+                state.record_exit(exit_result.exit_spread, pnl_usd, exit_result.execution_latency_ms, exit_result.vest_exit_price, exit_result.paradex_exit_price);
+            }
+        }
+
+        recovered = true;
+        tracing::info!(event_type = "RECOVERY_COMPLETE", "Recovered position closed — resuming normal operation");
+    }
+
     loop {
         tokio::select! {
             // Shutdown takes priority

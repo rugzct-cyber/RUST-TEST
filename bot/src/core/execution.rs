@@ -370,12 +370,131 @@ where
         self.default_quantity = qty;
     }
 
-    /// Test helper: simulate an open position so close_position can work
-    #[cfg(test)]
-    pub fn simulate_open_position(&self, direction: SpreadDirection) {
+    /// Mark an open position in executor state (used by recovery and tests)
+    pub fn mark_position_open(&self, direction: SpreadDirection) {
         self.position_open.store(true, Ordering::SeqCst);
         self.entry_direction
             .store(direction.to_u8(), Ordering::SeqCst);
+    }
+
+    /// Test helper alias
+    #[cfg(test)]
+    pub fn simulate_open_position(&self, direction: SpreadDirection) {
+        self.mark_position_open(direction);
+    }
+
+    /// Recover an existing position from exchange state at startup.
+    ///
+    /// Queries both Vest and Paradex for open positions on the configured symbols.
+    /// If positions are found on both exchanges, determines the SpreadDirection
+    /// and sets internal state so the bot can resume exit monitoring.
+    ///
+    /// Returns `Some((direction, quantity))` if a position was recovered, `None` otherwise.
+    pub async fn recover_position(&mut self) -> Option<(SpreadDirection, f64)> {
+        tracing::info!(
+            event_type = "POSITION_RECOVERY",
+            vest_symbol = %self.vest_symbol,
+            paradex_symbol = %self.paradex_symbol,
+            "Checking for existing positions on startup..."
+        );
+
+        let (vest_pos, paradex_pos) = tokio::join!(
+            self.vest_adapter.get_position(&self.vest_symbol),
+            self.paradex_adapter.get_position(&self.paradex_symbol)
+        );
+
+        let vest_position = match vest_pos {
+            Ok(Some(pos)) => {
+                tracing::info!(
+                    event_type = "POSITION_RECOVERY",
+                    exchange = "vest",
+                    side = %pos.side,
+                    quantity = %format!("{:.6}", pos.quantity),
+                    entry_price = %format!("{:.2}", pos.entry_price),
+                    "Found existing Vest position"
+                );
+                pos
+            }
+            Ok(None) => {
+                tracing::info!(
+                    event_type = "POSITION_RECOVERY",
+                    "No existing positions found — starting fresh"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    event_type = "POSITION_RECOVERY",
+                    error = %e,
+                    "Failed to query Vest position — starting fresh"
+                );
+                return None;
+            }
+        };
+
+        let paradex_position = match paradex_pos {
+            Ok(Some(pos)) => {
+                tracing::info!(
+                    event_type = "POSITION_RECOVERY",
+                    exchange = "paradex",
+                    side = %pos.side,
+                    quantity = %format!("{:.6}", pos.quantity),
+                    entry_price = %format!("{:.2}", pos.entry_price),
+                    "Found existing Paradex position"
+                );
+                pos
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    event_type = "POSITION_RECOVERY",
+                    "Vest has position but Paradex does not — ORPHANED position!"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    event_type = "POSITION_RECOVERY",
+                    error = %e,
+                    "Failed to query Paradex position — starting fresh"
+                );
+                return None;
+            }
+        };
+
+        // Determine direction from position sides
+        // AOverB: vest=long, paradex=short (vest price > paradex)
+        // BOverA: vest=short, paradex=long (paradex price > vest)
+        let direction = if vest_position.side == "long" && paradex_position.side == "short" {
+            SpreadDirection::AOverB
+        } else if vest_position.side == "short" && paradex_position.side == "long" {
+            SpreadDirection::BOverA
+        } else {
+            tracing::error!(
+                event_type = "POSITION_RECOVERY",
+                vest_side = %vest_position.side,
+                paradex_side = %paradex_position.side,
+                "Unexpected position sides — both same direction? Cannot recover"
+            );
+            return None;
+        };
+
+        // Use the larger quantity (should be equal, but be safe)
+        let quantity = vest_position.quantity.max(paradex_position.quantity);
+
+        // Set executor state
+        self.mark_position_open(direction);
+        self.set_quantity(quantity);
+
+        tracing::info!(
+            event_type = "POSITION_RECOVERY",
+            direction = ?direction,
+            quantity = %format!("{:.6}", quantity),
+            vest_entry = %format!("{:.2}", vest_position.entry_price),
+            paradex_entry = %format!("{:.2}", paradex_position.entry_price),
+            "✅ Position recovered — will resume exit monitoring"
+        );
+
+        Some((direction, quantity))
     }
 
     /// Execute delta-neutral trade based on spread opportunity
