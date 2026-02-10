@@ -192,21 +192,21 @@ pub fn create_adapter(name: &str) -> ExchangeResult<AnyAdapter> {
 /// For example, BTC perpetuals:
 /// - Vest: "BTC-PERP"
 /// - Paradex: "BTC-USD-PERP"
-/// - Lighter: "BTCUSDC" (or as configured)
+/// - Lighter: "BTC" (symbol from API)
 pub fn resolve_symbol(exchange: &str, pair: &str) -> String {
     match (exchange, pair) {
         // BTC perpetuals
         ("vest", "BTC") => "BTC-PERP".to_string(),
         ("paradex", "BTC") => "BTC-USD-PERP".to_string(),
-        ("lighter", "BTC") => "BTCUSDC".to_string(),
+        ("lighter", "BTC") => "BTC".to_string(),
         // ETH perpetuals
         ("vest", "ETH") => "ETH-PERP".to_string(),
         ("paradex", "ETH") => "ETH-USD-PERP".to_string(),
-        ("lighter", "ETH") => "ETHUSDC".to_string(),
+        ("lighter", "ETH") => "ETH".to_string(),
         // SOL perpetuals
         ("vest", "SOL") => "SOL-PERP".to_string(),
         ("paradex", "SOL") => "SOL-USD-PERP".to_string(),
-        ("lighter", "SOL") => "SOLUSDC".to_string(),
+        ("lighter", "SOL") => "SOL".to_string(),
         // Fallback: use pair as-is (allows overriding via config)
         _ => pair.to_string(),
     }

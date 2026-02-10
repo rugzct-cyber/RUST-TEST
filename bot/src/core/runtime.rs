@@ -36,9 +36,10 @@ use crate::core::channels::OrderbookNotify;
 const EXIT_NOTIFY_TIMEOUT_MS: u64 = 100;
 
 /// Delay between position verification retries (milliseconds)
-const API_SETTLE_DELAY_MS: u64 = 200;
+/// Set to 500ms to allow Lighter WS fire-and-forget orders to settle
+const API_SETTLE_DELAY_MS: u64 = 500;
 /// Maximum retries for position verification after trade entry
-const VERIFY_POSITION_RETRIES: u32 = 3;
+const VERIFY_POSITION_RETRIES: u32 = 4;
 
 /// Log throttle — imported from channels (single source of truth)
 use super::channels::LOG_THROTTLE_POLLS;
@@ -123,7 +124,6 @@ pub async fn execution_task<V, P>(
     // =========================================================================
     // POSITION RECOVERY: Check for existing positions before entering main loop
     // =========================================================================
-    let mut _recovered = false;
     if let Some((direction, quantity, entry_a, entry_b)) = executor.recover_position().await {
         // We have an existing position — jump directly to hybrid monitoring
         let _filled_layers = layers.len(); // assume all layers filled (recovery = full position)
@@ -292,7 +292,6 @@ pub async fn execution_task<V, P>(
             }
         }
 
-        _recovered = true;
         tracing::info!(event_type = "RECOVERY_COMPLETE", "Recovered position closed — resuming normal operation");
     }
 
@@ -402,8 +401,9 @@ pub async fn execution_task<V, P>(
                 for attempt in 0..VERIFY_POSITION_RETRIES {
                     tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
                     let (v, p) = executor.verify_positions(spread_pct, exit_spread_target).await;
-                    if vest_entry.is_none() { vest_entry = v; }
-                    if paradex_entry.is_none() { paradex_entry = p; }
+                    // Treat entry_price == 0.0 as not-yet-propagated (Lighter returns 0 before settlement)
+                    if vest_entry.is_none() { vest_entry = v.filter(|&price| price > 0.0); }
+                    if paradex_entry.is_none() { paradex_entry = p.filter(|&price| price > 0.0); }
                     if vest_entry.is_some() && paradex_entry.is_some() {
                         break;
                     }
@@ -627,9 +627,16 @@ pub async fn execution_task<V, P>(
                                                     "Deeper layer filled"
                                                 );
 
-                                                // Re-query exchange positions for updated average entry prices
-                                                tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
-                                                let (v_entry, p_entry) = executor.verify_positions(entry_spread_live, exit_spread_target).await;
+                                                // Re-query exchange positions for updated average entry prices (with retry)
+                                                let mut v_entry = None;
+                                                let mut p_entry = None;
+                                                for _retry in 0..VERIFY_POSITION_RETRIES {
+                                                    tokio::time::sleep(tokio::time::Duration::from_millis(API_SETTLE_DELAY_MS)).await;
+                                                    let (v, p) = executor.verify_positions(entry_spread_live, exit_spread_target).await;
+                                                    if v_entry.is_none() { v_entry = v.filter(|&price| price > 0.0); }
+                                                    if p_entry.is_none() { p_entry = p.filter(|&price| price > 0.0); }
+                                                    if v_entry.is_some() && p_entry.is_some() { break; }
+                                                }
 
                                                 // Update TUI with new average entry prices
                                                 if let Some(ref tui) = tui_state {

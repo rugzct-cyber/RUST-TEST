@@ -62,9 +62,9 @@ impl LighterSigner {
         self.nonce.store(nonce, Ordering::SeqCst);
     }
 
-    /// Get and increment nonce
+    /// Get and increment nonce (returns current, stores current+1 for next call)
     pub fn next_nonce(&self) -> i64 {
-        self.nonce.fetch_add(1, Ordering::SeqCst) + 1
+        self.nonce.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Rollback nonce after failure
@@ -81,7 +81,7 @@ impl LighterSigner {
         self.nonce.load(Ordering::SeqCst) >= 0
     }
 
-    /// Get current timestamp in milliseconds
+    /// Get current timestamp in milliseconds (Lighter transactions use ms epoch)
     fn now_ms() -> ExchangeResult<i64> {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

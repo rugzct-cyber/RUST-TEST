@@ -91,32 +91,33 @@ impl LighterOrderbookResponse {
 // =============================================================================
 
 /// Response from Lighter's positions endpoint
+/// Ref: https://apidocs.lighter.xyz/docs/websocket-reference#position-json
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct LighterPositionData {
     pub market_id: Option<u8>,
-    pub size: Option<String>,
-    pub side: Option<String>,
-    #[serde(rename = "entry_price")]
-    pub entry_price: Option<String>,
-    #[serde(rename = "mark_price")]
-    pub mark_price: Option<String>,
+    /// Position size as string (was incorrectly "size" — actual API field is "position")
+    pub position: Option<String>,
+    /// 1 = long, -1 = short (was incorrectly "side" as string)
+    pub sign: Option<i8>,
+    /// Average entry price (was incorrectly "entry_price")
+    #[serde(rename = "avg_entry_price")]
+    pub avg_entry_price: Option<String>,
+    #[serde(rename = "position_value")]
+    pub position_value: Option<String>,
     #[serde(rename = "unrealized_pnl")]
     pub unrealized_pnl: Option<String>,
+    #[serde(rename = "realized_pnl")]
+    pub realized_pnl: Option<String>,
+    #[serde(rename = "liquidation_price")]
+    pub liquidation_price: Option<String>,
 }
 
 // =============================================================================
 // Order Response Parsing
 // =============================================================================
 
-/// Response from sendTx endpoint
-#[derive(Debug, Deserialize)]
-pub struct LighterSendTxResponse {
-    #[allow(dead_code)]
-    pub success: Option<bool>,
-    pub error: Option<String>,
-    #[serde(rename = "order_index")]
-    pub order_index: Option<i64>,
-}
+
 
 // =============================================================================
 // Nonce Response

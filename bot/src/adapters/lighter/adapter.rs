@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::protocol::Message,
@@ -27,7 +27,7 @@ use crate::core::channels::{AtomicBestPrices, OrderbookNotify, SharedBestPrices,
 use super::config::LighterConfig;
 use super::signing::LighterSigner;
 use super::types::{
-    LighterPositionData, LighterSendTxResponse,
+    LighterPositionData,
     MarketMapping, normalize_symbol_to_lighter,
 };
 
@@ -60,8 +60,8 @@ pub struct LighterAdapter {
     signer: LighterSigner,
     /// HTTP client for REST API calls
     http: reqwest::Client,
-    /// WebSocket write half (for sending subscribe/unsubscribe)
-    ws_sink: Option<WsSink>,
+    /// WebSocket write half (Mutex-wrapped for shared &self access from place_order/cancel_order)
+    ws_sink: Arc<Mutex<Option<WsSink>>>,
     /// Connection health tracking
     health: ConnectionHealth,
     /// Subscribed symbols mapping: symbol → market_id
@@ -99,7 +99,7 @@ impl LighterAdapter {
             config,
             signer,
             http,
-            ws_sink: None,
+            ws_sink: Arc::new(Mutex::new(None)),
             health,
             subscriptions: HashMap::new(),
             market_info: HashMap::new(),
@@ -239,23 +239,58 @@ impl LighterAdapter {
         }
     }
 
-    /// Convert floating-point quantity to Lighter integer representation
+    /// Convert floating-point quantity to Lighter integer representation.
+    ///
+    /// IMPORTANT: We must truncate to the coarser precision first (Vest's) so that
+    /// both exchanges trade exactly the same quantity.  Vest formats BTC at 4 dp,
+    /// ETH at 3 dp, SOL at 2 dp — if we skip this step, Lighter's finer precision
+    /// (BTC=5dp) can produce a different rounded value.
     fn quantity_to_int(&self, symbol: &str, quantity: f64) -> i64 {
+        // Step 1: truncate to the coarser exchange precision (Vest's rounding)
+        let coarse_decimals: u32 = if symbol.starts_with("BTC") {
+            4
+        } else if symbol.starts_with("ETH") {
+            3
+        } else {
+            2 // SOL and others
+        };
+        let coarse_factor = 10f64.powi(coarse_decimals as i32);
+        let truncated_qty = (quantity * coarse_factor).round() / coarse_factor;
+
+        // Step 2: convert to Lighter integer using its own size_precision
         if let Some(info) = self.market_info.get(symbol) {
             let factor = 10f64.powi(info.size_precision as i32);
-            (quantity * factor).round() as i64
+            let result = (truncated_qty * factor).round() as i64;
+            tracing::info!(
+                exchange = "lighter",
+                symbol = %symbol,
+                raw_qty = %format!("{:.8}", quantity),
+                truncated_qty = %format!("{:.8}", truncated_qty),
+                size_precision = info.size_precision,
+                base_amount = result,
+                "quantity_to_int conversion (coarse-aligned)"
+            );
+            result
         } else {
-            // Fallback: assume 3 decimal places
-            (quantity * 1000.0).round() as i64
+            let result = (truncated_qty * 1000.0).round() as i64;
+            tracing::warn!(
+                exchange = "lighter",
+                symbol = %symbol,
+                raw_qty = %format!("{:.8}", quantity),
+                base_amount = result,
+                "quantity_to_int FALLBACK (symbol not in market_info!)"
+            );
+            result
         }
     }
 
     /// Map our TimeInForce to the Lighter integer value
+    /// Lighter SDK: IOC=0, GoodTillTime=1, PostOnly=2
     fn tif_to_lighter(tif: &TimeInForce) -> u8 {
         match tif {
-            TimeInForce::Ioc => 2, // IOC
+            TimeInForce::Ioc => 0, // ImmediateOrCancel
             TimeInForce::Gtc => 1, // GoodTillTime
-            TimeInForce::Fok => 3, // FillOrKill
+            TimeInForce::Fok => 0, // FillOrKill → treated as IOC
         }
     }
 
@@ -274,6 +309,7 @@ impl LighterAdapter {
         let reader_alive = Arc::clone(&self.health.reader_alive);
         let notify = self.orderbook_notify.clone();
         let market_info = self.market_info.clone();
+        let ws_sink = Arc::clone(&self.ws_sink);
 
         reader_alive.store(true, Ordering::SeqCst);
 
@@ -286,6 +322,7 @@ impl LighterAdapter {
                 last_data,
                 reader_alive,
                 market_info,
+                ws_sink,
             )
             .await;
         });
@@ -304,6 +341,7 @@ impl LighterAdapter {
         last_data: Arc<AtomicU64>,
         reader_alive: Arc<std::sync::atomic::AtomicBool>,
         market_info: HashMap<String, MarketMapping>,
+        ws_sink: Arc<Mutex<Option<WsSink>>>,
     ) {
         // Build reverse mapping: market_id → symbol
         let id_to_symbol: HashMap<u8, String> = market_info
@@ -322,42 +360,98 @@ impl LighterAdapter {
 
                     // Parse the WS message
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                        // Check for orderbook updates
-                        if let Some(channel) = val["channel"].as_str() {
-                            if channel == "orderbookdepth" || channel == "orderbook" {
-                                if let Some(data) = val.get("data") {
-                                    let market_id = data["market_id"]
-                                        .as_u64()
-                                        .or_else(|| data["market_id"].as_str().and_then(|s| s.parse().ok()))
-                                        .unwrap_or(0) as u8;
+                        let msg_type = val["type"].as_str().unwrap_or("");
 
-                                    if let Some(symbol) = id_to_symbol.get(&market_id) {
-                                        // Parse bids and asks
-                                        let parse_side = |key: &str| -> Vec<OrderbookLevel> {
-                                            data[key]
-                                                .as_array()
-                                                .map(|arr| {
-                                                    arr.iter()
-                                                        .filter_map(|level| {
-                                                            let price = level[0]
-                                                                .as_str()
-                                                                .and_then(|s| s.parse::<f64>().ok())
-                                                                .or_else(|| level[0].as_f64())?;
-                                                            let qty = level[1]
-                                                                .as_str()
-                                                                .and_then(|s| s.parse::<f64>().ok())
-                                                                .or_else(|| level[1].as_f64())?;
-                                                            Some(OrderbookLevel::new(price, qty))
-                                                        })
-                                                        .take(MAX_ORDERBOOK_DEPTH)
-                                                        .collect()
-                                                })
-                                                .unwrap_or_default()
+                        // Handle app-level ping/pong (Lighter sends {"type":"ping"})
+                        if msg_type == "ping" {
+                            let pong = serde_json::json!({"type": "pong"});
+                            let mut sink_guard = ws_sink.lock().await;
+                            if let Some(sink) = sink_guard.as_mut() {
+                                let _ = sink.send(Message::Text(pong.to_string())).await;
+                            }
+                            continue;
+                        } else if msg_type == "connected" {
+                            tracing::info!(exchange = "lighter", "WS connected message received");
+                            continue;
+                        }
+
+                        // Check for orderbook updates: channel = "order_book:{MARKET_INDEX}"
+                        if msg_type == "update/order_book" || msg_type == "subscribed/order_book" {
+                            if let Some(channel) = val["channel"].as_str() {
+                                // Extract market_id from "order_book:{ID}"
+                                let market_id = channel
+                                    .split(':')
+                                    .nth(1)
+                                    .and_then(|s| s.parse::<u8>().ok())
+                                    .unwrap_or(0);
+
+                                if let Some(symbol) = id_to_symbol.get(&market_id) {
+                                    if let Some(ob_data) = val.get("order_book") {
+                                        let is_snapshot = msg_type == "subscribed/order_book";
+
+                                        // Read existing OB state (or empty for snapshot)
+                                        let mut bid_map: std::collections::BTreeMap<i64, f64>;
+                                        let mut ask_map: std::collections::BTreeMap<i64, f64>;
+
+                                        if is_snapshot {
+                                            bid_map = std::collections::BTreeMap::new();
+                                            ask_map = std::collections::BTreeMap::new();
+                                        } else {
+                                            // Read current state and convert to maps
+                                            let obs = shared_obs.read().await;
+                                            if let Some(existing) = obs.get(symbol) {
+                                                bid_map = existing.bids.iter()
+                                                    .map(|l| ((l.price * 1_000_000.0) as i64, l.quantity))
+                                                    .collect();
+                                                ask_map = existing.asks.iter()
+                                                    .map(|l| ((l.price * 1_000_000.0) as i64, l.quantity))
+                                                    .collect();
+                                            } else {
+                                                bid_map = std::collections::BTreeMap::new();
+                                                ask_map = std::collections::BTreeMap::new();
+                                            }
+                                        }
+
+                                        // Apply delta: size=0 removes, size>0 adds/updates
+                                        let apply_delta = |map: &mut std::collections::BTreeMap<i64, f64>, arr: &serde_json::Value| {
+                                            if let Some(levels) = arr.as_array() {
+                                                for level in levels {
+                                                    let price = level["price"]
+                                                        .as_str()
+                                                        .and_then(|s| s.parse::<f64>().ok())
+                                                        .or_else(|| level["price"].as_f64());
+                                                    let qty = level["size"]
+                                                        .as_str()
+                                                        .and_then(|s| s.parse::<f64>().ok())
+                                                        .or_else(|| level["size"].as_f64());
+                                                    if let (Some(p), Some(q)) = (price, qty) {
+                                                        let key = (p * 1_000_000.0) as i64;
+                                                        if q <= 0.0 {
+                                                            map.remove(&key);
+                                                        } else {
+                                                            map.insert(key, q);
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         };
 
+                                        apply_delta(&mut bid_map, &ob_data["bids"]);
+                                        apply_delta(&mut ask_map, &ob_data["asks"]);
+
+                                        // Rebuild sorted OB: bids descending, asks ascending
+                                        let bids: Vec<OrderbookLevel> = bid_map.iter().rev()
+                                            .take(MAX_ORDERBOOK_DEPTH)
+                                            .map(|(&k, &q)| OrderbookLevel::new(k as f64 / 1_000_000.0, q))
+                                            .collect();
+                                        let asks: Vec<OrderbookLevel> = ask_map.iter()
+                                            .take(MAX_ORDERBOOK_DEPTH)
+                                            .map(|(&k, &q)| OrderbookLevel::new(k as f64 / 1_000_000.0, q))
+                                            .collect();
+
                                         let ob = Orderbook {
-                                            bids: parse_side("bids"),
-                                            asks: parse_side("asks"),
+                                            bids,
+                                            asks,
                                             timestamp: now_ms,
                                         };
 
@@ -374,12 +468,39 @@ impl LighterAdapter {
                                         }
 
                                         // Notify monitoring
-                                        if let Some(ref n) = notify {
+                                        if let Some(ref n) = &notify {
                                             n.notify_waiters();
                                         }
                                     }
                                 }
                             }
+                        // Handle sendtx responses (fire-and-forget ACK/error)
+                        } else if msg_type.contains("sendtx") || msg_type.contains("error") {
+                            if let Some(err) = val["error"].as_str() {
+                                tracing::warn!(
+                                    exchange = "lighter",
+                                    error = %err,
+                                    "sendtx WS response error"
+                                );
+                            } else if val.get("error").is_some() {
+                                tracing::warn!(
+                                    exchange = "lighter",
+                                    msg = %text,
+                                    "WS error message"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    exchange = "lighter",
+                                    response = %text,
+                                    "sendtx WS response"
+                                );
+                            }
+                        } else if val.get("error").is_some() {
+                            tracing::warn!(
+                                exchange = "lighter",
+                                msg = %text,
+                                "WS error message"
+                            );
                         }
                     }
                 }
@@ -412,41 +533,44 @@ impl LighterAdapter {
         tracing::warn!(exchange = "lighter", "Reader loop exited");
     }
 
-    /// POST a signed transaction to the sendTx endpoint
+    /// Send a signed transaction via WebSocket (jsonapi/sendtx)
+    ///
+    /// Format per official docs: https://apidocs.lighter.xyz/docs/websocket-reference#send-tx
+    /// tx_info is sent as a nested JSON object (not a string).
     async fn send_tx(
         &self,
         tx_type: u32,
         tx_info_json: &str,
-    ) -> ExchangeResult<LighterSendTxResponse> {
-        let url = format!("{}/api/v1/sendTx", self.config.rest_url());
+    ) -> ExchangeResult<()> {
+        // Parse tx_info from string to JSON object so it's nested, not double-encoded
+        let tx_info_obj: serde_json::Value = serde_json::from_str(tx_info_json)
+            .map_err(|e| ExchangeError::InvalidOrder(format!("tx_info parse error: {}", e)))?;
 
-        let form = [
-            ("tx_type", tx_type.to_string()),
-            ("tx_info", tx_info_json.to_string()),
-        ];
+        let ws_msg = serde_json::json!({
+            "type": "jsonapi/sendtx",
+            "data": {
+                "tx_type": tx_type,
+                "tx_info": tx_info_obj,
+            }
+        });
 
-        let resp = self.http.post(&url).form(&form).send().await.map_err(|e| {
-            ExchangeError::ConnectionFailed(format!("sendTx request failed: {}", e))
+        tracing::debug!(
+            exchange = "lighter",
+            tx_type = tx_type,
+            msg = %ws_msg,
+            "Sending WS sendTx"
+        );
+
+        let mut sink_guard = self.ws_sink.lock().await;
+        let sink = sink_guard.as_mut().ok_or_else(|| {
+            ExchangeError::ConnectionFailed("WebSocket not connected".into())
         })?;
 
-        let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            ExchangeError::InvalidResponse(format!("Failed to read sendTx response: {}", e))
+        sink.send(Message::Text(ws_msg.to_string())).await.map_err(|e| {
+            ExchangeError::ConnectionFailed(format!("sendTx WS send failed: {}", e))
         })?;
 
-        if !status.is_success() {
-            return Err(ExchangeError::OrderRejected(format!(
-                "sendTx HTTP {} - {}",
-                status, body
-            )));
-        }
-
-        serde_json::from_str(&body).map_err(|e| {
-            ExchangeError::InvalidResponse(format!(
-                "Failed to parse sendTx response: {} (body: {})",
-                e, body
-            ))
-        })
+        Ok(())
     }
 }
 
@@ -465,30 +589,22 @@ impl ExchangeAdapter for LighterAdapter {
         // 2. Fetch nonce from API
         self.init_nonce().await?;
 
-        // 3. Create auth token for WS
-        let auth_token = self.signer.create_auth_token(AUTH_TOKEN_LIFETIME_SECS)?;
+        // 3. Create auth token for WS (stored for authenticated subscriptions)
+        let _auth_token = self.signer.create_auth_token(AUTH_TOKEN_LIFETIME_SECS)?;
 
         // 4. Connect WebSocket
+        // Note: Lighter WS has no auth handshake — auth is per-subscribe for
+        // private channels. sendTx uses REST with self-authenticated signatures.
         let ws_url = self.config.ws_url();
         let (ws_stream, _) = connect_async(ws_url).await.map_err(|e| {
             ExchangeError::ConnectionFailed(format!("WebSocket connect failed: {}", e))
         })?;
-        let (mut sink, reader) = ws_stream.split();
+        let (sink, reader) = ws_stream.split();
 
-        // 5. Authenticate WS
-        let auth_msg = serde_json::json!({
-            "method": "auth",
-            "params": {
-                "token": auth_token,
-            }
-        });
-        sink.send(Message::Text(auth_msg.to_string()))
-            .await
-            .map_err(|e| {
-                ExchangeError::AuthenticationFailed(format!("WS auth send failed: {}", e))
-            })?;
-
-        self.ws_sink = Some(sink);
+        {
+            let mut sink_guard = self.ws_sink.lock().await;
+            *sink_guard = Some(sink);
+        }
 
         // 6. Spawn reader loop
         self.spawn_reader(reader);
@@ -515,10 +631,13 @@ impl ExchangeAdapter for LighterAdapter {
     }
 
     async fn disconnect(&mut self) -> ExchangeResult<()> {
-        if let Some(ref mut sink) = self.ws_sink {
-            let _ = sink.close().await;
+        {
+            let mut sink_guard = self.ws_sink.lock().await;
+            if let Some(ref mut sink) = *sink_guard {
+                let _ = sink.close().await;
+            }
+            *sink_guard = None;
         }
-        self.ws_sink = None;
 
         let mut state = self.health.state.write().await;
         *state = ConnectionState::Disconnected;
@@ -529,30 +648,28 @@ impl ExchangeAdapter for LighterAdapter {
     async fn subscribe_orderbook(&mut self, symbol: &str) -> ExchangeResult<()> {
         let market_id = self.market_id_for(symbol)?;
 
-        // Send WS subscribe message
-        let sub_id = next_subscription_id();
+        // Send WS subscribe message (Lighter format: type + channel)
         let msg = serde_json::json!({
-            "method": "subscribe",
-            "params": {
-                "channel": "orderbookdepth",
-                "market_id": market_id.to_string(),
-            },
-            "id": sub_id,
+            "type": "subscribe",
+            "channel": format!("order_book/{}", market_id),
         });
 
-        if let Some(ref mut sink) = self.ws_sink {
-            sink.send(Message::Text(msg.to_string()))
-                .await
-                .map_err(|e| {
-                    ExchangeError::ConnectionFailed(format!(
-                        "Failed to subscribe orderbook: {}",
-                        e
-                    ))
-                })?;
-        } else {
-            return Err(ExchangeError::ConnectionFailed(
-                "WebSocket not connected".into(),
-            ));
+        {
+            let mut sink_guard = self.ws_sink.lock().await;
+            if let Some(ref mut sink) = *sink_guard {
+                sink.send(Message::Text(msg.to_string()))
+                    .await
+                    .map_err(|e| {
+                        ExchangeError::ConnectionFailed(format!(
+                            "Failed to subscribe orderbook: {}",
+                            e
+                        ))
+                    })?;
+            } else {
+                return Err(ExchangeError::ConnectionFailed(
+                    "WebSocket not connected".into(),
+                ));
+            }
         }
 
         self.subscriptions.insert(symbol.to_string(), market_id);
@@ -585,8 +702,11 @@ impl ExchangeAdapter for LighterAdapter {
                 "id": sub_id,
             });
 
-            if let Some(ref mut sink) = self.ws_sink {
-                let _ = sink.send(Message::Text(msg.to_string())).await;
+            {
+                let mut sink_guard = self.ws_sink.lock().await;
+                if let Some(ref mut sink) = *sink_guard {
+                    let _ = sink.send(Message::Text(msg.to_string())).await;
+                }
             }
 
             // Remove from shared storage
@@ -649,37 +769,19 @@ impl ExchangeAdapter for LighterAdapter {
             nonce,
         )?;
 
-        // Send to API
-        let resp = self.send_tx(14, &tx_info_json).await;
+        // Send via WebSocket (fire-and-forget — response arrives asynchronously)
+        self.send_tx(14, &tx_info_json).await.map_err(|e| {
+            self.signer.rollback_nonce();
+            e
+        })?;
 
-        match resp {
-            Ok(tx_resp) => {
-                if let Some(err) = tx_resp.error {
-                    // Check for nonce/signature errors — rollback nonce
-                    if err.contains("nonce") || err.contains("signature") {
-                        self.signer.rollback_nonce();
-                    }
-                    return Err(ExchangeError::OrderRejected(err));
-                }
-
-                let order_id = tx_resp
-                    .order_index
-                    .map(|i| i.to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                Ok(OrderResponse {
-                    order_id,
-                    client_order_id: order.client_order_id,
-                    status: OrderStatus::Pending, // Lighter doesn't instantly confirm fills
-                    filled_quantity: 0.0,
-                    avg_price: None,
-                })
-            }
-            Err(e) => {
-                self.signer.rollback_nonce();
-                Err(e)
-            }
-        }
+        Ok(OrderResponse {
+            order_id: "pending".to_string(),
+            client_order_id: order.client_order_id,
+            status: OrderStatus::Pending,
+            filled_quantity: 0.0,
+            avg_price: None,
+        })
     }
 
     async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {
@@ -688,31 +790,27 @@ impl ExchangeAdapter for LighterAdapter {
             ExchangeError::InvalidOrder(format!("Invalid order ID: {}", order_id))
         })?;
 
-        // We need the market_id — for now use 0 if not known
-        // In production, the caller should provide context or we look up from state
-        let market_id: u8 = 0; // TODO: look up from open orders state
+        // Look up market_id from active subscriptions
+        let market_id: u8 = self
+            .subscriptions
+            .values()
+            .next()
+            .copied()
+            .ok_or_else(|| {
+                ExchangeError::InvalidOrder(
+                    "No subscribed market — cannot determine market_id for cancel".into(),
+                )
+            })?;
 
         let nonce = self.signer.next_nonce();
 
         let tx_info_json = self.signer.sign_cancel_order(market_id, order_index, nonce)?;
 
-        let resp = self.send_tx(15, &tx_info_json).await;
-
-        match resp {
-            Ok(tx_resp) => {
-                if let Some(err) = tx_resp.error {
-                    if err.contains("nonce") || err.contains("signature") {
-                        self.signer.rollback_nonce();
-                    }
-                    return Err(ExchangeError::OrderRejected(err));
-                }
-                Ok(())
-            }
-            Err(e) => {
-                self.signer.rollback_nonce();
-                Err(e)
-            }
-        }
+        // Send via WebSocket (fire-and-forget)
+        self.send_tx(15, &tx_info_json).await.map_err(|e| {
+            self.signer.rollback_nonce();
+            e
+        })
     }
 
     fn get_orderbook(&self, symbol: &str) -> Option<&Orderbook> {
@@ -724,8 +822,11 @@ impl ExchangeAdapter for LighterAdapter {
         if !self.health.reader_alive.load(Ordering::Relaxed) {
             return false;
         }
-        // Check ws_sink presence
-        self.ws_sink.is_some()
+        // Check ws_sink presence (try_lock since this is a sync fn)
+        match self.ws_sink.try_lock() {
+            Ok(guard) => guard.is_some(),
+            Err(_) => true, // Lock contended = actively in use = connected
+        }
     }
 
     fn is_stale(&self) -> bool {
@@ -776,27 +877,40 @@ impl ExchangeAdapter for LighterAdapter {
     }
 
     async fn get_position(&self, symbol: &str) -> ExchangeResult<Option<PositionInfo>> {
+        let account_index = self.signer.account_index();
         let url = format!(
-            "{}/api/v1/positions?account_index={}",
+            "{}/api/v1/account?by=index&value={}",
             self.config.rest_url(),
-            self.signer.account_index()
+            account_index
         );
 
         let resp = self.http.get(&url).send().await.map_err(|e| {
-            ExchangeError::ConnectionFailed(format!("Failed to fetch positions: {}", e))
+            ExchangeError::ConnectionFailed(format!("Failed to fetch account: {}", e))
         })?;
         let body: serde_json::Value = resp.json().await.map_err(|e| {
-            ExchangeError::InvalidResponse(format!("Failed to parse positions response: {}", e))
+            ExchangeError::InvalidResponse(format!("Failed to parse account response: {}", e))
         })?;
 
-        // Find matching position
-        let _base = normalize_symbol_to_lighter(symbol);
-        if let Some(positions) = body["positions"].as_array() {
+
+        // Positions are nested inside accounts[0].positions in the REST response
+        let positions_val = if body["accounts"][0]["positions"].is_array() {
+            &body["accounts"][0]["positions"]
+        } else if body["positions"].is_array() {
+            &body["positions"]
+        } else {
+            tracing::warn!(
+                exchange = "lighter",
+                "get_position: no 'positions' array found in response"
+            );
+            return Ok(None);
+        };
+
+        if let Some(positions) = positions_val.as_array() {
             for pos in positions {
                 let pos_data: Result<LighterPositionData, _> =
                     serde_json::from_value::<LighterPositionData>(pos.clone());
                 if let Ok(data) = pos_data {
-                    // Match by market_id or symbol
+                    // Match by market_id
                     if let Some(mid) = data.market_id {
                         if let Ok(expected_mid) = self.market_id_for(symbol) {
                             if mid != expected_mid {
@@ -806,7 +920,7 @@ impl ExchangeAdapter for LighterAdapter {
                     }
 
                     let size = data
-                        .size
+                        .position
                         .as_deref()
                         .and_then(|s| s.parse::<f64>().ok())
                         .unwrap_or(0.0);
@@ -815,29 +929,41 @@ impl ExchangeAdapter for LighterAdapter {
                         continue; // No position
                     }
 
-                    let side = data
-                        .side
-                        .as_deref()
-                        .map(|s| s.to_lowercase())
-                        .unwrap_or_else(|| {
+                    // sign: 1 = long, -1 = short
+                    let side = match data.sign {
+                        Some(1) => "long".to_string(),
+                        Some(-1) => "short".to_string(),
+                        _ => {
                             if size > 0.0 {
                                 "long".to_string()
                             } else {
                                 "short".to_string()
                             }
-                        });
+                        }
+                    };
+
+                    let entry_price = data
+                        .avg_entry_price
+                        .as_deref()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+
+                    tracing::debug!(
+                        exchange = "lighter",
+                        symbol = %symbol,
+                        position_size = %size,
+                        side = %side,
+                        entry_price = %entry_price,
+                        "Parsed position from account endpoint"
+                    );
 
                     return Ok(Some(PositionInfo {
                         symbol: symbol.to_string(),
                         quantity: size.abs(),
                         side,
-                        entry_price: data
-                            .entry_price
-                            .as_deref()
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .unwrap_or(0.0),
+                        entry_price,
                         mark_price: data
-                            .mark_price
+                            .liquidation_price
                             .as_deref()
                             .and_then(|s| s.parse::<f64>().ok()),
                         unrealized_pnl: data
@@ -855,10 +981,60 @@ impl ExchangeAdapter for LighterAdapter {
 
     async fn get_fill_info(
         &self,
-        _symbol: &str,
-        _order_id: &str,
+        symbol: &str,
+        order_id: &str,
     ) -> ExchangeResult<Option<FillInfo>> {
-        // TODO: Implement when we understand Lighter's fill/trade API
+        // Query recent trades from REST API and match by order_id
+        let account_index = self.signer.account_index();
+        let market_id = self.market_id_for(symbol).unwrap_or(0);
+        let order_index: i64 = order_id.parse().unwrap_or(-1);
+
+        // "pending" means fire-and-forget WS — no order_id yet
+        if order_id == "pending" || order_index < 0 {
+            return Ok(None);
+        }
+
+        let url = format!(
+            "{}/api/v1/trades?account_index={}&order_book_id={}&limit=50",
+            self.config.rest_url(),
+            account_index,
+            market_id,
+        );
+
+        let resp = self.http.get(&url).send().await.map_err(|e| {
+            ExchangeError::ConnectionFailed(format!("Failed to fetch trades: {}", e))
+        })?;
+        let body: serde_json::Value = resp.json().await.map_err(|e| {
+            ExchangeError::InvalidResponse(format!("Failed to parse trades: {}", e))
+        })?;
+
+        // Search through trades for one matching our order
+        if let Some(trades) = body["trades"].as_array() {
+            for trade in trades {
+                let ask_id = trade["ask_id"].as_i64().unwrap_or(-1);
+                let bid_id = trade["bid_id"].as_i64().unwrap_or(-1);
+
+                if ask_id == order_index || bid_id == order_index {
+                    let fill_price = trade["price"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .or_else(|| trade["price"].as_f64())
+                        .unwrap_or(0.0);
+
+                    let fee = trade["taker_fee"]
+                        .as_i64()
+                        .map(|f| f as f64 / 1_000_000.0); // Lighter fees in microunits
+
+                    return Ok(Some(FillInfo {
+                        fill_price,
+                        realized_pnl: None, // Lighter doesn't report realized PnL per-trade
+                        fee,
+                    }));
+                }
+            }
+        }
+
+        // No matching trade found (may not be filled yet for IOC miss)
         Ok(None)
     }
 
