@@ -28,9 +28,10 @@ use crate::core::spread::SpreadDirection;
 // Constants
 // =============================================================================
 
-/// Slippage buffer for LIMIT IOC and MARKET orders (0.5% = 50 basis points)
-/// Used as price protection on both Vest and Paradex orders
-const SLIPPAGE_BUFFER_PCT: f64 = 0.02;
+/// Slippage buffer for LIMIT IOC orders (0.5% = 50 basis points)
+/// Used as price protection on both Vest and Paradex orders.
+/// Tighter = fewer bad fills but more rejections on volatile markets.
+const SLIPPAGE_BUFFER_PCT: f64 = 0.005;
 
 // =============================================================================
 // Trade Timing Breakdown
@@ -1252,23 +1253,22 @@ where
             short_order_id.to_string()
         };
 
-        // DEX A: Use MARKET orders with limitPrice as slippage protection
+        // DEX A: LIMIT IOC with slippage buffer (no blind market fills)
         let price_a = match side_a {
             OrderSide::Buy => opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
             OrderSide::Sell => opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
         };
 
-        // DEX B: Use LIMIT IOC with slippage buffer to ensure fill
+        // DEX B: LIMIT IOC with slippage buffer
         let price_b = match side_b {
             OrderSide::Buy => opportunity.dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
             OrderSide::Sell => opportunity.dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
         };
 
-        // DEX A: MARKET order (limitPrice acts as slippage protection)
+        // DEX A: LIMIT IOC for immediate fill with price protection
         let order_a = OrderBuilder::new(&self.symbol_a, side_a, quantity)
             .client_order_id(order_id_a)
-            .market()
-            .price(price_a)
+            .limit(price_a)
             .build()
             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()))?;
 
