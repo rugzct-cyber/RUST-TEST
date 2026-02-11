@@ -135,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         dex_b = %bot.dex_b,
         spread_entry = %format_pct(bot.spread_entry),
         spread_exit = %format_pct(bot.spread_exit),
+        exit_confirm_ticks = bot.exit_confirm_ticks,
         leverage = %format!("{}x", bot.leverage),
         position_size = %format!("{} {}", bot.position_size, bot.pair),
         "Active bot configuration"
@@ -335,6 +336,7 @@ async fn main() -> anyhow::Result<()> {
     let exec_spread_entry = bot.spread_entry;
     let exec_spread_entry_max = bot.spread_entry_max;
     let exec_position_size = bot.position_size;
+    let exec_exit_confirm_ticks = bot.exit_confirm_ticks;
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
@@ -350,6 +352,7 @@ async fn main() -> anyhow::Result<()> {
             exec_spread_entry,
             exec_spread_entry_max,
             exec_position_size,
+            exec_exit_confirm_ticks,
         )
         .await;
     });

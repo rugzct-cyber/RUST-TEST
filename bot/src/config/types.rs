@@ -96,10 +96,18 @@ pub struct BotConfig {
     pub spread_entry_max: f64,
     /// Spread threshold to exit position (percentage, e.g., 0.05 = 0.05%)
     pub spread_exit: f64,
+    /// Number of consecutive ticks the exit spread must stay above target
+    /// before triggering close. Filters OB freeze spikes. Defaults to 1 (instant).
+    #[serde(default = "default_exit_confirm_ticks")]
+    pub exit_confirm_ticks: u32,
     /// Leverage multiplier (1-100)
     pub leverage: u8,
     /// Total position size across all scaling layers (e.g., 0.15 ETH)
     pub position_size: f64,
+}
+
+fn default_exit_confirm_ticks() -> u32 {
+    1
 }
 
 impl BotConfig {
@@ -167,6 +175,14 @@ impl BotConfig {
             return Err(AppError::Config(format!(
                 "Bot '{}': position_size must be > 0, got {}",
                 self.id, self.position_size
+            )));
+        }
+
+        // Rule: exit_confirm_ticks must be >= 1
+        if self.exit_confirm_ticks < 1 {
+            return Err(AppError::Config(format!(
+                "Bot '{}': exit_confirm_ticks must be >= 1, got {}",
+                self.id, self.exit_confirm_ticks
             )));
         }
 
@@ -246,6 +262,7 @@ mod tests {
             spread_entry: 0.30,
             spread_entry_max: 0.70,
             spread_exit: 0.05,
+            exit_confirm_ticks: 1,
             leverage: 10,
             position_size: 0.001,
         }

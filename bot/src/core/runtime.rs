@@ -88,6 +88,8 @@ pub async fn execution_task<V, P>(
     spread_entry: f64,
     spread_entry_max: f64,
     total_position_size: f64,
+    // Exit confirmation (anti-spike)
+    exit_confirm_ticks: u32,
 ) where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
@@ -150,6 +152,7 @@ pub async fn execution_task<V, P>(
         let mut last_jwt_refresh = std::time::Instant::now();
         let mut exit_result_final: Option<ExitResult> = None;
         let mut shutdown_triggered = false;
+        let mut exit_confirm_count: u32 = 0;
 
         tracing::info!(
             event_type = "RECOVERY_MONITORING",
@@ -210,44 +213,68 @@ pub async fn execution_task<V, P>(
                         }
                     }
 
-                    // Check exit condition
+                    // Check exit condition (with confirmation)
                     if exit_spread >= exit_spread_target {
-                        tracing::info!(
-                            event_type = "EXIT_TRIGGERED",
-                            exit_spread = %format!("{:.4}", exit_spread),
-                            target = %format!("{:.4}", exit_spread_target),
-                            "Exit condition met for recovered position"
-                        );
+                        exit_confirm_count += 1;
+                        if exit_confirm_count >= exit_confirm_ticks {
+                            tracing::info!(
+                                event_type = "EXIT_TRIGGERED",
+                                exit_spread = %format!("{:.4}", exit_spread),
+                                target = %format!("{:.4}", exit_spread_target),
+                                confirmed_ticks = exit_confirm_count,
+                                "Exit condition confirmed for recovered position"
+                            );
 
-                        let close_start = std::time::Instant::now();
+                            let close_start = std::time::Instant::now();
 
-                        loop {
-                            match executor.close_position(exit_spread, bid_a, ask_a, bid_b, ask_b).await {
-                                Ok(close_result) => {
-                                    let execution_latency_ms = close_start.elapsed().as_millis() as u64;
-                                    let closed_event = TradingEvent::position_closed(
-                                        "recovered", 0.0, exit_spread, 0.0,
-                                    );
-                                    log_event(&closed_event);
+                            loop {
+                                match executor.close_position(exit_spread, bid_a, ask_a, bid_b, ask_b).await {
+                                    Ok(close_result) => {
+                                        let execution_latency_ms = close_start.elapsed().as_millis() as u64;
+                                        let closed_event = TradingEvent::position_closed(
+                                            "recovered", 0.0, exit_spread, 0.0,
+                                        );
+                                        log_event(&closed_event);
 
-                                    exit_result_final = Some(ExitResult {
-                                        exit_spread,
-                                        dex_a_exit_price: close_result.dex_a_fill_price,
-                                        dex_b_exit_price: close_result.dex_b_fill_price,
-                                        dex_a_realized_pnl: close_result.dex_a_realized_pnl,
-                                        dex_b_realized_pnl: close_result.dex_b_realized_pnl,
-                                        execution_latency_ms,
-                                    });
-                                    break;
-                                }
-                                Err(e) => {
-                                    error!(event_type = "CLOSE_FAILED", error = ?e, "Close failed, retrying...");
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
-                                    continue;
+                                        exit_result_final = Some(ExitResult {
+                                            exit_spread,
+                                            dex_a_exit_price: close_result.dex_a_fill_price,
+                                            dex_b_exit_price: close_result.dex_b_fill_price,
+                                            dex_a_realized_pnl: close_result.dex_a_realized_pnl,
+                                            dex_b_realized_pnl: close_result.dex_b_realized_pnl,
+                                            execution_latency_ms,
+                                        });
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        error!(event_type = "CLOSE_FAILED", error = ?e, "Close failed, retrying...");
+                                        tokio::time::sleep(Duration::from_millis(500)).await;
+                                        continue;
+                                    }
                                 }
                             }
+                            break; // Exit the monitoring loop
+                        } else {
+                            if exit_confirm_count == 1 {
+                                debug!(
+                                    event_type = "EXIT_CONFIRMING",
+                                    exit_spread = %format!("{:.4}", exit_spread),
+                                    target = %format!("{:.4}", exit_spread_target),
+                                    confirm = %format!("{}/{}", exit_confirm_count, exit_confirm_ticks),
+                                    "Exit threshold reached, confirming..."
+                                );
+                            }
                         }
-                        break; // Exit the monitoring loop
+                    } else {
+                        if exit_confirm_count > 0 {
+                            debug!(
+                                event_type = "EXIT_REJECTED",
+                                exit_spread = %format!("{:.4}", exit_spread),
+                                previous_confirms = exit_confirm_count,
+                                "Spread dropped below target — spike filtered"
+                            );
+                            exit_confirm_count = 0;
+                        }
                     }
 
                     // Near-exit debug log (throttled)
@@ -476,6 +503,7 @@ pub async fn execution_task<V, P>(
                     let mut last_jwt_refresh = std::time::Instant::now();
                     let mut exit_result_final: Option<ExitResult> = None;
                     let mut shutdown_triggered = false;
+                    let mut exit_confirm_count: u32 = 0;
 
                     loop {
                         tokio::select! {
@@ -529,59 +557,82 @@ pub async fn execution_task<V, P>(
                                     log_event(&event);
                                 }
 
-                                // === CHECK 1: Exit condition ===
+                                // === CHECK 1: Exit condition (with confirmation) ===
                                 if exit_spread >= exit_spread_target {
-                                    let profit = spread_pct + exit_spread;
-                                    let event = TradingEvent::trade_exit(
-                                        &pair, spread_pct, exit_spread, exit_spread_target, profit, poll_count,
-                                    );
-                                    log_event(&event);
+                                    exit_confirm_count += 1;
+                                    if exit_confirm_count >= exit_confirm_ticks {
+                                        let profit = spread_pct + exit_spread;
+                                        let event = TradingEvent::trade_exit(
+                                            &pair, spread_pct, exit_spread, exit_spread_target, profit, poll_count,
+                                        );
+                                        log_event(&event);
 
-                                    // Close entire position
-                                    const MAX_CLOSE_RETRIES: u32 = 3;
-                                    const CLOSE_RETRY_DELAY_SECS: u64 = 5;
-                                    let mut close_retries = 0u32;
-                                    let close_start = std::time::Instant::now();
+                                        // Close entire position
+                                        const MAX_CLOSE_RETRIES: u32 = 3;
+                                        const CLOSE_RETRY_DELAY_SECS: u64 = 5;
+                                        let mut close_retries = 0u32;
+                                        let close_start = std::time::Instant::now();
 
-                                    loop {
-                                        match executor.close_position(exit_spread, bid_a, ask_a, bid_b, ask_b).await {
-                                            Ok(close_result) => {
-                                                let execution_latency_ms = close_start.elapsed().as_millis() as u64;
-                                                let closed_event = TradingEvent::position_closed(
-                                                    &pair, spread_pct, exit_spread, profit,
-                                                );
-                                                log_event(&closed_event);
-                                                exit_result_final = Some(ExitResult {
-                                                    exit_spread,
-                                                    dex_a_exit_price: close_result.dex_a_fill_price,
-                                                    dex_b_exit_price: close_result.dex_b_fill_price,
-                                                    dex_a_realized_pnl: close_result.dex_a_realized_pnl,
-                                                    dex_b_realized_pnl: close_result.dex_b_realized_pnl,
-                                                    execution_latency_ms,
-                                                });
-                                                break;
-                                            }
-                                            Err(e) => {
-                                                close_retries += 1;
-                                                error!(
-                                                    event_type = "ORDER_FAILED", error = ?e,
-                                                    retry = close_retries, max_retries = MAX_CLOSE_RETRIES,
-                                                    "Failed to close - retrying in {}s", CLOSE_RETRY_DELAY_SECS
-                                                );
-                                                if close_retries >= MAX_CLOSE_RETRIES {
+                                        loop {
+                                            match executor.close_position(exit_spread, bid_a, ask_a, bid_b, ask_b).await {
+                                                Ok(close_result) => {
                                                     let execution_latency_ms = close_start.elapsed().as_millis() as u64;
-                                                    error!(event_type = "CLOSE_ABANDONED", retries = close_retries, "CRITICAL: manual intervention required");
+                                                    let closed_event = TradingEvent::position_closed(
+                                                        &pair, spread_pct, exit_spread, profit,
+                                                    );
+                                                    log_event(&closed_event);
                                                     exit_result_final = Some(ExitResult {
-                                                        exit_spread, dex_a_exit_price: 0.0, dex_b_exit_price: 0.0,
-                                                        dex_a_realized_pnl: None, dex_b_realized_pnl: None, execution_latency_ms,
+                                                        exit_spread,
+                                                        dex_a_exit_price: close_result.dex_a_fill_price,
+                                                        dex_b_exit_price: close_result.dex_b_fill_price,
+                                                        dex_a_realized_pnl: close_result.dex_a_realized_pnl,
+                                                        dex_b_realized_pnl: close_result.dex_b_realized_pnl,
+                                                        execution_latency_ms,
                                                     });
                                                     break;
                                                 }
-                                                tokio::time::sleep(Duration::from_secs(CLOSE_RETRY_DELAY_SECS)).await;
+                                                Err(e) => {
+                                                    close_retries += 1;
+                                                    error!(
+                                                        event_type = "ORDER_FAILED", error = ?e,
+                                                        retry = close_retries, max_retries = MAX_CLOSE_RETRIES,
+                                                        "Failed to close - retrying in {}s", CLOSE_RETRY_DELAY_SECS
+                                                    );
+                                                    if close_retries >= MAX_CLOSE_RETRIES {
+                                                        let execution_latency_ms = close_start.elapsed().as_millis() as u64;
+                                                        error!(event_type = "CLOSE_ABANDONED", retries = close_retries, "CRITICAL: manual intervention required");
+                                                        exit_result_final = Some(ExitResult {
+                                                            exit_spread, dex_a_exit_price: 0.0, dex_b_exit_price: 0.0,
+                                                            dex_a_realized_pnl: None, dex_b_realized_pnl: None, execution_latency_ms,
+                                                        });
+                                                        break;
+                                                    }
+                                                    tokio::time::sleep(Duration::from_secs(CLOSE_RETRY_DELAY_SECS)).await;
+                                                }
                                             }
                                         }
+                                        break; // Exit hybrid loop
+                                    } else {
+                                        if exit_confirm_count == 1 {
+                                            debug!(
+                                                event_type = "EXIT_CONFIRMING",
+                                                exit_spread = %format!("{:.4}", exit_spread),
+                                                target = %format!("{:.4}", exit_spread_target),
+                                                confirm = %format!("{}/{}", exit_confirm_count, exit_confirm_ticks),
+                                                "Exit threshold reached, confirming..."
+                                            );
+                                        }
                                     }
-                                    break; // Exit hybrid loop
+                                } else {
+                                    if exit_confirm_count > 0 {
+                                        debug!(
+                                            event_type = "EXIT_REJECTED",
+                                            exit_spread = %format!("{:.4}", exit_spread),
+                                            previous_confirms = exit_confirm_count,
+                                            "Spread dropped below target — spike filtered"
+                                        );
+                                        exit_confirm_count = 0;
+                                    }
                                 }
 
                                 // === CHECK 2: Deeper layer entries ===
@@ -786,6 +837,7 @@ mod tests {
                 0.35, // spread_entry
                 0.35, // spread_entry_max (single layer)
                 0.01, // total_position_size
+                1,    // exit_confirm_ticks (instant exit for tests)
             )
             .await;
         });
@@ -853,6 +905,7 @@ mod tests {
                 0.35, // spread_entry
                 0.35, // spread_entry_max (single layer)
                 0.01, // total_position_size
+                1,    // exit_confirm_ticks (instant exit for tests)
             )
             .await;
         });
@@ -908,6 +961,7 @@ mod tests {
                 0.35, // spread_entry
                 0.35, // spread_entry_max (single layer)
                 0.01, // total_position_size
+                1,    // exit_confirm_ticks (instant exit for tests)
             )
             .await;
         });
@@ -978,6 +1032,7 @@ mod tests {
                 0.35,
                 0.35,
                 0.01,
+                1,    // exit_confirm_ticks
             )
             .await;
         });
@@ -1044,6 +1099,7 @@ mod tests {
                 0.35,
                 0.35,
                 0.01,
+                1,    // exit_confirm_ticks
             )
             .await;
         });
@@ -1110,6 +1166,7 @@ mod tests {
                 0.35,
                 0.35,
                 0.01,
+                1,    // exit_confirm_ticks
             )
             .await;
         });
@@ -1179,6 +1236,7 @@ mod tests {
                 0.35,
                 0.35,
                 0.01,
+                1,    // exit_confirm_ticks
             )
             .await;
         });
@@ -1233,6 +1291,7 @@ mod tests {
                 0.35,
                 0.35,
                 0.01,
+                1,    // exit_confirm_ticks
             )
             .await;
         });
