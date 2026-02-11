@@ -48,6 +48,8 @@ pub struct MonitoringConfig {
     pub spread_entry: f64,
     /// Exit threshold in percentage (e.g., 0.05 = 0.05%)
     pub spread_exit: f64,
+    /// Number of consecutive polls above entry threshold before emitting opportunity
+    pub entry_confirm_ticks: u32,
 }
 
 /// Lock-free monitoring task using AtomicBestPrices
@@ -84,6 +86,7 @@ pub async fn monitoring_task(
     let calculator = SpreadCalculator::new("vest", "paradex");
     let mut poll_count: u64 = 0;
     let mut warn_counter: u32 = 0;
+    let mut entry_confirm_count: u32 = 0;
 
     loop {
         tokio::select! {
@@ -121,42 +124,63 @@ pub async fn monitoring_task(
 
                     // Only send opportunity if threshold exceeded
                     if spread_result.spread_pct >= config.spread_entry {
-                        let now_ms = current_timestamp_ms();
+                        entry_confirm_count += 1;
+                        if entry_confirm_count >= config.entry_confirm_ticks {
+                            let now_ms = current_timestamp_ms();
 
-                        let opportunity = SpreadOpportunity {
-                            pair: config.pair.clone(),
-                            dex_a: "vest",
-                            dex_b: "paradex",
-                            spread_percent: spread_result.spread_pct,
-                            direction: spread_result.direction,
-                            detected_at_ms: now_ms,
-                            // Prices from atomics (already loaded above)
-                            dex_a_ask: vest_ask,
-                            dex_a_bid: vest_bid,
-                            dex_b_ask: paradex_ask,
-                            dex_b_bid: paradex_bid,
-                        };
+                            let opportunity = SpreadOpportunity {
+                                pair: config.pair.clone(),
+                                dex_a: "vest",
+                                dex_b: "paradex",
+                                spread_percent: spread_result.spread_pct,
+                                direction: spread_result.direction,
+                                detected_at_ms: now_ms,
+                                // Prices from atomics (already loaded above)
+                                dex_a_ask: vest_ask,
+                                dex_a_bid: vest_bid,
+                                dex_b_ask: paradex_ask,
+                                dex_b_bid: paradex_bid,
+                            };
 
-                        // Watch channel: always replaces with freshest opportunity
-                        if opportunity_tx.is_closed() {
-                            warn!(
-                                event_type = "CHANNEL_CLOSED",
-                                "Opportunity channel closed - executor may have crashed"
+                            // Watch channel: always replaces with freshest opportunity
+                            if opportunity_tx.is_closed() {
+                                warn!(
+                                    event_type = "CHANNEL_CLOSED",
+                                    "Opportunity channel closed - executor may have crashed"
+                                );
+                                break;
+                            }
+                            opportunity_tx.send_replace(Some(opportunity));
+                            if poll_count % LOG_THROTTLE_POLLS == 0 {
+                                let direction_str = format!("{:?}", spread_result.direction);
+                                let event = TradingEvent::spread_detected(
+                                    &config.pair,
+                                    spread_result.spread_pct,
+                                    config.spread_entry,
+                                    &direction_str,
+                                );
+                                log_event(&event);
+                            }
+                            debug!("Spread opportunity sent to execution task (watch)");
+                        } else if entry_confirm_count == 1 {
+                            debug!(
+                                event_type = "ENTRY_CONFIRMING",
+                                spread = %format_pct(spread_result.spread_pct),
+                                threshold = %format_pct(config.spread_entry),
+                                confirm = %format!("{}/{}", entry_confirm_count, config.entry_confirm_ticks),
+                                "Entry threshold reached, confirming..."
                             );
-                            break;
                         }
-                        opportunity_tx.send_replace(Some(opportunity));
-                        if poll_count % LOG_THROTTLE_POLLS == 0 {
-                            let direction_str = format!("{:?}", spread_result.direction);
-                            let event = TradingEvent::spread_detected(
-                                &config.pair,
-                                spread_result.spread_pct,
-                                config.spread_entry,
-                                &direction_str,
+                    } else {
+                        if entry_confirm_count > 0 {
+                            debug!(
+                                event_type = "ENTRY_REJECTED",
+                                spread = %format_pct(spread_result.spread_pct),
+                                previous_confirms = entry_confirm_count,
+                                "Spread dropped below entry threshold — spike filtered"
                             );
-                            log_event(&event);
+                            entry_confirm_count = 0;
                         }
-                        debug!("Spread opportunity sent to execution task (watch)");
                     }
                 } else {
                     // Atomic prices are 0.0 (no data yet) — use SharedOrderbooks for diagnostics
@@ -222,6 +246,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         let handle = tokio::spawn(monitoring_task(
@@ -271,6 +296,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         tokio::spawn(monitoring_task(
@@ -323,6 +349,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         tokio::spawn(monitoring_task(
@@ -373,6 +400,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         tokio::spawn(monitoring_task(
@@ -422,6 +450,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         tokio::spawn(monitoring_task(
@@ -464,6 +493,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         tokio::spawn(monitoring_task(
@@ -510,6 +540,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         let handle = tokio::spawn(monitoring_task(
@@ -557,6 +588,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.30,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         drop(opportunity_rx);
@@ -603,6 +635,7 @@ mod tests {
             pair: Arc::from("BTC-PERP"),
             spread_entry: 0.10,
             spread_exit: 0.05,
+            entry_confirm_ticks: 1,
         };
 
         tokio::spawn(monitoring_task(

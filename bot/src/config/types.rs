@@ -100,6 +100,10 @@ pub struct BotConfig {
     /// before triggering close. Filters OB freeze spikes. Defaults to 1 (instant).
     #[serde(default = "default_exit_confirm_ticks")]
     pub exit_confirm_ticks: u32,
+    /// Number of consecutive ticks the entry spread must stay above threshold
+    /// before emitting an opportunity. Filters entry-side spikes. Defaults to 1 (instant).
+    #[serde(default = "default_entry_confirm_ticks")]
+    pub entry_confirm_ticks: u32,
     /// Leverage multiplier (1-100)
     pub leverage: u8,
     /// Total position size across all scaling layers (e.g., 0.15 ETH)
@@ -107,6 +111,10 @@ pub struct BotConfig {
 }
 
 fn default_exit_confirm_ticks() -> u32 {
+    1
+}
+
+fn default_entry_confirm_ticks() -> u32 {
     1
 }
 
@@ -183,6 +191,14 @@ impl BotConfig {
             return Err(AppError::Config(format!(
                 "Bot '{}': exit_confirm_ticks must be >= 1, got {}",
                 self.id, self.exit_confirm_ticks
+            )));
+        }
+
+        // Rule: entry_confirm_ticks must be >= 1
+        if self.entry_confirm_ticks < 1 {
+            return Err(AppError::Config(format!(
+                "Bot '{}': entry_confirm_ticks must be >= 1, got {}",
+                self.id, self.entry_confirm_ticks
             )));
         }
 
@@ -263,6 +279,7 @@ mod tests {
             spread_entry_max: 0.70,
             spread_exit: 0.05,
             exit_confirm_ticks: 1,
+            entry_confirm_ticks: 1,
             leverage: 10,
             position_size: 0.001,
         }

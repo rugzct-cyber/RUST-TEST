@@ -3,12 +3,13 @@ bots:
     pair: BTC-PERP      # Options: BTC-PERP, ETH-PERP, SOL-PERP
     dex_a: vest
     dex_b: lighter
-    spread_entry: 0.14
+    spread_entry: 0.16
     spread_entry_max: 0.35  # Scaling layers linearly spaced 0.25%..0.70%
-    spread_exit: -0.03
+    spread_exit: 0.01
     exit_confirm_ticks: 3  # Consecutive ticks above exit target before closing
+    entry_confirm_ticks: 3 # Consecutive ticks above entry threshold before entering
     leverage: 50
-    position_size: 0.02  # BTC: 0.02 | ETH: 0.1 | SOL: 1.0
+    position_size: 0.03  # BTC: 0.02 | ETH: 0.1 | SOL: 1.0
 
 api:
   port: 8080

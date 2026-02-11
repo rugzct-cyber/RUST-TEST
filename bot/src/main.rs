@@ -136,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         spread_entry = %format_pct(bot.spread_entry),
         spread_exit = %format_pct(bot.spread_exit),
         exit_confirm_ticks = bot.exit_confirm_ticks,
+        entry_confirm_ticks = bot.entry_confirm_ticks,
         leverage = %format!("{}x", bot.leverage),
         position_size = %format!("{} {}", bot.position_size, bot.pair),
         "Active bot configuration"
@@ -369,6 +370,7 @@ async fn main() -> anyhow::Result<()> {
         pair: Arc::from(bot.pair.to_string().as_str()),
         spread_entry: bot.spread_entry,
         spread_exit: bot.spread_exit,
+        entry_confirm_ticks: bot.entry_confirm_ticks,
     };
     let monitoring_shutdown = shutdown_tx.subscribe();
 
