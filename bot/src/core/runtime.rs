@@ -815,6 +815,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // Create SharedBestPrices with data that triggers exit (spread = 0 >= -0.05)
@@ -883,6 +884,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // Create empty SharedBestPrices for test
@@ -931,6 +933,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // Create SharedBestPrices with prices that produce exit_spread >= target
@@ -1011,6 +1014,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // Prices that will NEVER trigger exit
@@ -1078,6 +1082,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // For BOverA: entry should work, exit immediately triggers
@@ -1146,6 +1151,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let vest_bp = Arc::new(AtomicBestPrices::new());
@@ -1216,6 +1222,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let vest_bp = Arc::new(AtomicBestPrices::new());
@@ -1270,6 +1277,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // Empty best prices (0.0)

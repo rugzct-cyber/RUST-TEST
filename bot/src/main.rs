@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         spread_exit = %format_pct(bot.spread_exit),
         exit_confirm_ticks = bot.exit_confirm_ticks,
         entry_confirm_ticks = bot.entry_confirm_ticks,
+        slippage_buffer_pct = %format!("{:.2}%", bot.slippage_buffer_pct * 100.0),
         leverage = %format!("{}x", bot.leverage),
         position_size = %format!("{} {}", bot.position_size, bot.pair),
         "Active bot configuration"
@@ -323,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
         dex_b_symbol.clone(),
         dex_a_name.clone(),
         dex_b_name.clone(),
+        bot.slippage_buffer_pct,
     );
 
     // Spawn execution_task (V1: with exit monitoring)

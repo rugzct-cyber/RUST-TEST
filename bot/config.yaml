@@ -8,6 +8,7 @@ bots:
     spread_exit: 0.01
     exit_confirm_ticks: 2  # Consecutive ticks above exit target before closing
     entry_confirm_ticks: 2 # Consecutive ticks above entry threshold before entering
+    slippage_buffer_pct: 0.005 # 0.5% price protection on LIMIT IOC orders
     leverage: 50
     position_size: 0.03  # BTC: 0.02 | ETH: 0.1 | SOL: 1.0
 

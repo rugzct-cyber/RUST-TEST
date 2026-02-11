@@ -108,6 +108,10 @@ pub struct BotConfig {
     pub leverage: u8,
     /// Total position size across all scaling layers (e.g., 0.15 ETH)
     pub position_size: f64,
+    /// Slippage buffer for LIMIT IOC price protection (e.g. 0.005 = 0.5%)
+    /// Tighter = fewer bad fills but more rejections. Defaults to 0.005.
+    #[serde(default = "default_slippage_buffer_pct")]
+    pub slippage_buffer_pct: f64,
 }
 
 fn default_exit_confirm_ticks() -> u32 {
@@ -116,6 +120,10 @@ fn default_exit_confirm_ticks() -> u32 {
 
 fn default_entry_confirm_ticks() -> u32 {
     1
+}
+
+fn default_slippage_buffer_pct() -> f64 {
+    0.005
 }
 
 impl BotConfig {
@@ -282,6 +290,7 @@ mod tests {
             entry_confirm_ticks: 1,
             leverage: 10,
             position_size: 0.001,
+            slippage_buffer_pct: 0.005,
         }
     }
 

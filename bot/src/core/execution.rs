@@ -24,14 +24,6 @@ use crate::core::events::{
 };
 use crate::core::spread::SpreadDirection;
 
-// =============================================================================
-// Constants
-// =============================================================================
-
-/// Slippage buffer for LIMIT IOC orders (0.5% = 50 basis points)
-/// Used as price protection on both Vest and Paradex orders.
-/// Tighter = fewer bad fills but more rejections on volatile markets.
-const SLIPPAGE_BUFFER_PCT: f64 = 0.005;
 
 // =============================================================================
 // Trade Timing Breakdown
@@ -299,6 +291,8 @@ where
     position_open: AtomicBool,
     /// Entry direction: 0=none, 1=AOverB (long A), 2=BOverA (long B)
     entry_direction: AtomicU8,
+    /// Slippage buffer for LIMIT IOC price protection (e.g. 0.005 = 0.5%)
+    slippage_buffer_pct: f64,
 }
 
 impl<A, B> DeltaNeutralExecutor<A, B>
@@ -315,6 +309,7 @@ where
         symbol_b: String,
         dex_a_name: String,
         dex_b_name: String,
+        slippage_buffer_pct: f64,
     ) -> Self {
         Self {
             adapter_a,
@@ -326,6 +321,7 @@ where
             dex_b_name,
             position_open: AtomicBool::new(false),
             entry_direction: AtomicU8::new(0), // 0 = no position
+            slippage_buffer_pct,
         }
     }
 
@@ -644,7 +640,7 @@ where
                     )
                     .client_order_id(format!("rollback-a-{}", timestamp))
                     .market()
-                    .price(opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT))
+                    .price(opportunity.dex_a_bid * (1.0 - self.slippage_buffer_pct))
                     .build()
                     .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
@@ -682,7 +678,7 @@ where
                         OrderBuilder::new(&self.symbol_a, OrderSide::Buy, self.default_quantity)
                             .client_order_id(format!("rollback-a-{}", timestamp))
                             .market()
-                            .price(opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT))
+                            .price(opportunity.dex_a_ask * (1.0 + self.slippage_buffer_pct))
                             .build()
                             .map_err(|e| ExchangeError::InvalidOrder(e.to_string()));
                     match order {
@@ -964,7 +960,7 @@ where
     ///
     /// # Pricing Strategy
     /// Uses live orderbook prices (0ms) instead of `get_position()` API call (200-500ms).
-    /// Both legs use SLIPPAGE_BUFFER_PCT for price protection, same pattern as entry.
+    /// Both legs use self.slippage_buffer_pct for price protection, same pattern as entry.
     pub async fn close_position(
         &mut self,
         exit_spread: f64,
@@ -995,16 +991,16 @@ where
 
         // DEX A requires a limit price even for MARKET orders (slippage protection)
         let limit_price_a = if side_a == OrderSide::Buy {
-            dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
+            dex_a_ask * (1.0 + self.slippage_buffer_pct)
         } else {
-            dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
+            dex_a_bid * (1.0 - self.slippage_buffer_pct)
         };
 
         // DEX B: LIMIT IOC with slippage buffer
         let limit_price_b = if side_b == OrderSide::Buy {
-            dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT)
+            dex_b_ask * (1.0 + self.slippage_buffer_pct)
         } else {
-            dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT)
+            dex_b_bid * (1.0 - self.slippage_buffer_pct)
         };
 
         debug!(
@@ -1017,7 +1013,7 @@ where
             dex_b_bid = %format!("{:.2}", dex_b_bid),
             dex_b_ask = %format!("{:.2}", dex_b_ask),
             limit_b = %format!("{:.2}", limit_price_b),
-            slippage_pct = %format!("{:.3}", SLIPPAGE_BUFFER_PCT * 100.0),
+            slippage_pct = %format!("{:.3}", self.slippage_buffer_pct * 100.0),
             "Close prices from live orderbook (LIMIT IOC both legs)"
         );
 
@@ -1255,14 +1251,14 @@ where
 
         // DEX A: LIMIT IOC with slippage buffer (no blind market fills)
         let price_a = match side_a {
-            OrderSide::Buy => opportunity.dex_a_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
-            OrderSide::Sell => opportunity.dex_a_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
+            OrderSide::Buy => opportunity.dex_a_ask * (1.0 + self.slippage_buffer_pct),
+            OrderSide::Sell => opportunity.dex_a_bid * (1.0 - self.slippage_buffer_pct),
         };
 
         // DEX B: LIMIT IOC with slippage buffer
         let price_b = match side_b {
-            OrderSide::Buy => opportunity.dex_b_ask * (1.0 + SLIPPAGE_BUFFER_PCT),
-            OrderSide::Sell => opportunity.dex_b_bid * (1.0 - SLIPPAGE_BUFFER_PCT),
+            OrderSide::Buy => opportunity.dex_b_ask * (1.0 + self.slippage_buffer_pct),
+            OrderSide::Sell => opportunity.dex_b_bid * (1.0 - self.slippage_buffer_pct),
         };
 
         // DEX A: LIMIT IOC for immediate fill with price protection
@@ -1350,6 +1346,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         assert_eq!(executor.default_quantity, 0.01);
@@ -1405,6 +1402,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = create_test_opportunity();
@@ -1433,6 +1431,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = create_test_opportunity();
@@ -1461,6 +1460,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = create_test_opportunity();
@@ -1487,6 +1487,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = SpreadOpportunity {
@@ -1522,6 +1523,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = SpreadOpportunity {
@@ -1572,6 +1574,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = create_test_opportunity();
@@ -1713,6 +1716,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // First trade should succeed
@@ -1745,6 +1749,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         let opportunity = create_test_opportunity();
@@ -1815,6 +1820,7 @@ mod tests {
             "BTC-USD-PERP".to_string(),
             "vest".to_string(),
             "paradex".to_string(),
+            0.005,
         );
 
         // First trade succeeds and locks guard
