@@ -984,57 +984,117 @@ impl ExchangeAdapter for LighterAdapter {
         symbol: &str,
         order_id: &str,
     ) -> ExchangeResult<Option<FillInfo>> {
-        // Query recent trades from REST API and match by order_id
+        // Query recent trades from REST API
         let account_index = self.signer.account_index();
         let market_id = self.market_id_for(symbol).unwrap_or(0);
-        let order_index: i64 = order_id.parse().unwrap_or(-1);
+        let is_pending = order_id == "pending";
+        let order_index: i64 = if is_pending {
+            -1
+        } else {
+            order_id.parse().unwrap_or(-1)
+        };
 
-        // "pending" means fire-and-forget WS — no order_id yet
-        if order_id == "pending" || order_index < 0 {
+        // Non-pending but unparseable order_id → nothing to look up
+        if !is_pending && order_index < 0 {
             return Ok(None);
         }
 
-        let url = format!(
-            "{}/api/v1/trades?account_index={}&order_book_id={}&limit=50",
-            self.config.rest_url(),
-            account_index,
-            market_id,
-        );
+        // Retry loop: WS fire-and-forget trades may take a moment to appear in REST API
+        const MAX_ATTEMPTS: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 500;
 
-        let resp = self.http.get(&url).send().await.map_err(|e| {
-            ExchangeError::ConnectionFailed(format!("Failed to fetch trades: {}", e))
-        })?;
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
-            ExchangeError::InvalidResponse(format!("Failed to parse trades: {}", e))
-        })?;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let url = format!(
+                "{}/api/v1/trades?account_index={}&order_book_id={}&limit=5",
+                self.config.rest_url(),
+                account_index,
+                market_id,
+            );
 
-        // Search through trades for one matching our order
-        if let Some(trades) = body["trades"].as_array() {
-            for trade in trades {
-                let ask_id = trade["ask_id"].as_i64().unwrap_or(-1);
-                let bid_id = trade["bid_id"].as_i64().unwrap_or(-1);
+            let resp = self.http.get(&url).send().await.map_err(|e| {
+                ExchangeError::ConnectionFailed(format!("Failed to fetch trades: {}", e))
+            })?;
+            let body: serde_json::Value = resp.json().await.map_err(|e| {
+                ExchangeError::InvalidResponse(format!("Failed to parse trades: {}", e))
+            })?;
 
-                if ask_id == order_index || bid_id == order_index {
-                    let fill_price = trade["price"]
-                        .as_str()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .or_else(|| trade["price"].as_f64())
-                        .unwrap_or(0.0);
+            if let Some(trades) = body["trades"].as_array() {
+                if is_pending {
+                    // No order_id to match — take the MOST RECENT trade for this account+market.
+                    // Safe because get_fill_info is called immediately after close_position
+                    // and the bot only holds one position at a time.
+                    if let Some(trade) = trades.first() {
+                        let fill_price = trade["price"]
+                            .as_str()
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .or_else(|| trade["price"].as_f64())
+                            .unwrap_or(0.0);
 
-                    let fee = trade["taker_fee"]
-                        .as_i64()
-                        .map(|f| f as f64 / 1_000_000.0); // Lighter fees in microunits
+                        if fill_price > 0.0 {
+                            let fee = trade["taker_fee"]
+                                .as_i64()
+                                .map(|f| f as f64 / 1_000_000.0);
 
-                    return Ok(Some(FillInfo {
-                        fill_price,
-                        realized_pnl: None, // Lighter doesn't report realized PnL per-trade
-                        fee,
-                    }));
+                            tracing::info!(
+                                symbol = %symbol,
+                                fill_price = %fill_price,
+                                fee = ?fee,
+                                attempt,
+                                "Lighter: Retrieved fill price from most recent trade (pending order)"
+                            );
+
+                            return Ok(Some(FillInfo {
+                                fill_price,
+                                realized_pnl: None,
+                                fee,
+                            }));
+                        }
+                    }
+                } else {
+                    // Match by ask_id/bid_id (existing logic for known order IDs)
+                    for trade in trades {
+                        let ask_id = trade["ask_id"].as_i64().unwrap_or(-1);
+                        let bid_id = trade["bid_id"].as_i64().unwrap_or(-1);
+
+                        if ask_id == order_index || bid_id == order_index {
+                            let fill_price = trade["price"]
+                                .as_str()
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .or_else(|| trade["price"].as_f64())
+                                .unwrap_or(0.0);
+
+                            let fee = trade["taker_fee"]
+                                .as_i64()
+                                .map(|f| f as f64 / 1_000_000.0);
+
+                            return Ok(Some(FillInfo {
+                                fill_price,
+                                realized_pnl: None,
+                                fee,
+                            }));
+                        }
+                    }
                 }
+            }
+
+            // Trade not found yet — retry after delay
+            if attempt < MAX_ATTEMPTS {
+                tracing::debug!(
+                    symbol = %symbol,
+                    order_id = %order_id,
+                    attempt,
+                    "Lighter: Trade not found yet, retrying..."
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
             }
         }
 
-        // No matching trade found (may not be filled yet for IOC miss)
+        tracing::warn!(
+            symbol = %symbol,
+            order_id = %order_id,
+            attempts = MAX_ATTEMPTS,
+            "Lighter: Fill info not found after all retries"
+        );
         Ok(None)
     }
 
