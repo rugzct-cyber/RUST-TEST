@@ -216,6 +216,18 @@ pub fn resolve_symbol(exchange: &str, pair: &str) -> String {
 ///
 /// Returns None if the adapter is not Paradex.
 impl AnyAdapter {
+    /// Get a clone of the reader_alive flag for connection liveness checking.
+    ///
+    /// This allows monitoring and runtime tasks to detect when a WebSocket
+    /// reader loop has exited, indicating the adapter is disconnected.
+    pub fn get_reader_alive(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        match self {
+            AnyAdapter::Vest(a) => std::sync::Arc::clone(&a.connection_health.reader_alive),
+            AnyAdapter::Paradex(a) => std::sync::Arc::clone(&a.connection_health.reader_alive),
+            AnyAdapter::Lighter(a) => std::sync::Arc::clone(&a.health.reader_alive),
+        }
+    }
+
     pub fn as_paradex_mut(&mut self) -> Option<&mut ParadexAdapter> {
         match self {
             AnyAdapter::Paradex(a) => Some(a),

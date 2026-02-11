@@ -63,7 +63,7 @@ pub struct LighterAdapter {
     /// WebSocket write half (Mutex-wrapped for shared &self access from place_order/cancel_order)
     ws_sink: Arc<Mutex<Option<WsSink>>>,
     /// Connection health tracking
-    health: ConnectionHealth,
+    pub(crate) health: ConnectionHealth,
     /// Subscribed symbols mapping: symbol → market_id
     subscriptions: HashMap<String, u8>,
     /// Market info: symbol → MarketMapping

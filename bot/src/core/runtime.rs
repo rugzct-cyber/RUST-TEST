@@ -11,6 +11,7 @@
 //! - Distinct entry_spread vs exit_spread fields for slippage analysis
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 use tracing::{debug, error, warn};
@@ -90,6 +91,9 @@ pub async fn execution_task<V, P>(
     total_position_size: f64,
     // Exit confirmation (anti-spike)
     exit_confirm_ticks: u32,
+    // Connection liveness flags
+    dex_a_alive: Arc<AtomicBool>,
+    dex_b_alive: Arc<AtomicBool>,
 ) where
     V: ExchangeAdapter + Send + Sync,
     P: ExchangeAdapter + Send + Sync,
@@ -185,6 +189,20 @@ pub async fn execution_task<V, P>(
                     }
 
                     // Read live prices
+                    // SAFETY: Skip if either adapter reader is dead (stale prices)
+                    if !dex_a_alive.load(Ordering::Relaxed) || !dex_b_alive.load(Ordering::Relaxed) {
+                        if poll_count % LOG_THROTTLE_POLLS == 0 {
+                            warn!(
+                                event_type = "EXIT_PAUSED",
+                                dex_a_alive = dex_a_alive.load(Ordering::Relaxed),
+                                dex_b_alive = dex_b_alive.load(Ordering::Relaxed),
+                                "Exit monitoring paused — adapter reader dead"
+                            );
+                        }
+                        exit_confirm_count = 0;
+                        continue;
+                    }
+
                     let (bid_a, ask_a) = dex_a_best_prices.load();
                     let (bid_b, ask_b) = dex_b_best_prices.load();
 
@@ -518,6 +536,20 @@ pub async fn execution_task<V, P>(
                             ) => {
                                 poll_count += 1;
 
+                                // SAFETY: Skip if either adapter reader is dead (stale prices)
+                                if !dex_a_alive.load(Ordering::Relaxed) || !dex_b_alive.load(Ordering::Relaxed) {
+                                    if poll_count % LOG_THROTTLE_POLLS == 0 {
+                                        warn!(
+                                            event_type = "EXIT_PAUSED",
+                                            dex_a_alive = dex_a_alive.load(Ordering::Relaxed),
+                                            dex_b_alive = dex_b_alive.load(Ordering::Relaxed),
+                                            "Exit monitoring paused — adapter reader dead"
+                                        );
+                                    }
+                                    exit_confirm_count = 0;
+                                    continue;
+                                }
+
                                 // JWT refresh every ~2 min
                                 const JWT_REFRESH_INTERVAL_SECS: u64 = 120;
                                 if last_jwt_refresh.elapsed().as_secs() >= JWT_REFRESH_INTERVAL_SECS {
@@ -839,6 +871,8 @@ mod tests {
                 0.35, // spread_entry_max (single layer)
                 0.01, // total_position_size
                 1,    // exit_confirm_ticks (instant exit for tests)
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -908,6 +942,8 @@ mod tests {
                 0.35, // spread_entry_max (single layer)
                 0.01, // total_position_size
                 1,    // exit_confirm_ticks (instant exit for tests)
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -965,6 +1001,8 @@ mod tests {
                 0.35, // spread_entry_max (single layer)
                 0.01, // total_position_size
                 1,    // exit_confirm_ticks (instant exit for tests)
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -1037,6 +1075,8 @@ mod tests {
                 0.35,
                 0.01,
                 1,    // exit_confirm_ticks
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -1105,6 +1145,8 @@ mod tests {
                 0.35,
                 0.01,
                 1,    // exit_confirm_ticks
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -1173,6 +1215,8 @@ mod tests {
                 0.35,
                 0.01,
                 1,    // exit_confirm_ticks
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -1244,6 +1288,8 @@ mod tests {
                 0.35,
                 0.01,
                 1,    // exit_confirm_ticks
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });
@@ -1300,6 +1346,8 @@ mod tests {
                 0.35,
                 0.01,
                 1,    // exit_confirm_ticks
+                Arc::new(AtomicBool::new(true)), // dex_a_alive
+                Arc::new(AtomicBool::new(true)), // dex_b_alive
             )
             .await;
         });

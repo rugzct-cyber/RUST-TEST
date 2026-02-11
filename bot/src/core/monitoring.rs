@@ -16,6 +16,7 @@
 //! - Events include entry_spread, spread_threshold, direction, pair
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{broadcast, watch};
 use tokio::time::Duration;
 use tracing::{debug, warn};
@@ -80,6 +81,8 @@ pub async fn monitoring_task(
     config: MonitoringConfig,
     orderbook_notify: OrderbookNotify,
     mut shutdown_rx: broadcast::Receiver<()>,
+    dex_a_alive: Arc<AtomicBool>,
+    dex_b_alive: Arc<AtomicBool>,
 ) {
     log_system_event(&SystemEvent::task_started("monitoring"));
 
@@ -102,6 +105,22 @@ pub async fn monitoring_task(
             ) => {
                 poll_count += 1;
                 let _timed_out = result.is_err();
+
+                // SAFETY: Skip poll if either adapter reader is dead (stale prices)
+                let a_alive = dex_a_alive.load(Ordering::Relaxed);
+                let b_alive = dex_b_alive.load(Ordering::Relaxed);
+                if !a_alive || !b_alive {
+                    if poll_count % WARN_THROTTLE_POLLS as u64 == 0 {
+                        warn!(
+                            event_type = "ADAPTER_DEAD",
+                            dex_a_alive = a_alive,
+                            dex_b_alive = b_alive,
+                            "Skipping spread check — adapter reader dead (stale prices)"
+                        );
+                    }
+                    entry_confirm_count = 0; // reset confirmation
+                    continue;
+                }
 
                 // HOT PATH: Read atomic best prices — zero lock, zero allocation
                 let (vest_bid, vest_ask) = vest_best_prices.load();
@@ -209,6 +228,7 @@ mod tests {
     use crate::core::channels::AtomicBestPrices;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use tokio::sync::RwLock;
     use tokio::time::timeout;
 
@@ -260,6 +280,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -310,6 +332,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_millis(500), opportunity_rx.changed()).await;
@@ -363,6 +387,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_millis(200), opportunity_rx.changed()).await;
@@ -414,6 +440,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_millis(500), opportunity_rx.changed()).await;
@@ -464,6 +492,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_millis(200), opportunity_rx.changed()).await;
@@ -507,6 +537,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_millis(200), opportunity_rx.changed()).await;
@@ -554,6 +586,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -604,6 +638,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_secs(2), handle).await;
@@ -649,6 +685,8 @@ mod tests {
             config,
             make_test_notify(),
             shutdown_rx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
         ));
 
         let result = timeout(Duration::from_millis(500), opportunity_rx.changed()).await;

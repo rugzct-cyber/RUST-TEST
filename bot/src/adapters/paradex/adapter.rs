@@ -101,7 +101,7 @@ pub struct ParadexAdapter {
     /// Handle to message reader task (for cleanup)
     reader_handle: Option<tokio::task::JoinHandle<()>>,
     /// Connection health tracking
-    connection_health: crate::adapters::types::ConnectionHealth,
+    pub(crate) connection_health: crate::adapters::types::ConnectionHealth,
     /// Handle to heartbeat task (for cleanup)
     heartbeat_handle: Option<tokio::task::JoinHandle<()>>,
     /// Starknet chain ID from system config (cached for order signing)

@@ -328,6 +328,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Spawn execution_task (V1: with exit monitoring)
+    // Clone reader_alive flags from monitoring adapters for disconnect detection
+    let dex_a_alive = dex_a_adapter.get_reader_alive();
+    let dex_b_alive = dex_b_adapter.get_reader_alive();
     let execution_shutdown = shutdown_tx.subscribe();
     let exit_spread_target = bot.spread_exit;
     let exec_dex_a_best_prices = dex_a_best_prices.clone();
@@ -340,6 +343,8 @@ async fn main() -> anyhow::Result<()> {
     let exec_spread_entry_max = bot.spread_entry_max;
     let exec_position_size = bot.position_size;
     let exec_exit_confirm_ticks = bot.exit_confirm_ticks;
+    let exec_dex_a_alive = dex_a_alive.clone();
+    let exec_dex_b_alive = dex_b_alive.clone();
     tokio::spawn(async move {
         execution_task(
             opportunity_rx,
@@ -356,6 +361,8 @@ async fn main() -> anyhow::Result<()> {
             exec_spread_entry_max,
             exec_position_size,
             exec_exit_confirm_ticks,
+            exec_dex_a_alive,
+            exec_dex_b_alive,
         )
         .await;
     });
@@ -388,6 +395,8 @@ async fn main() -> anyhow::Result<()> {
             monitoring_config,
             orderbook_notify,
             monitoring_shutdown,
+            dex_a_alive.clone(),
+            dex_b_alive.clone(),
         )
         .await;
     });
