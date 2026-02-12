@@ -43,7 +43,7 @@ const HTTP_TCP_KEEPALIVE_SECS: u64 = 30;
 
 /// Create an optimized HTTP client for HFT operations
 ///
-/// Connection pooling configured for latency optimization
+/// Connection pooling + TCP_NODELAY configured for latency optimization
 pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
@@ -51,6 +51,7 @@ pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
         .pool_idle_timeout(Duration::from_secs(HTTP_POOL_IDLE_TIMEOUT_SECS))
         .tcp_keepalive(Duration::from_secs(HTTP_TCP_KEEPALIVE_SECS))
         .connect_timeout(Duration::from_millis(HTTP_CONNECT_TIMEOUT_MS))
+        .tcp_nodelay(true)  // Disable Nagle's algorithm — send packets immediately
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     tracing::info!(
@@ -61,6 +62,7 @@ pub fn create_http_client(exchange_name: &str) -> reqwest::Client {
         pool_max_idle = HTTP_POOL_MAX_IDLE,
         pool_idle_timeout_s = HTTP_POOL_IDLE_TIMEOUT_SECS,
         tcp_keepalive_s = HTTP_TCP_KEEPALIVE_SECS,
+        tcp_nodelay = true,
         "HTTP client configured"
     );
     client
