@@ -726,6 +726,8 @@ impl VestAdapter {
 
         while let Some(msg_result) = ws_receiver.next().await {
             last_data.store(current_time_ms(), Ordering::Relaxed);
+            // Any WS message proves the connection is alive — reset PONG staleness timer
+            last_pong.store(current_time_ms(), Ordering::Relaxed);
 
             match msg_result {
                 Ok(Message::Text(text)) => {
