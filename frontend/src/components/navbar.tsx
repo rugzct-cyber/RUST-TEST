@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useWS } from "@/components/providers";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
@@ -17,45 +16,68 @@ const NAV_ITEMS = [
 ] as const;
 
 // =============================================================================
-// Navbar
+// Navbar — matches original arbi-v5 Header style
 // =============================================================================
 
 export function Navbar() {
     const pathname = usePathname();
     const { status } = useWS();
 
-    const statusColor: Record<string, string> = {
-        connected: "bg-emerald-500",
-        connecting: "bg-amber-500 animate-pulse",
-        disconnected: "bg-red-500",
-    };
+    const statusColor = status === "connected"
+        ? "#10b981"
+        : status === "connecting"
+            ? "#f59e0b"
+            : "#ef4444";
+
+    const statusClass = status === "connecting" ? "status-connecting" : "";
 
     return (
-        <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-            <div className="mx-auto flex h-14 max-w-screen-2xl items-center gap-6 px-6">
+        <header
+            style={{
+                position: "sticky",
+                top: 0,
+                zIndex: 50,
+                background: "var(--card)",
+                borderBottom: "1px solid var(--border)",
+                padding: "0 24px",
+            }}
+        >
+            <div style={{
+                display: "flex",
+                alignItems: "center",
+                height: 56,
+                gap: 24,
+                maxWidth: 1600,
+                margin: "0 auto",
+            }}>
                 {/* Logo */}
                 <Link
                     href="/"
-                    className="flex items-center gap-2 font-semibold tracking-tight"
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        textDecoration: "none",
+                        fontSize: "1.25rem",
+                        fontWeight: 700,
+                    }}
                 >
-                    <span className="text-lg">⚡</span>
-                    <span className="bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
-                        Arbi v5
-                    </span>
+                    <span style={{ fontSize: "1.5rem" }}>⚡</span>
+                    <span style={{ color: "var(--foreground)" }}>Arbi v5</span>
                 </Link>
 
                 {/* Nav links */}
-                <nav className="flex items-center gap-1">
+                <nav style={{ display: "flex", gap: 24 }}>
                     {NAV_ITEMS.map((item) => (
                         <Link
                             key={item.href}
                             href={item.href}
-                            className={cn(
-                                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                                pathname === item.href
-                                    ? "bg-accent text-accent-foreground"
-                                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                            )}
+                            style={{
+                                textDecoration: "none",
+                                fontSize: "0.875rem",
+                                fontWeight: pathname === item.href ? 500 : 400,
+                                color: pathname === item.href ? "var(--foreground)" : "var(--muted-foreground)",
+                            }}
                         >
                             {item.label}
                         </Link>
@@ -63,20 +85,24 @@ export function Navbar() {
                 </nav>
 
                 {/* Spacer */}
-                <div className="flex-1" />
+                <div style={{ flex: 1 }} />
 
                 {/* Connection status */}
-                <div className="flex items-center gap-2">
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.75rem", color: "var(--muted-foreground)" }}>
                     <span
-                        className={cn("h-2 w-2 rounded-full", statusColor[status])}
+                        className={statusClass}
+                        style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            display: "inline-block",
+                            background: statusColor,
+                            boxShadow: status === "connected" ? `0 0 8px ${statusColor}` : undefined,
+                        }}
                     />
-                    <Badge variant={status === "connected" ? "default" : "secondary"}>
-                        {status === "connected"
-                            ? "Live"
-                            : status === "connecting"
-                                ? "Connecting…"
-                                : "Offline"}
-                    </Badge>
+                    <span>
+                        {status === "connected" ? "Live" : status === "connecting" ? "Connecting…" : "Offline"}
+                    </span>
                 </div>
             </div>
         </header>

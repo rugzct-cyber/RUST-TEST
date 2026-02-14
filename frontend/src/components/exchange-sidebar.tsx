@@ -3,23 +3,21 @@
 import { useState, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
-// ExchangeSidebar — filterable list of exchange checkboxes
+// ExchangeSidebar — matches original arbi-v5 Sidebar.module.css
 // =============================================================================
 
 interface ExchangeSidebarProps {
-    /** All exchanges discovered from WebSocket data */
     allExchanges: string[];
-    /** Currently selected (visible) exchanges */
     selectedExchanges: Set<string>;
-    /** Toggle callback */
     onToggle: (exchange: string) => void;
-    /** Select/deselect all */
     onSelectAll: () => void;
     onDeselectAll: () => void;
+    favorites?: Set<string>;
+    showFavoritesOnly?: boolean;
+    onShowFavoritesToggle?: () => void;
 }
 
 export function ExchangeSidebar({
@@ -28,40 +26,178 @@ export function ExchangeSidebar({
     onToggle,
     onSelectAll,
     onDeselectAll,
+    favorites,
+    showFavoritesOnly = false,
+    onShowFavoritesToggle,
 }: ExchangeSidebarProps) {
     const [search, setSearch] = useState("");
+    const [isCollapsed, setIsCollapsed] = useState(false);
 
     const filtered = useMemo(
-        () =>
-            allExchanges.filter((e) =>
-                e.toLowerCase().includes(search.toLowerCase())
-            ),
+        () => allExchanges.filter((e) => e.toLowerCase().includes(search.toLowerCase())),
         [allExchanges, search]
     );
 
     const allSelected = selectedExchanges.size === allExchanges.length;
+    const favCount = favorites?.size ?? 0;
+
+    if (isCollapsed) {
+        return (
+            <aside
+                style={{
+                    width: 40,
+                    flexShrink: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    background: "var(--card)",
+                    borderRight: "1px solid var(--border)",
+                    paddingTop: 16,
+                    gap: 8,
+                }}
+            >
+                <button
+                    onClick={() => setIsCollapsed(false)}
+                    title="Expand sidebar"
+                    style={{
+                        background: "none",
+                        border: "none",
+                        color: "var(--muted-foreground)",
+                        cursor: "pointer",
+                        fontSize: 14,
+                    }}
+                >
+                    ▶
+                </button>
+                <span style={{
+                    fontSize: 10,
+                    padding: "2px 6px",
+                    borderRadius: 9999,
+                    background: "var(--secondary)",
+                    color: "var(--secondary-foreground)",
+                }}>
+                    {selectedExchanges.size}
+                </span>
+            </aside>
+        );
+    }
 
     return (
-        <aside className="flex w-52 shrink-0 flex-col border-r border-border/30 bg-card/30 backdrop-blur-sm">
+        <aside
+            style={{
+                width: 220,
+                flexShrink: 0,
+                display: "flex",
+                flexDirection: "column",
+                background: "var(--card)",
+                borderRight: "1px solid var(--border)",
+            }}
+        >
+            {/* Header */}
+            <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--border)",
+            }}>
+                <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted-foreground)" }}>
+                    Filters
+                </span>
+                <button
+                    onClick={() => setIsCollapsed(true)}
+                    title="Collapse sidebar"
+                    style={{
+                        background: "none",
+                        border: "none",
+                        color: "var(--muted-foreground)",
+                        cursor: "pointer",
+                        fontSize: 12,
+                    }}
+                >
+                    ◀
+                </button>
+            </div>
+
             {/* Search */}
-            <div className="border-b border-border/20 p-3">
+            <div style={{ padding: "12px 12px", borderBottom: "1px solid var(--border)" }}>
                 <input
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search pair…"
-                    className="w-full rounded-md border border-border/30 bg-background/50 px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-emerald-500/50 focus:outline-none focus:ring-1 focus:ring-emerald-500/30"
+                    placeholder="Search exchange…"
+                    style={{
+                        width: "100%",
+                        padding: "6px 10px",
+                        background: "var(--card)",
+                        border: "1px solid var(--border)",
+                        borderRadius: "var(--radius)",
+                        color: "var(--foreground)",
+                        fontSize: 13,
+                    }}
                 />
             </div>
 
-            {/* Select all / none */}
-            <div className="flex items-center justify-between border-b border-border/20 px-3 py-2">
-                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            {/* Favorites filter */}
+            {onShowFavoritesToggle && (
+                <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
+                    <button
+                        onClick={onShowFavoritesToggle}
+                        style={{
+                            display: "flex",
+                            width: "100%",
+                            alignItems: "center",
+                            gap: 8,
+                            padding: "8px 12px",
+                            borderRadius: "var(--radius)",
+                            fontSize: 13,
+                            fontWeight: 500,
+                            background: showFavoritesOnly ? "rgba(99, 102, 241, 0.15)" : "transparent",
+                            border: showFavoritesOnly ? "1px solid rgba(99, 102, 241, 0.3)" : "1px solid transparent",
+                            color: showFavoritesOnly ? "#6366f1" : "var(--muted-foreground)",
+                            cursor: "pointer",
+                            transition: "all 0.2s ease",
+                        }}
+                    >
+                        <span>★</span>
+                        <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em" }}>Favorites</span>
+                        {favCount > 0 && (
+                            <span style={{
+                                marginLeft: "auto",
+                                fontSize: 10,
+                                padding: "1px 6px",
+                                borderRadius: 9999,
+                                background: "var(--secondary)",
+                                color: "var(--secondary-foreground)",
+                            }}>
+                                {favCount}
+                            </span>
+                        )}
+                    </button>
+                </div>
+            )}
+
+            {/* Exchanges header */}
+            <div style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--border)",
+            }}>
+                <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em", color: "var(--muted-foreground)" }}>
                     Exchanges
                 </span>
                 <button
                     onClick={allSelected ? onDeselectAll : onSelectAll}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+                    style={{
+                        background: "none",
+                        border: "none",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#6366f1",
+                        cursor: "pointer",
+                    }}
                 >
                     {allSelected ? "None" : "All"}
                 </button>
@@ -69,25 +205,31 @@ export function ExchangeSidebar({
 
             {/* Exchange list */}
             <ScrollArea className="flex-1">
-                <div className="space-y-0.5 p-2">
+                <div style={{ padding: 8 }}>
                     {filtered.map((exchange) => {
                         const checked = selectedExchanges.has(exchange);
                         return (
                             <label
                                 key={exchange}
-                                className={cn(
-                                    "flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors",
-                                    checked
-                                        ? "bg-accent/50 text-foreground"
-                                        : "text-muted-foreground hover:bg-accent/30 hover:text-foreground"
-                                )}
+                                style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 10,
+                                    padding: "10px 12px",
+                                    borderRadius: "var(--radius)",
+                                    fontSize: 13,
+                                    cursor: "pointer",
+                                    transition: "all 0.2s ease",
+                                    background: checked ? "rgba(99, 102, 241, 0.1)" : "transparent",
+                                    color: checked ? "var(--foreground)" : "var(--muted-foreground)",
+                                }}
                             >
                                 <Checkbox
                                     checked={checked}
                                     onCheckedChange={() => onToggle(exchange)}
                                     className="h-3.5 w-3.5"
                                 />
-                                <span className="truncate font-medium uppercase text-xs tracking-wide">
+                                <span style={{ fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em" }}>
                                     {exchange}
                                 </span>
                             </label>
@@ -96,11 +238,15 @@ export function ExchangeSidebar({
                 </div>
             </ScrollArea>
 
-            {/* Footer count */}
-            <div className="border-t border-border/20 px-3 py-2">
-                <Badge variant="secondary" className="font-mono text-xs w-full justify-center">
-                    {selectedExchanges.size} / {allExchanges.length}
-                </Badge>
+            {/* Footer */}
+            <div style={{
+                padding: "8px 16px",
+                borderTop: "1px solid var(--border)",
+                textAlign: "center",
+                fontSize: 12,
+                color: "var(--muted-foreground)",
+            }}>
+                <span style={{ fontFamily: "monospace" }}>{selectedExchanges.size}</span> / <span style={{ fontFamily: "monospace" }}>{allExchanges.length}</span>
             </div>
         </aside>
     );

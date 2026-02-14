@@ -4,24 +4,19 @@ import { usePathname } from "next/navigation";
 import { Navbar } from "@/components/navbar";
 import { WebSocketProvider } from "@/components/providers";
 
-/**
- * Client layout wrapper — provides WebSocket context + Navbar
- * to all pages. Separated from root layout (server component)
- * because providers require "use client".
- */
 export function ClientShell({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const isFullBleed = pathname === "/" || pathname === "/positions";
 
     return (
         <WebSocketProvider>
-            <div className="relative flex min-h-screen flex-col bg-gradient-to-br from-[#0a0a1a] via-[#0f0f23] to-[#1a1a2e]">
+            <div style={{ position: "relative", display: "flex", flexDirection: "column", minHeight: "100vh", background: "var(--background)" }}>
                 <Navbar />
                 {isFullBleed ? (
-                    <main className="flex-1">{children}</main>
+                    <main style={{ flex: 1 }}>{children}</main>
                 ) : (
-                    <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
-                        <div className="mx-auto max-w-screen-2xl">{children}</div>
+                    <main style={{ flex: 1, padding: "24px 16px" }}>
+                        <div style={{ maxWidth: 1400, margin: "0 auto" }}>{children}</div>
                     </main>
                 )}
             </div>
