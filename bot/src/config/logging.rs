@@ -14,17 +14,6 @@
 
 use tracing_subscriber::EnvFilter;
 
-/// Check if TUI mode is requested
-///
-/// Returns true if LOG_FORMAT=tui, false otherwise.
-/// When TUI mode is requested, caller should initialize logging manually
-/// with the TuiLayer.
-pub fn is_tui_mode() -> bool {
-    std::env::var("LOG_FORMAT")
-        .map(|f| f == "tui")
-        .unwrap_or(false)
-}
-
 /// Initialize logging with configurable format
 ///
 /// Reads `LOG_FORMAT` from environment:

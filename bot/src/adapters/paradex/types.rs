@@ -1,32 +1,12 @@
 //! Paradex Types
 //!
 //! API response types and data structures for Paradex exchange.
+//! Public orderbook data only — no auth/order/position/margin types.
 
 use serde::Deserialize;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::types::{Orderbook, OrderbookLevel};
-
-// =============================================================================
-// REST API Response Types
-// =============================================================================
-
-/// JWT token response from POST /auth
-#[derive(Debug, Deserialize)]
-pub(crate) struct AuthResponse {
-    /// JWT bearer token
-    pub jwt_token: Option<String>,
-    /// Error code if authentication failed
-    #[serde(default)]
-    pub error: Option<AuthError>,
-}
-
-/// Authentication error response
-#[derive(Debug, Deserialize)]
-pub(crate) struct AuthError {
-    pub code: i32,
-    pub message: String,
-}
 
 // =============================================================================
 // WebSocket Message Types
@@ -37,6 +17,7 @@ pub(crate) struct AuthError {
 pub(crate) struct JsonRpcResponse {
     #[allow(dead_code)] // Required by JSON-RPC spec, validated by serde
     pub jsonrpc: String,
+    #[allow(dead_code)] // Deserialized from JSON-RPC spec but not directly accessed
     pub result: Option<serde_json::Value>,
     pub error: Option<JsonRpcError>,
     pub id: u64,
@@ -49,7 +30,7 @@ pub(crate) struct JsonRpcError {
     pub message: String,
 }
 
-/// JSON-RPC 2.0 subscription notification (for orderbook updates, etc.)
+/// JSON-RPC 2.0 subscription notification (for orderbook updates)
 /// Different from JsonRpcResponse - no id field, has method="subscription"
 #[derive(Debug, Deserialize)]
 pub(crate) struct JsonRpcSubscriptionNotification {
@@ -69,13 +50,6 @@ pub(crate) struct SubscriptionParams {
     pub channel: String,
     /// Orderbook data
     pub data: ParadexOrderbookData,
-}
-
-/// WebSocket authentication response
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Used by serde to parse auth responses
-pub(crate) struct WsAuthResult {
-    pub node_id: String,
 }
 
 /// Paradex orderbook message from subscription
@@ -218,117 +192,13 @@ pub(crate) struct ParadexSubscriptionResponse {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum ParadexWsMessage {
-    /// JSON-RPC subscription notification (orderbook updates, etc.)
+    /// JSON-RPC subscription notification (orderbook updates)
     /// Must be listed before JsonRpc as it has more specific structure
     SubscriptionNotification(JsonRpcSubscriptionNotification),
     /// Orderbook update message with channel field (legacy/direct format)
     Orderbook(ParadexOrderbookMessage),
-    /// JSON-RPC response (auth, subscription confirmations)
+    /// JSON-RPC response (subscription confirmations)
     JsonRpc(JsonRpcResponse),
-}
-
-// =============================================================================
-// Order Response Types
-// =============================================================================
-
-/// Response from POST /orders (Paradex API)
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)] // Fields used for API deserialization
-pub(crate) struct ParadexOrderResponse {
-    /// Order ID assigned by Paradex
-    pub id: Option<String>,
-    /// Order status: NEW, OPEN, CLOSED
-    pub status: Option<String>,
-    /// Client-assigned order ID
-    pub client_id: Option<String>,
-    /// Market symbol
-    pub market: Option<String>,
-    /// Order side: BUY or SELL
-    pub side: Option<String>,
-    /// Order type: LIMIT, MARKET, etc.
-    #[serde(rename = "type")]
-    pub order_type: Option<String>,
-    /// Order size
-    pub size: Option<String>,
-    /// Filled quantity
-    pub filled_qty: Option<String>,
-    /// Average fill price
-    pub avg_fill_price: Option<String>,
-    /// Order price
-    pub price: Option<String>,
-    /// Cancel reason if order was cancelled/rejected
-    pub cancel_reason: Option<String>,
-    /// Error response (if failed)
-    pub error: Option<ParadexErrorResponse>,
-}
-
-/// Paradex error response
-#[derive(Debug, Deserialize)]
-pub(crate) struct ParadexErrorResponse {
-    pub code: Option<String>,
-    pub message: Option<String>,
-}
-
-
-
-/// Position data from Paradex API
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // Used for position handling
-pub struct ParadexPositionData {
-    /// Market symbol
-    pub market: String,
-    /// Position side: "LONG" or "SHORT"
-    pub side: String,
-    /// Position size
-    pub size: String,
-    /// Average entry price
-    pub average_entry_price: String,
-    /// Unrealized PnL
-    pub unrealized_pnl: String,
-    /// Realized PnL
-    pub realized_pnl: String,
-}
-
-// =============================================================================
-// Margin/Leverage Types
-// =============================================================================
-
-/// Margin configuration for a market from GET /account/margin
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // Fields used by serde for API deserialization
-pub struct ParadexMarginConfig {
-    /// Leverage value (1 up to market's maximum)
-    pub leverage: Option<u32>,
-    /// Margin type: "CROSS" or "ISOLATED"
-    pub margin_type: Option<String>,
-    /// Market symbol
-    pub market: Option<String>,
-}
-
-/// Response from GET /account/margin
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // Fields used by serde for API deserialization
-pub struct ParadexMarginResponse {
-    /// Account ID
-    pub account: Option<String>,
-    /// List of margin configurations per market
-    pub configs: Option<Vec<ParadexMarginConfig>>,
-    /// Margin methodology (cross_margin/portfolio_margin)
-    pub margin_methodology: Option<String>,
-}
-
-/// Response from POST /account/margin/{market}
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)] // Fields used by serde for API deserialization
-pub struct ParadexSetMarginResponse {
-    /// Account ID
-    pub account: Option<String>,
-    /// Leverage value that was set
-    pub leverage: Option<u32>,
-    /// Margin type: "CROSS" or "ISOLATED"
-    pub margin_type: Option<String>,
-    /// Market symbol
-    pub market: Option<String>,
 }
 
 #[cfg(test)]

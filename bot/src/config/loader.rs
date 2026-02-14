@@ -89,9 +89,6 @@ bots:
     dex_a: vest
     dex_b: paradex
     spread_entry: 0.30
-    spread_exit: 0.05
-    leverage: 10
-    position_size: 0.001
 "#;
 
     #[test]
@@ -118,9 +115,6 @@ bots:
     dex_a: vest
     dex_b: vest
     spread_entry: 0.30
-    spread_exit: 0.05
-    leverage: 10
-    position_size: 0.001
 risk:
   adl_warning: 10.0
   adl_critical: 5.0
@@ -179,17 +173,11 @@ bots:
     dex_a: vest
     dex_b: paradex
     spread_entry: 0.30
-    spread_exit: 0.05
-    leverage: 10
-    position_size: 0.001
   - id: eth_bot
     pair: ETH-PERP
     dex_a: paradex
     dex_b: vest
     spread_entry: 0.40
-    spread_exit: 0.10
-    leverage: 20
-    position_size: 0.002
 risk:
   adl_warning: 10.0
   adl_critical: 5.0

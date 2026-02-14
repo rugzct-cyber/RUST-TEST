@@ -3,28 +3,21 @@
 //! Creates `ExchangeAdapter` instances from config strings like "vest", "paradex", "lighter".
 //! Uses an enum-based dispatch pattern (no `Box<dyn>`) to preserve monomorphization.
 
-
-
 use async_trait::async_trait;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
-use crate::adapters::traits::ExchangeAdapter;
-use crate::adapters::types::{FillInfo, OrderRequest, OrderResponse, Orderbook, PositionInfo};
-use crate::core::channels::{OrderbookNotify, SharedBestPrices, SharedOrderbooks};
-
-use crate::adapters::vest::{VestAdapter, VestConfig};
-use crate::adapters::paradex::{ParadexAdapter, ParadexConfig};
 use crate::adapters::lighter::{LighterAdapter, LighterConfig};
+use crate::adapters::paradex::{ParadexAdapter, ParadexConfig};
+use crate::adapters::traits::ExchangeAdapter;
+use crate::adapters::types::Orderbook;
+use crate::adapters::vest::{VestAdapter, VestConfig};
+use crate::core::channels::{OrderbookNotify, SharedBestPrices, SharedOrderbooks};
 
 // =============================================================================
 // AnyAdapter — enum-based dispatch for dynamic exchange selection
 // =============================================================================
 
 /// Enum wrapping all concrete adapter types for runtime dispatch.
-///
-/// This avoids `Box<dyn ExchangeAdapter>` which would require object safety
-/// and prevent the compiler from monomorphizing hot paths. The enum generates
-/// a match-based vtable that's effectively zero-cost.
 pub enum AnyAdapter {
     Vest(VestAdapter),
     Paradex(ParadexAdapter),
@@ -81,14 +74,6 @@ impl ExchangeAdapter for AnyAdapter {
         delegate!(mut await self, unsubscribe_orderbook(symbol))
     }
 
-    async fn place_order(&self, order: OrderRequest) -> ExchangeResult<OrderResponse> {
-        delegate!(await self, place_order(order))
-    }
-
-    async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {
-        delegate!(await self, cancel_order(order_id))
-    }
-
     fn get_orderbook(&self, symbol: &str) -> Option<&Orderbook> {
         delegate!(self, get_orderbook(symbol))
     }
@@ -109,14 +94,6 @@ impl ExchangeAdapter for AnyAdapter {
         delegate!(mut await self, reconnect())
     }
 
-    async fn get_position(&self, symbol: &str) -> ExchangeResult<Option<PositionInfo>> {
-        delegate!(await self, get_position(symbol))
-    }
-
-    async fn get_fill_info(&self, symbol: &str, order_id: &str) -> ExchangeResult<Option<FillInfo>> {
-        delegate!(await self, get_fill_info(symbol, order_id))
-    }
-
     fn exchange_name(&self) -> &'static str {
         delegate!(self, exchange_name())
     }
@@ -132,25 +109,6 @@ impl ExchangeAdapter for AnyAdapter {
     fn set_orderbook_notify(&mut self, notify: OrderbookNotify) {
         delegate!(mut self, set_orderbook_notify(notify))
     }
-
-    async fn subscribe_orders(&self, symbol: &str) -> ExchangeResult<()> {
-        // Manual dispatch — Paradex has inherent subscribe_orders() -> ExchangeResult<u64>
-        // that shadows the trait method, so we use ExchangeAdapter:: qualification.
-        match self {
-            AnyAdapter::Vest(a) => ExchangeAdapter::subscribe_orders(a, symbol).await,
-            AnyAdapter::Paradex(a) => ExchangeAdapter::subscribe_orders(a, symbol).await,
-            AnyAdapter::Lighter(a) => ExchangeAdapter::subscribe_orders(a, symbol).await,
-        }
-    }
-
-    async fn set_leverage(&self, symbol: &str, leverage: u32) -> ExchangeResult<u32> {
-        // Manual dispatch — Vest/Paradex have inherent set_leverage() that may differ
-        match self {
-            AnyAdapter::Vest(a) => ExchangeAdapter::set_leverage(a, symbol, leverage).await,
-            AnyAdapter::Paradex(a) => ExchangeAdapter::set_leverage(a, symbol, leverage).await,
-            AnyAdapter::Lighter(a) => ExchangeAdapter::set_leverage(a, symbol, leverage).await,
-        }
-    }
 }
 
 // =============================================================================
@@ -160,23 +118,18 @@ impl ExchangeAdapter for AnyAdapter {
 /// Create an adapter from a config name string.
 ///
 /// The adapter is created but NOT connected — call `connect()` after.
-///
-/// # Supported names
-/// - `"vest"` — creates VestAdapter from env vars
-/// - `"paradex"` — creates ParadexAdapter from env vars
-/// - `"lighter"` — creates LighterAdapter from env vars
 pub fn create_adapter(name: &str) -> ExchangeResult<AnyAdapter> {
     match name {
         "vest" => {
-            let config = VestConfig::from_env()?;
+            let config = VestConfig::from_env();
             Ok(AnyAdapter::Vest(VestAdapter::new(config)))
         }
         "paradex" => {
-            let config = ParadexConfig::from_env()?;
+            let config = ParadexConfig::from_env();
             Ok(AnyAdapter::Paradex(ParadexAdapter::new(config)))
         }
         "lighter" => {
-            let config = LighterConfig::from_env()?;
+            let config = LighterConfig::from_env();
             Ok(AnyAdapter::Lighter(LighterAdapter::new(config)))
         }
         _ => Err(ExchangeError::ConnectionFailed(format!(
@@ -187,12 +140,6 @@ pub fn create_adapter(name: &str) -> ExchangeResult<AnyAdapter> {
 }
 
 /// Returns the default orderbook symbol for a given exchange + trading pair.
-///
-/// Different exchanges use different symbol formats for the same underlying pair.
-/// For example, BTC perpetuals:
-/// - Vest: "BTC-PERP"
-/// - Paradex: "BTC-USD-PERP"
-/// - Lighter: "BTC" (symbol from API)
 pub fn resolve_symbol(exchange: &str, pair: &str) -> String {
     match (exchange, pair) {
         // BTC perpetuals
@@ -207,45 +154,9 @@ pub fn resolve_symbol(exchange: &str, pair: &str) -> String {
         ("vest", "SOL") => "SOL-PERP".to_string(),
         ("paradex", "SOL") => "SOL-USD-PERP".to_string(),
         ("lighter", "SOL") => "SOL".to_string(),
-        // Fallback: use pair as-is (allows overriding via config)
+        // Fallback: use pair as-is
         _ => pair.to_string(),
     }
 }
 
-/// Downcast to ParadexAdapter for Paradex-specific setup (e.g., USDC rate cache).
-///
-/// Returns None if the adapter is not Paradex.
-impl AnyAdapter {
-    /// Get a clone of the reader_alive flag for connection liveness checking.
-    ///
-    /// This allows monitoring and runtime tasks to detect when a WebSocket
-    /// reader loop has exited, indicating the adapter is disconnected.
-    pub fn get_reader_alive(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        match self {
-            AnyAdapter::Vest(a) => std::sync::Arc::clone(&a.connection_health.reader_alive),
-            AnyAdapter::Paradex(a) => std::sync::Arc::clone(&a.connection_health.reader_alive),
-            AnyAdapter::Lighter(a) => std::sync::Arc::clone(&a.health.reader_alive),
-        }
-    }
 
-    pub fn as_paradex_mut(&mut self) -> Option<&mut ParadexAdapter> {
-        match self {
-            AnyAdapter::Paradex(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_vest_mut(&mut self) -> Option<&mut VestAdapter> {
-        match self {
-            AnyAdapter::Vest(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    pub fn as_lighter_mut(&mut self) -> Option<&mut LighterAdapter> {
-        match self {
-            AnyAdapter::Lighter(a) => Some(a),
-            _ => None,
-        }
-    }
-}

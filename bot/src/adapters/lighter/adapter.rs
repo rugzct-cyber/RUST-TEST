@@ -1,7 +1,7 @@
 //! Lighter Adapter Implementation
 //!
 //! Main LighterAdapter struct implementing ExchangeAdapter trait.
-//! Uses Schnorr/Poseidon2/Goldilocks signing via vendored lighter-crypto crates.
+//! Read-only market data via WebSocket (public orderbooks).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,18 +18,13 @@ use tokio_tungstenite::{
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
 use crate::adapters::types::{
-    create_http_client, next_subscription_id, ConnectionHealth, ConnectionState, FillInfo,
-    Orderbook, OrderRequest, OrderResponse, OrderSide, OrderStatus, OrderbookLevel,
-    PositionInfo, TimeInForce, MAX_ORDERBOOK_DEPTH, STALE_THRESHOLD_MS,
+    create_http_client, next_subscription_id, ConnectionHealth, ConnectionState,
+    Orderbook, OrderbookLevel, MAX_ORDERBOOK_DEPTH, STALE_THRESHOLD_MS,
 };
 use crate::core::channels::{AtomicBestPrices, OrderbookNotify, SharedBestPrices, SharedOrderbooks};
 
 use super::config::LighterConfig;
-use super::signing::LighterSigner;
-use super::types::{
-    LighterPositionData,
-    MarketMapping, normalize_symbol_to_lighter,
-};
+use super::types::{MarketMapping, normalize_symbol_to_lighter};
 
 /// Type alias for the WebSocket write sink
 type WsSink = futures_util::stream::SplitSink<
@@ -40,27 +35,16 @@ type WsSink = futures_util::stream::SplitSink<
 >;
 
 // =============================================================================
-// Constants
-// =============================================================================
-
-/// Timeout for WebSocket authentication (5 seconds)
-const _AUTH_TIMEOUT_SECS: u64 = 5;
-/// Auth token lifetime for WebSocket (10 minutes)
-const AUTH_TOKEN_LIFETIME_SECS: i64 = 600;
-
-// =============================================================================
 // Lighter Adapter
 // =============================================================================
 
-/// Lighter exchange adapter implementing ExchangeAdapter trait
+/// Lighter exchange adapter implementing ExchangeAdapter trait (read-only market data)
 pub struct LighterAdapter {
     /// Configuration
     config: LighterConfig,
-    /// Transaction signer
-    signer: LighterSigner,
     /// HTTP client for REST API calls
     http: reqwest::Client,
-    /// WebSocket write half (Mutex-wrapped for shared &self access from place_order/cancel_order)
+    /// WebSocket write half
     ws_sink: Arc<Mutex<Option<WsSink>>>,
     /// Connection health tracking
     pub(crate) health: ConnectionHealth,
@@ -83,21 +67,12 @@ pub struct LighterAdapter {
 impl LighterAdapter {
     /// Create a new LighterAdapter with the given configuration
     pub fn new(config: LighterConfig) -> Self {
-        let signer = LighterSigner::new(
-            &config.private_key,
-            config.account_index,
-            config.api_key_index,
-            config.chain_id(),
-        )
-        .expect("Failed to initialize Lighter signer");
-
         let http = create_http_client("lighter");
         let health = ConnectionHealth::new();
         let last_data = Arc::clone(&health.last_data);
 
         Self {
             config,
-            signer,
             http,
             ws_sink: Arc::new(Mutex::new(None)),
             health,
@@ -109,49 +84,6 @@ impl LighterAdapter {
             orderbook_notify: None,
             last_data,
         }
-    }
-
-    /// Get shared orderbooks for lock-free monitoring
-    pub fn get_shared_orderbooks(&self) -> SharedOrderbooks {
-        Arc::clone(&self.shared_orderbooks)
-    }
-
-    /// Get shared atomic best prices for lock-free hot-path monitoring
-    pub fn get_shared_best_prices(&self) -> SharedBestPrices {
-        Arc::clone(&self.shared_best_prices)
-    }
-
-    /// Set the shared orderbook notification
-    pub fn set_orderbook_notify(&mut self, notify: OrderbookNotify) {
-        self.orderbook_notify = Some(notify);
-    }
-
-    /// Fetch nonce from Lighter API and initialize local nonce cache
-    async fn init_nonce(&self) -> ExchangeResult<()> {
-        let url = format!(
-            "{}/api/v1/nextNonce?account_index={}&api_key_index={}",
-            self.config.rest_url(),
-            self.signer.account_index(),
-            self.config.api_key_index,
-        );
-        let resp = self.http.get(&url).send().await.map_err(|e| {
-            ExchangeError::ConnectionFailed(format!("Failed to fetch nonce: {}", e))
-        })?;
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
-            ExchangeError::InvalidResponse(format!("Failed to parse nonce response: {}", e))
-        })?;
-
-        let nonce = body["nonce"]
-            .as_i64()
-            .ok_or_else(|| ExchangeError::InvalidResponse("Missing nonce in response".into()))?;
-
-        self.signer.set_nonce(nonce);
-        tracing::info!(
-            exchange = "lighter",
-            nonce = nonce,
-            "Nonce initialized from API"
-        );
-        Ok(())
     }
 
     /// Fetch exchange/market info from REST API (v1 orderBookDetails)
@@ -222,76 +154,10 @@ impl LighterAdapter {
                 return Ok(info.market_id);
             }
         }
-        Err(ExchangeError::InvalidOrder(format!(
+        Err(ExchangeError::InvalidResponse(format!(
             "Unknown Lighter market: {}",
             symbol
         )))
-    }
-
-    /// Convert floating-point price to Lighter integer representation
-    fn price_to_int(&self, symbol: &str, price: f64) -> u32 {
-        if let Some(info) = self.market_info.get(symbol) {
-            let factor = 10f64.powi(info.price_precision as i32);
-            (price * factor).round() as u32
-        } else {
-            // Fallback: assume 2 decimal places
-            (price * 100.0).round() as u32
-        }
-    }
-
-    /// Convert floating-point quantity to Lighter integer representation.
-    ///
-    /// IMPORTANT: We must truncate to the coarser precision first (Vest's) so that
-    /// both exchanges trade exactly the same quantity.  Vest formats BTC at 4 dp,
-    /// ETH at 3 dp, SOL at 2 dp — if we skip this step, Lighter's finer precision
-    /// (BTC=5dp) can produce a different rounded value.
-    fn quantity_to_int(&self, symbol: &str, quantity: f64) -> i64 {
-        // Step 1: truncate to the coarser exchange precision (Vest's rounding)
-        let coarse_decimals: u32 = if symbol.starts_with("BTC") {
-            4
-        } else if symbol.starts_with("ETH") {
-            3
-        } else {
-            2 // SOL and others
-        };
-        let coarse_factor = 10f64.powi(coarse_decimals as i32);
-        let truncated_qty = (quantity * coarse_factor).round() / coarse_factor;
-
-        // Step 2: convert to Lighter integer using its own size_precision
-        if let Some(info) = self.market_info.get(symbol) {
-            let factor = 10f64.powi(info.size_precision as i32);
-            let result = (truncated_qty * factor).round() as i64;
-            tracing::info!(
-                exchange = "lighter",
-                symbol = %symbol,
-                raw_qty = %format!("{:.8}", quantity),
-                truncated_qty = %format!("{:.8}", truncated_qty),
-                size_precision = info.size_precision,
-                base_amount = result,
-                "quantity_to_int conversion (coarse-aligned)"
-            );
-            result
-        } else {
-            let result = (truncated_qty * 1000.0).round() as i64;
-            tracing::warn!(
-                exchange = "lighter",
-                symbol = %symbol,
-                raw_qty = %format!("{:.8}", quantity),
-                base_amount = result,
-                "quantity_to_int FALLBACK (symbol not in market_info!)"
-            );
-            result
-        }
-    }
-
-    /// Map our TimeInForce to the Lighter integer value
-    /// Lighter SDK: IOC=0, GoodTillTime=1, PostOnly=2
-    fn tif_to_lighter(tif: &TimeInForce) -> u8 {
-        match tif {
-            TimeInForce::Ioc => 0, // ImmediateOrCancel
-            TimeInForce::Gtc => 1, // GoodTillTime
-            TimeInForce::Fok => 0, // FillOrKill → treated as IOC
-        }
     }
 
     /// Spawn the WebSocket reader loop as a background task
@@ -474,27 +340,6 @@ impl LighterAdapter {
                                     }
                                 }
                             }
-                        // Handle sendtx responses (fire-and-forget ACK/error)
-                        } else if msg_type.contains("sendtx") || msg_type.contains("error") {
-                            if let Some(err) = val["error"].as_str() {
-                                tracing::warn!(
-                                    exchange = "lighter",
-                                    error = %err,
-                                    "sendtx WS response error"
-                                );
-                            } else if val.get("error").is_some() {
-                                tracing::warn!(
-                                    exchange = "lighter",
-                                    msg = %text,
-                                    "WS error message"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    exchange = "lighter",
-                                    response = %text,
-                                    "sendtx WS response"
-                                );
-                            }
                         } else if val.get("error").is_some() {
                             tracing::warn!(
                                 exchange = "lighter",
@@ -532,46 +377,6 @@ impl LighterAdapter {
         reader_alive.store(false, Ordering::SeqCst);
         tracing::warn!(exchange = "lighter", "Reader loop exited");
     }
-
-    /// Send a signed transaction via WebSocket (jsonapi/sendtx)
-    ///
-    /// Format per official docs: https://apidocs.lighter.xyz/docs/websocket-reference#send-tx
-    /// tx_info is sent as a nested JSON object (not a string).
-    async fn send_tx(
-        &self,
-        tx_type: u32,
-        tx_info_json: &str,
-    ) -> ExchangeResult<()> {
-        // Parse tx_info from string to JSON object so it's nested, not double-encoded
-        let tx_info_obj: serde_json::Value = serde_json::from_str(tx_info_json)
-            .map_err(|e| ExchangeError::InvalidOrder(format!("tx_info parse error: {}", e)))?;
-
-        let ws_msg = serde_json::json!({
-            "type": "jsonapi/sendtx",
-            "data": {
-                "tx_type": tx_type,
-                "tx_info": tx_info_obj,
-            }
-        });
-
-        tracing::debug!(
-            exchange = "lighter",
-            tx_type = tx_type,
-            msg = %ws_msg,
-            "Sending WS sendTx"
-        );
-
-        let mut sink_guard = self.ws_sink.lock().await;
-        let sink = sink_guard.as_mut().ok_or_else(|| {
-            ExchangeError::ConnectionFailed("WebSocket not connected".into())
-        })?;
-
-        sink.send(Message::Text(ws_msg.to_string())).await.map_err(|e| {
-            ExchangeError::ConnectionFailed(format!("sendTx WS send failed: {}", e))
-        })?;
-
-        Ok(())
-    }
 }
 
 // =============================================================================
@@ -586,15 +391,7 @@ impl ExchangeAdapter for LighterAdapter {
         // 1. Fetch market info (needed for symbol → market_id mapping)
         self.fetch_market_info().await?;
 
-        // 2. Fetch nonce from API
-        self.init_nonce().await?;
-
-        // 3. Create auth token for WS (stored for authenticated subscriptions)
-        let _auth_token = self.signer.create_auth_token(AUTH_TOKEN_LIFETIME_SECS)?;
-
-        // 4. Connect WebSocket
-        // Note: Lighter WS has no auth handshake — auth is per-subscribe for
-        // private channels. sendTx uses REST with self-authenticated signatures.
+        // 2. Connect WebSocket (public orderbook, no auth needed)
         let ws_url = self.config.ws_url();
         let (ws_stream, _) = connect_async(ws_url).await.map_err(|e| {
             ExchangeError::ConnectionFailed(format!("WebSocket connect failed: {}", e))
@@ -606,10 +403,10 @@ impl ExchangeAdapter for LighterAdapter {
             *sink_guard = Some(sink);
         }
 
-        // 6. Spawn reader loop
+        // 3. Spawn reader loop
         self.spawn_reader(reader);
 
-        // 7. Mark connected
+        // 4. Mark connected
         {
             let mut state = self.health.state.write().await;
             *state = ConnectionState::Connected;
@@ -724,95 +521,6 @@ impl ExchangeAdapter for LighterAdapter {
         Ok(())
     }
 
-    async fn place_order(&self, order: OrderRequest) -> ExchangeResult<OrderResponse> {
-        // Validate
-        if let Some(err) = order.validate() {
-            return Err(ExchangeError::InvalidOrder(err.to_string()));
-        }
-
-        let market_id = self.market_id_for(&order.symbol)?;
-        let price = order.price.unwrap_or(0.0);
-        let price_int = self.price_to_int(&order.symbol, price);
-        let base_amount = self.quantity_to_int(&order.symbol, order.quantity);
-        let is_ask = order.side == OrderSide::Sell;
-        let tif = Self::tif_to_lighter(&order.time_in_force);
-
-        // Lighter order type: 0 = Limit
-        let order_type: u8 = 0;
-
-        // Get nonce (optimistic)
-        let nonce = self.signer.next_nonce();
-
-        tracing::debug!(
-            exchange = "lighter",
-            symbol = %order.symbol,
-            side = ?order.side,
-            price = price,
-            price_int = price_int,
-            quantity = order.quantity,
-            base_amount = base_amount,
-            nonce = nonce,
-            "Placing order"
-        );
-
-        // Sign the transaction
-        let tx_info_json = self.signer.sign_create_order(
-            market_id,
-            0, // client_order_index (auto-assigned)
-            base_amount,
-            price_int,
-            is_ask,
-            order_type,
-            tif,
-            order.reduce_only,
-            0, // trigger_price (no trigger for limit)
-            nonce,
-        )?;
-
-        // Send via WebSocket (fire-and-forget — response arrives asynchronously)
-        self.send_tx(14, &tx_info_json).await.map_err(|e| {
-            self.signer.rollback_nonce();
-            e
-        })?;
-
-        Ok(OrderResponse {
-            order_id: "pending".to_string(),
-            client_order_id: order.client_order_id,
-            status: OrderStatus::Pending,
-            filled_quantity: 0.0,
-            avg_price: None,
-        })
-    }
-
-    async fn cancel_order(&self, order_id: &str) -> ExchangeResult<()> {
-        // order_id is the Lighter order index (numeric)
-        let order_index: i64 = order_id.parse().map_err(|_| {
-            ExchangeError::InvalidOrder(format!("Invalid order ID: {}", order_id))
-        })?;
-
-        // Look up market_id from active subscriptions
-        let market_id: u8 = self
-            .subscriptions
-            .values()
-            .next()
-            .copied()
-            .ok_or_else(|| {
-                ExchangeError::InvalidOrder(
-                    "No subscribed market — cannot determine market_id for cancel".into(),
-                )
-            })?;
-
-        let nonce = self.signer.next_nonce();
-
-        let tx_info_json = self.signer.sign_cancel_order(market_id, order_index, nonce)?;
-
-        // Send via WebSocket (fire-and-forget)
-        self.send_tx(15, &tx_info_json).await.map_err(|e| {
-            self.signer.rollback_nonce();
-            e
-        })
-    }
-
     fn get_orderbook(&self, symbol: &str) -> Option<&Orderbook> {
         self.local_orderbooks.get(symbol)
     }
@@ -874,228 +582,6 @@ impl ExchangeAdapter for LighterAdapter {
 
         tracing::info!(exchange = "lighter", "Reconnected successfully");
         Ok(())
-    }
-
-    async fn get_position(&self, symbol: &str) -> ExchangeResult<Option<PositionInfo>> {
-        let account_index = self.signer.account_index();
-        let url = format!(
-            "{}/api/v1/account?by=index&value={}",
-            self.config.rest_url(),
-            account_index
-        );
-
-        let resp = self.http.get(&url).send().await.map_err(|e| {
-            ExchangeError::ConnectionFailed(format!("Failed to fetch account: {}", e))
-        })?;
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
-            ExchangeError::InvalidResponse(format!("Failed to parse account response: {}", e))
-        })?;
-
-
-        // Positions are nested inside accounts[0].positions in the REST response
-        let positions_val = if body["accounts"][0]["positions"].is_array() {
-            &body["accounts"][0]["positions"]
-        } else if body["positions"].is_array() {
-            &body["positions"]
-        } else {
-            tracing::warn!(
-                exchange = "lighter",
-                "get_position: no 'positions' array found in response"
-            );
-            return Ok(None);
-        };
-
-        if let Some(positions) = positions_val.as_array() {
-            for pos in positions {
-                let pos_data: Result<LighterPositionData, _> =
-                    serde_json::from_value::<LighterPositionData>(pos.clone());
-                if let Ok(data) = pos_data {
-                    // Match by market_id
-                    if let Some(mid) = data.market_id {
-                        if let Ok(expected_mid) = self.market_id_for(symbol) {
-                            if mid != expected_mid {
-                                continue;
-                            }
-                        }
-                    }
-
-                    let size = data
-                        .position
-                        .as_deref()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
-
-                    if size.abs() < 1e-12 {
-                        continue; // No position
-                    }
-
-                    // sign: 1 = long, -1 = short
-                    let side = match data.sign {
-                        Some(1) => "long".to_string(),
-                        Some(-1) => "short".to_string(),
-                        _ => {
-                            if size > 0.0 {
-                                "long".to_string()
-                            } else {
-                                "short".to_string()
-                            }
-                        }
-                    };
-
-                    let entry_price = data
-                        .avg_entry_price
-                        .as_deref()
-                        .and_then(|s| s.parse::<f64>().ok())
-                        .unwrap_or(0.0);
-
-                    tracing::debug!(
-                        exchange = "lighter",
-                        symbol = %symbol,
-                        position_size = %size,
-                        side = %side,
-                        entry_price = %entry_price,
-                        "Parsed position from account endpoint"
-                    );
-
-                    return Ok(Some(PositionInfo {
-                        symbol: symbol.to_string(),
-                        quantity: size.abs(),
-                        side,
-                        entry_price,
-                        mark_price: data
-                            .liquidation_price
-                            .as_deref()
-                            .and_then(|s| s.parse::<f64>().ok()),
-                        unrealized_pnl: data
-                            .unrealized_pnl
-                            .as_deref()
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .unwrap_or(0.0),
-                    }));
-                }
-            }
-        }
-
-        Ok(None) // No position found
-    }
-
-    async fn get_fill_info(
-        &self,
-        symbol: &str,
-        order_id: &str,
-    ) -> ExchangeResult<Option<FillInfo>> {
-        // Query recent trades from REST API
-        let account_index = self.signer.account_index();
-        let market_id = self.market_id_for(symbol).unwrap_or(0);
-        let is_pending = order_id == "pending";
-        let order_index: i64 = if is_pending {
-            -1
-        } else {
-            order_id.parse().unwrap_or(-1)
-        };
-
-        // Non-pending but unparseable order_id → nothing to look up
-        if !is_pending && order_index < 0 {
-            return Ok(None);
-        }
-
-        // Retry loop: WS fire-and-forget trades may take a moment to appear in REST API
-        const MAX_ATTEMPTS: u32 = 3;
-        const RETRY_DELAY_MS: u64 = 500;
-
-        for attempt in 1..=MAX_ATTEMPTS {
-            let url = format!(
-                "{}/api/v1/trades?account_index={}&order_book_id={}&limit=5",
-                self.config.rest_url(),
-                account_index,
-                market_id,
-            );
-
-            let resp = self.http.get(&url).send().await.map_err(|e| {
-                ExchangeError::ConnectionFailed(format!("Failed to fetch trades: {}", e))
-            })?;
-            let body: serde_json::Value = resp.json().await.map_err(|e| {
-                ExchangeError::InvalidResponse(format!("Failed to parse trades: {}", e))
-            })?;
-
-            if let Some(trades) = body["trades"].as_array() {
-                if is_pending {
-                    // No order_id to match — take the MOST RECENT trade for this account+market.
-                    // Safe because get_fill_info is called immediately after close_position
-                    // and the bot only holds one position at a time.
-                    if let Some(trade) = trades.first() {
-                        let fill_price = trade["price"]
-                            .as_str()
-                            .and_then(|s| s.parse::<f64>().ok())
-                            .or_else(|| trade["price"].as_f64())
-                            .unwrap_or(0.0);
-
-                        if fill_price > 0.0 {
-                            let fee = trade["taker_fee"]
-                                .as_i64()
-                                .map(|f| f as f64 / 1_000_000.0);
-
-                            tracing::info!(
-                                symbol = %symbol,
-                                fill_price = %fill_price,
-                                fee = ?fee,
-                                attempt,
-                                "Lighter: Retrieved fill price from most recent trade (pending order)"
-                            );
-
-                            return Ok(Some(FillInfo {
-                                fill_price,
-                                realized_pnl: None,
-                                fee,
-                            }));
-                        }
-                    }
-                } else {
-                    // Match by ask_id/bid_id (existing logic for known order IDs)
-                    for trade in trades {
-                        let ask_id = trade["ask_id"].as_i64().unwrap_or(-1);
-                        let bid_id = trade["bid_id"].as_i64().unwrap_or(-1);
-
-                        if ask_id == order_index || bid_id == order_index {
-                            let fill_price = trade["price"]
-                                .as_str()
-                                .and_then(|s| s.parse::<f64>().ok())
-                                .or_else(|| trade["price"].as_f64())
-                                .unwrap_or(0.0);
-
-                            let fee = trade["taker_fee"]
-                                .as_i64()
-                                .map(|f| f as f64 / 1_000_000.0);
-
-                            return Ok(Some(FillInfo {
-                                fill_price,
-                                realized_pnl: None,
-                                fee,
-                            }));
-                        }
-                    }
-                }
-            }
-
-            // Trade not found yet — retry after delay
-            if attempt < MAX_ATTEMPTS {
-                tracing::debug!(
-                    symbol = %symbol,
-                    order_id = %order_id,
-                    attempt,
-                    "Lighter: Trade not found yet, retrying..."
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
-            }
-        }
-
-        tracing::warn!(
-            symbol = %symbol,
-            order_id = %order_id,
-            attempts = MAX_ATTEMPTS,
-            "Lighter: Fill info not found after all retries"
-        );
-        Ok(None)
     }
 
     fn exchange_name(&self) -> &'static str {

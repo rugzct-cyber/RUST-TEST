@@ -14,8 +14,7 @@ pub enum AppError {
     #[error("Exchange error: {0}")]
     Exchange(#[from] ExchangeError),
 
-    #[error("Execution error: {0}")]
-    Execution(String),
+
 
     #[error("WebSocket error: {0}")]
     WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
@@ -70,28 +69,9 @@ mod tests {
     }
 
     #[test]
-    fn test_execution_error_display() {
-        let err = AppError::Execution("both legs failed".into());
-        assert_eq!(err.to_string(), "Execution error: both legs failed");
-    }
-
-    #[test]
     fn test_api_error_display() {
         let err = AppError::Api("rate limited".into());
         assert_eq!(err.to_string(), "API error: rate limited");
-    }
-
-    #[test]
-    fn test_exchange_error_order_rejected_preserves_context() {
-        let exchange_err =
-            ExchangeError::OrderRejected("insufficient margin for BTC-PERP".into());
-        let app_err: AppError = exchange_err.into();
-        let msg = app_err.to_string();
-        assert!(
-            msg.contains("insufficient margin for BTC-PERP"),
-            "Got: {}",
-            msg
-        );
     }
 
     #[test]

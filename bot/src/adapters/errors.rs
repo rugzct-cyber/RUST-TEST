@@ -12,21 +12,9 @@ pub enum ExchangeError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
 
-    /// Authentication with exchange failed
-    #[error("Authentication failed: {0}")]
-    AuthenticationFailed(String),
-
     /// Subscription to market data failed
     #[error("Subscription failed for {symbol}: {reason}")]
     SubscriptionFailed { symbol: String, reason: String },
-
-    /// Order validation failed before sending to exchange
-    #[error("Invalid order: {0}")]
-    InvalidOrder(String),
-
-    /// Order was rejected by the exchange
-    #[error("Order rejected: {0}")]
-    OrderRejected(String),
 
     /// Network operation timed out
     #[error("Network timeout after {0}ms")]
@@ -55,12 +43,6 @@ mod tests {
     }
 
     #[test]
-    fn test_authentication_failed_display() {
-        let err = ExchangeError::AuthenticationFailed("invalid signature".to_string());
-        assert_eq!(err.to_string(), "Authentication failed: invalid signature");
-    }
-
-    #[test]
     fn test_subscription_failed_display() {
         let err = ExchangeError::SubscriptionFailed {
             symbol: "BTC-PERP".to_string(),
@@ -73,12 +55,6 @@ mod tests {
     }
 
     #[test]
-    fn test_order_rejected_display() {
-        let err = ExchangeError::OrderRejected("insufficient margin".to_string());
-        assert_eq!(err.to_string(), "Order rejected: insufficient margin");
-    }
-
-    #[test]
     fn test_network_timeout_display() {
         let err = ExchangeError::NetworkTimeout(5000);
         assert_eq!(err.to_string(), "Network timeout after 5000ms");
@@ -88,15 +64,5 @@ mod tests {
     fn test_invalid_response_display() {
         let err = ExchangeError::InvalidResponse("malformed JSON".to_string());
         assert_eq!(err.to_string(), "Invalid response: malformed JSON");
-    }
-
-    // M3 Fix: Added test for InvalidOrder variant (matching other variant test patterns)
-    #[test]
-    fn test_invalid_order_display() {
-        let err = ExchangeError::InvalidOrder("Limit orders require a price".to_string());
-        assert_eq!(
-            err.to_string(),
-            "Invalid order: Limit orders require a price"
-        );
     }
 }

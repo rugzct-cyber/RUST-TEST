@@ -8,7 +8,7 @@
 //! - `SpreadResult`: Result of spread calculation with direction and prices
 //! - `SpreadDirection`: Direction of the arbitrage opportunity
 
-use crate::adapters::types::{OrderSide, Orderbook};
+use crate::adapters::types::Orderbook;
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -56,20 +56,13 @@ impl SpreadDirection {
         }
     }
 
-    /// Get close order sides (to reverse the position)
-    #[inline]
-    pub fn to_close_sides(&self) -> (OrderSide, OrderSide) {
-        match self {
-            SpreadDirection::AOverB => (OrderSide::Sell, OrderSide::Buy),
-            SpreadDirection::BOverA => (OrderSide::Buy, OrderSide::Sell),
-        }
-    }
 
-    /// Calculate captured spread from entry fill prices
+
+    /// Calculate captured spread from two fill prices
     ///
     /// # Arguments
-    /// * `buy_price` - Price paid on the buying leg (Vest for AOverB, Paradex for BOverA)
-    /// * `sell_price` - Price received on the selling leg (Paradex for AOverB, Vest for BOverA)
+    /// * `buy_price` - Lower price (ask side)
+    /// * `sell_price` - Higher price (bid side)
     #[inline]
     pub fn calculate_captured_spread(&self, buy_price: f64, sell_price: f64) -> f64 {
         if buy_price <= 0.0 {
@@ -239,12 +232,11 @@ impl SpreadCalculator {
 
     /// Calculate Entry spread: (BID_B - ASK_A) / ASK_A × 100
     ///
-    /// Use this for Entry Monitor: "Buy on DEX A, Sell on DEX B" arbitrage opportunity.
-    /// Formula calculates actual profit % relative to investment (ask_a is what you pay).
+    /// Measures arbitrage opportunity: price difference when buying on DEX A and selling on DEX B.
     ///
     /// # Arguments
-    /// * `ask_a` - Best ask price on DEX A (we BUY at this price)
-    /// * `bid_b` - Best bid price on DEX B (we SELL at this price)
+    /// * `ask_a` - Best ask price on DEX A
+    /// * `bid_b` - Best bid price on DEX B
     ///
     /// # Returns
     /// * `f64` - Entry spread percentage (positive = profit opportunity)
@@ -261,12 +253,11 @@ impl SpreadCalculator {
 
     /// Calculate Exit spread (for A→B entry): (BID_A - ASK_B) / ASK_B × 100
     ///
-    /// Use this for Exit Monitor: "Sell on DEX A, Buy back on DEX B" to close position.
-    /// Formula calculates actual profit % relative to what you pay to close (ask_b).
+    /// Measures the reverse-direction spread between two DEXes.
     ///
     /// # Arguments
-    /// * `bid_a` - Best bid price on DEX A (we SELL at this price to close)
-    /// * `ask_b` - Best ask price on DEX B (we BUY at this price to close)
+    /// * `bid_a` - Best bid price on DEX A
+    /// * `ask_b` - Best ask price on DEX B
     ///
     /// # Returns
     /// * `f64` - Exit spread percentage (typically negative when closing)
@@ -321,9 +312,13 @@ impl SpreadCalculator {
 // =============================================================================
 // Helper Functions
 // =============================================================================
-
-// Timestamp function: use canonical implementation from core::events
-use crate::core::events::current_timestamp_ms as current_time_ms;
+/// Current unix timestamp in milliseconds
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 // =============================================================================
 // Unit Tests (Task 6)
@@ -774,17 +769,7 @@ mod tests {
         assert_eq!(SpreadDirection::from_u8(3), None);
     }
 
-    #[test]
-    fn test_spread_direction_to_close_sides() {
-        assert_eq!(
-            SpreadDirection::AOverB.to_close_sides(),
-            (OrderSide::Sell, OrderSide::Buy)
-        );
-        assert_eq!(
-            SpreadDirection::BOverA.to_close_sides(),
-            (OrderSide::Buy, OrderSide::Sell)
-        );
-    }
+
 
     #[test]
     fn test_spread_direction_calculate_captured_spread_a_over_b() {

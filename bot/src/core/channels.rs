@@ -71,36 +71,8 @@ pub type SharedBestPrices = Arc<AtomicBestPrices>;
 /// The monitoring loop `notified().await`s instead of polling on a fixed interval.
 pub type OrderbookNotify = Arc<tokio::sync::Notify>;
 
-// Import SpreadDirection from spread module to avoid duplication (CR-H1 fix)
-pub use super::spread::SpreadDirection;
-
-/// Log throttle interval — log every N polls (~1 second at 25ms polling)
-/// Single source of truth for runtime and monitoring tasks.
-pub const LOG_THROTTLE_POLLS: u64 = 40;
-
-/// Simple spread opportunity for MVP
-#[derive(Debug, Clone)]
-pub struct SpreadOpportunity {
-    pub pair: Arc<str>,
-    pub dex_a: &'static str,
-    pub dex_b: &'static str,
-    pub spread_percent: f64,
-    pub direction: SpreadDirection,
-    pub detected_at_ms: u64,
-    /// Best ask price on DEX A (buy price)
-    pub dex_a_ask: f64,
-    /// Best bid price on DEX A (sell price)
-    pub dex_a_bid: f64,
-    /// Best ask price on DEX B (buy price)
-    pub dex_b_ask: f64,
-    /// Best bid price on DEX B (sell price)
-    pub dex_b_bid: f64,
-}
-
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::adapters::types::{Orderbook, OrderbookLevel, OrderbookUpdate};
     use tokio::sync::mpsc;
 
