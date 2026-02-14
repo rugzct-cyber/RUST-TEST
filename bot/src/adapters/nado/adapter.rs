@@ -1,4 +1,15 @@
-//! Nado Adapter — book_depth channel, BigInt prices
+//! Nado Adapter — WS subscription on /v1/subscribe with permessage-deflate
+//!
+//! Uses `yawc` crate with `Options::default()` for native permessage-deflate
+//! decompression, plus `.with_request()` to inject the required
+//! `Sec-WebSocket-Extensions: permessage-deflate` HTTP header on the upgrade.
+//!
+//! Nado's gateway REQUIRES this header (returns 403 without it) AND sends
+//! compressed frames (reserved bits set), so we need both the header AND
+//! the decompression support.
+//!
+//! Subscribes to `book_depth` streams for real-time orderbook data
+//! (matching the original TypeScript nado-ws.ts implementation).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6,11 +17,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{Mutex, RwLock};
+use futures_util::stream::StreamExt;
+use futures_util::SinkExt;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
 use crate::adapters::traits::ExchangeAdapter;
@@ -18,22 +28,18 @@ use crate::adapters::types::{ConnectionHealth, ConnectionState, Orderbook, Order
 use crate::core::channels::{AtomicBestPrices, OrderbookNotify, SharedBestPrices, SharedOrderbooks};
 
 use super::config::NadoConfig;
-use super::types::{get_nado_markets, parse_nado_price, product_id_to_symbol, NadoWsMessage};
+use super::types::{
+    get_nado_markets, parse_nado_price, product_id_to_symbol,
+    NadoBookDepthEvent, NadoBboEvent, NadoSubscribeMsg,
+};
 
 fn current_time_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-type WsStream = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-type WsWriter = SplitSink<WsStream, Message>;
-type WsReader = SplitStream<WsStream>;
-
 pub struct NadoAdapter {
     config: NadoConfig,
-    ws_stream: Option<Mutex<WsStream>>,
-    ws_sender: Option<Arc<Mutex<WsWriter>>>,
     reader_handle: Option<JoinHandle<()>>,
-    heartbeat_handle: Option<JoinHandle<()>>,
     connected: bool,
     subscriptions: Vec<String>,
     orderbooks: HashMap<String, Orderbook>,
@@ -46,75 +52,43 @@ pub struct NadoAdapter {
 impl NadoAdapter {
     pub fn new(config: NadoConfig) -> Self {
         Self {
-            config, ws_stream: None, ws_sender: None,
-            reader_handle: None, heartbeat_handle: None,
-            connected: false, subscriptions: Vec::new(),
+            config,
+            reader_handle: None,
+            connected: false,
+            subscriptions: Vec::new(),
             orderbooks: HashMap::new(),
             shared_orderbooks: Arc::new(RwLock::new(HashMap::new())),
             shared_best_prices: Arc::new(AtomicBestPrices::new()),
-            orderbook_notify: None, connection_health: ConnectionHealth::default(),
+            orderbook_notify: None,
+            connection_health: ConnectionHealth::default(),
         }
     }
 
-    async fn connect_websocket(&mut self) -> ExchangeResult<()> {
-        let url = self.config.ws_url();
-        tracing::info!("Connecting to Nado WebSocket: {}", url);
-
-        // Nado requires Sec-WebSocket-Extensions header to avoid 403
-        let request = tokio_tungstenite::tungstenite::http::Request::builder()
-            .uri(url)
-            .header("Host", "gateway.prod.nado.xyz")
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .header("Origin", "https://app.nado.xyz")
-            .header("Sec-WebSocket-Extensions", "permessage-deflate")
-            .header("Connection", "Upgrade")
-            .header("Upgrade", "websocket")
-            .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
-            .body(())
-            .map_err(|e| crate::adapters::errors::ExchangeError::ConnectionFailed(format!("Request build error: {}", e)))?;
-
-        let ws_stream = crate::adapters::shared::connect_tls_with_request(request).await?;
-        self.ws_stream = Some(Mutex::new(ws_stream));
-        Ok(())
-    }
-
-    fn split_and_spawn_reader(&mut self) -> ExchangeResult<()> {
-        let ws_stream_mutex = self.ws_stream.take().ok_or_else(|| ExchangeError::ConnectionFailed("No WS stream".into()))?;
-        let ws_stream = ws_stream_mutex.into_inner();
-        let (ws_sender, ws_receiver) = ws_stream.split();
-        self.ws_sender = Some(Arc::new(Mutex::new(ws_sender)));
-
+    fn spawn_ws_task(&mut self) -> ExchangeResult<()> {
+        let url = self.config.ws_url().to_string();
         let shared_orderbooks = Arc::clone(&self.shared_orderbooks);
         let shared_best_prices = Arc::clone(&self.shared_best_prices);
         let orderbook_notify = self.orderbook_notify.clone();
         let last_pong = Arc::clone(&self.connection_health.last_pong);
         let last_data = Arc::clone(&self.connection_health.last_data);
         let reader_alive = Arc::clone(&self.connection_health.reader_alive);
-        last_data.store(current_time_ms(), Ordering::Relaxed);
 
         let handle = tokio::spawn(async move {
-            Self::message_reader_loop(ws_receiver, shared_orderbooks, shared_best_prices, orderbook_notify, last_pong, last_data, reader_alive).await;
+            Self::ws_subscribe_loop(
+                url, shared_orderbooks, shared_best_prices, orderbook_notify,
+                last_pong, last_data, reader_alive,
+            ).await;
         });
         self.reader_handle = Some(handle);
         Ok(())
     }
 
-    async fn subscribe_to_book_depth(&self) -> ExchangeResult<()> {
-        let ws_sender = self.ws_sender.as_ref().ok_or_else(|| ExchangeError::ConnectionFailed("WS not connected".into()))?;
-        let markets = get_nado_markets();
-        for (product_id, _) in &markets {
-            let msg = serde_json::json!({"type": "subscribe", "channel": "book_depth", "product_id": product_id});
-            let mut sender = ws_sender.lock().await;
-            sender.send(Message::Text(msg.to_string())).await.map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        tracing::info!(exchange = "nado", count = markets.len(), "Subscribed to book_depth");
-        Ok(())
-    }
-
-    async fn message_reader_loop(
-        mut ws_receiver: WsReader,
+    /// Connects via yawc with:
+    ///   - Options::default() → native permessage-deflate decompression
+    ///   - .with_request() → explicit Sec-WebSocket-Extensions header for gateway
+    /// Then subscribes to book_depth and reads the push stream.
+    async fn ws_subscribe_loop(
+        url: String,
         shared_orderbooks: SharedOrderbooks,
         shared_best_prices: SharedBestPrices,
         orderbook_notify: Option<OrderbookNotify>,
@@ -122,31 +96,135 @@ impl NadoAdapter {
         last_data: Arc<AtomicU64>,
         reader_alive: Arc<AtomicBool>,
     ) {
-        reader_alive.store(true, Ordering::Relaxed);
-        while let Some(msg_result) = ws_receiver.next().await {
-            last_data.store(current_time_ms(), Ordering::Relaxed);
-            last_pong.store(current_time_ms(), Ordering::Relaxed);
+        tracing::info!(exchange = "nado", "Connecting to Nado WS: {}", url);
 
-            match msg_result {
-                Ok(Message::Text(text)) => {
-                    if let Ok(msg) = serde_json::from_str::<NadoWsMessage>(&text) {
-                        if let Some(data) = msg.data {
-                            let product_id = match &data.product_id { Some(p) => p.clone(), None => continue };
-                            if let Some(symbol) = product_id_to_symbol(&product_id) {
-                                let bid = data.bids.as_ref()
-                                    .and_then(|levels| levels.first())
-                                    .and_then(|l| parse_nado_price(&l.price));
-                                let ask = data.asks.as_ref()
-                                    .and_then(|levels| levels.first())
-                                    .and_then(|l| parse_nado_price(&l.price));
-                                if let (Some(b), Some(a)) = (bid, ask) {
-                                    if b > 0.0 && a > 0.0 {
+        let url_parsed: url::Url = match url.parse() {
+            Ok(u) => u,
+            Err(e) => { tracing::error!(exchange = "nado", error = %e, "Invalid URL"); return; }
+        };
+
+        // Build custom HTTP request with the required Sec-WebSocket-Extensions header.
+        // Nado's gateway checks for this header and returns 403 without it.
+        let http_builder = yawc::HttpRequestBuilder::new()
+            .header("Sec-WebSocket-Extensions", "permessage-deflate");
+
+        // CRITICAL: Options::default() has compression: None!
+        // We must explicitly enable compression so yawc:
+        //   1) Sends the Sec-WebSocket-Extensions: permessage-deflate header (gateway requires it)
+        //   2) Decompresses the compressed frames Nado sends back
+        let options = yawc::Options::default().with_low_latency_compression();
+
+        let mut ws = match yawc::WebSocket::connect(url_parsed)
+            .with_options(options)
+            .with_request(http_builder)
+            .await
+        {
+            Ok(ws) => ws,
+            Err(e) => {
+                tracing::error!(exchange = "nado", error = %e, "Connection failed (yawc+deflate+header)");
+                return;
+            }
+        };
+
+        tracing::info!(exchange = "nado", "Connected with yawc (deflate decompression + explicit header)");
+        reader_alive.store(true, Ordering::Relaxed);
+        last_data.store(current_time_ms(), Ordering::Relaxed);
+
+        // Subscribe to book_depth for each market (matches original TS adapter)
+        let markets = get_nado_markets();
+        for (i, (product_id, sym)) in markets.iter().enumerate() {
+            let sub_msg = NadoSubscribeMsg::book_depth(*product_id, (i + 1) as u32);
+            let json = match serde_json::to_string(&sub_msg) {
+                Ok(j) => j,
+                Err(e) => { tracing::error!(exchange = "nado", error = %e, "Serialize failed"); continue; }
+            };
+            tracing::info!(exchange = "nado", symbol = sym, product_id, "Subscribing to book_depth");
+            let frame = yawc::Frame::text(json);
+            if let Err(e) = ws.send(frame).await {
+                tracing::error!(exchange = "nado", error = %e, "Subscribe send failed");
+                reader_alive.store(false, Ordering::Relaxed);
+                return;
+            }
+        }
+
+        // Pings sent inline in the read loop (every 25s)
+
+        // Bid/Ask price cache per symbol (same pattern as original TS adapter)
+        let mut price_cache: HashMap<String, (f64, f64)> = HashMap::new();
+
+        // Read push events
+        let mut msg_count: u64 = 0;
+        let mut last_ping = current_time_ms();
+
+        while let Some(frame) = ws.next().await {
+            let now = current_time_ms();
+            last_data.store(now, Ordering::Relaxed);
+            last_pong.store(now, Ordering::Relaxed);
+
+            // Send ping every 25 seconds
+            if now.saturating_sub(last_ping) > 25_000 {
+                if let Err(e) = ws.send(yawc::Frame::ping(vec![])).await {
+                    tracing::warn!(exchange = "nado", error = %e, "Ping send failed");
+                    break;
+                }
+                last_ping = now;
+            }
+
+            let text = match std::str::from_utf8(frame.payload()) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            match frame.opcode() {
+                yawc::frame::OpCode::Text => {
+                    msg_count += 1;
+                    if msg_count <= 10 {
+                        tracing::info!(exchange = "nado", msg_count, raw = %text.chars().take(300).collect::<String>(), "RAW WS message");
+                    }
+
+                    // Try parsing as book_depth event (primary)
+                    if let Ok(evt) = serde_json::from_str::<NadoBookDepthEvent>(text) {
+                        if evt.event_type.as_deref() == Some("book_depth") {
+                            if let Some(pid) = evt.product_id {
+                                if let Some(symbol) = product_id_to_symbol(pid) {
+                                    let cached = price_cache.entry(symbol.to_string()).or_insert((0.0, 0.0));
+
+                                    // Update best bid from depth data (same as original TS)
+                                    if let Some(ref bids) = evt.bids {
+                                        for bid in bids {
+                                            if bid.len() >= 2 {
+                                                if let Some(price) = parse_nado_price(&bid[0]) {
+                                                    if bid[1] != "0" {
+                                                        cached.0 = price;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Update best ask from depth data
+                                    if let Some(ref asks) = evt.asks {
+                                        for ask in asks {
+                                            if ask.len() >= 2 {
+                                                if let Some(price) = parse_nado_price(&ask[0]) {
+                                                    if ask[1] != "0" {
+                                                        cached.1 = price;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    let (bid, ask) = *cached;
+                                    if bid > 0.0 && ask > 0.0 {
                                         let orderbook = Orderbook {
-                                            bids: vec![OrderbookLevel::new(b, 0.0)],
-                                            asks: vec![OrderbookLevel::new(a, 0.0)],
-                                            timestamp: current_time_ms(),
+                                            bids: vec![OrderbookLevel::new(bid, 0.0)],
+                                            asks: vec![OrderbookLevel::new(ask, 0.0)],
+                                            timestamp: now,
                                         };
-                                        shared_best_prices.store(b, a);
+                                        shared_best_prices.store(bid, ask);
                                         if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
                                         let mut books = shared_orderbooks.write().await;
                                         books.insert(symbol.to_string(), orderbook);
@@ -155,76 +233,86 @@ impl NadoAdapter {
                             }
                         }
                     }
+                    // Also handle best_bid_offer events (secondary)
+                    else if let Ok(evt) = serde_json::from_str::<NadoBboEvent>(text) {
+                        if evt.event_type.as_deref() == Some("best_bid_offer") {
+                            if let Some(pid) = evt.product_id {
+                                if let Some(symbol) = product_id_to_symbol(pid) {
+                                    let bid = evt.bid_price.as_deref().and_then(parse_nado_price);
+                                    let ask = evt.ask_price.as_deref().and_then(parse_nado_price);
+                                    if let (Some(b), Some(a)) = (bid, ask) {
+                                        if b > 0.0 && a > 0.0 {
+                                            let orderbook = Orderbook {
+                                                bids: vec![OrderbookLevel::new(b, 0.0)],
+                                                asks: vec![OrderbookLevel::new(a, 0.0)],
+                                                timestamp: now,
+                                            };
+                                            shared_best_prices.store(b, a);
+                                            if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
+                                            let mut books = shared_orderbooks.write().await;
+                                            books.insert(symbol.to_string(), orderbook);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                Ok(Message::Close(_)) => break,
-                Ok(_) => {}
-                Err(e) => { tracing::error!("Nado WS error: {}", e); break; }
+                yawc::frame::OpCode::Ping => {
+                    // yawc auto-responds with pong
+                }
+                _ => {}
             }
         }
+
+        tracing::warn!(exchange = "nado", "WS stream ended");
         reader_alive.store(false, Ordering::Relaxed);
-    }
-
-    fn spawn_heartbeat_task(&mut self) {
-        let ws_sender = match &self.ws_sender { Some(s) => Arc::clone(s), None => return };
-        let last_pong = Arc::clone(&self.connection_health.last_pong);
-        let reader_alive = Arc::clone(&self.connection_health.reader_alive);
-        last_pong.store(current_time_ms(), Ordering::Relaxed);
-
-        let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(20));
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                {
-                    let mut sender = ws_sender.lock().await;
-                    if let Err(_) = sender.send(Message::Ping(vec![])).await { reader_alive.store(false, Ordering::Relaxed); break; }
-                }
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                let age = current_time_ms().saturating_sub(last_pong.load(Ordering::Relaxed));
-                if age > 60_000 { reader_alive.store(false, Ordering::Relaxed); break; }
-            }
-        });
-        self.heartbeat_handle = Some(handle);
     }
 }
 
 #[async_trait]
 impl ExchangeAdapter for NadoAdapter {
     async fn connect(&mut self) -> ExchangeResult<()> {
-        self.connect_websocket().await?;
-        self.split_and_spawn_reader()?;
-        self.spawn_heartbeat_task();
-        self.subscribe_to_book_depth().await?;
+        self.spawn_ws_task()?;
         self.connected = true;
+        // Give yawc a moment to establish the connection
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tracing::info!(exchange = "nado", "Nado adapter started (yawc + deflate + explicit header)");
         Ok(())
     }
+
     async fn disconnect(&mut self) -> ExchangeResult<()> {
         { let mut state = self.connection_health.state.write().await; *state = ConnectionState::Disconnected; }
         if let Some(h) = self.reader_handle.take() { h.abort(); }
-        if let Some(h) = self.heartbeat_handle.take() { h.abort(); }
-        if let Some(s) = self.ws_sender.take() { let mut s = s.lock().await; let _ = s.close().await; }
-        if let Some(w) = self.ws_stream.take() { let mut w = w.lock().await; let _ = w.close(None).await; }
-        self.connected = false; self.subscriptions.clear();
+        self.connected = false;
+        self.subscriptions.clear();
         self.connection_health.last_pong.store(0, Ordering::Relaxed);
         self.connection_health.last_data.store(0, Ordering::Relaxed);
         self.connection_health.reader_alive.store(false, Ordering::Relaxed);
-        let mut books = self.shared_orderbooks.write().await; books.clear(); self.orderbooks.clear();
+        let mut books = self.shared_orderbooks.write().await;
+        books.clear();
+        self.orderbooks.clear();
         Ok(())
     }
+
     async fn subscribe_orderbook(&mut self, symbol: &str) -> ExchangeResult<()> {
         if !self.connected { return Err(ExchangeError::ConnectionFailed("Not connected".into())); }
         self.subscriptions.push(symbol.to_string());
         { let mut books = self.shared_orderbooks.write().await; books.insert(symbol.to_string(), Orderbook::default()); }
         Ok(())
     }
+
     async fn unsubscribe_orderbook(&mut self, symbol: &str) -> ExchangeResult<()> {
         if !self.connected { return Err(ExchangeError::ConnectionFailed("Not connected".into())); }
         self.subscriptions.retain(|s| s != symbol);
         { let mut books = self.shared_orderbooks.write().await; books.remove(symbol); }
-        self.orderbooks.remove(symbol); Ok(())
+        self.orderbooks.remove(symbol);
+        Ok(())
     }
+
     fn get_orderbook(&self, symbol: &str) -> Option<&Orderbook> { self.orderbooks.get(symbol) }
     fn is_connected(&self) -> bool { self.connected }
+
     fn is_stale(&self) -> bool {
         if !self.connected { return true; }
         if !self.connection_health.reader_alive.load(Ordering::Relaxed) { return true; }
@@ -233,15 +321,25 @@ impl ExchangeAdapter for NadoAdapter {
         use crate::adapters::types::STALE_THRESHOLD_MS;
         current_time_ms().saturating_sub(last_data) > STALE_THRESHOLD_MS
     }
-    async fn sync_orderbooks(&mut self) { let books = self.shared_orderbooks.read().await; self.orderbooks = books.clone(); }
+
+    async fn sync_orderbooks(&mut self) {
+        let books = self.shared_orderbooks.read().await;
+        self.orderbooks = books.clone();
+    }
+
     async fn reconnect(&mut self) -> ExchangeResult<()> {
-        let saved = self.subscriptions.clone(); self.disconnect().await?;
+        let saved = self.subscriptions.clone();
+        self.disconnect().await?;
         for attempt in 0..3u32 {
             tokio::time::sleep(Duration::from_millis(std::cmp::min(500 * (1u64 << attempt), 5000))).await;
-            if self.connect().await.is_ok() { for s in &saved { let _ = self.subscribe_orderbook(s).await; } return Ok(()); }
+            if self.connect().await.is_ok() {
+                for s in &saved { let _ = self.subscribe_orderbook(s).await; }
+                return Ok(());
+            }
         }
         Err(ExchangeError::ConnectionFailed("Nado reconnection failed".into()))
     }
+
     fn exchange_name(&self) -> &'static str { "nado" }
     fn get_shared_orderbooks(&self) -> SharedOrderbooks { Arc::clone(&self.shared_orderbooks) }
     fn get_shared_best_prices(&self) -> SharedBestPrices { Arc::clone(&self.shared_best_prices) }
@@ -251,6 +349,7 @@ impl ExchangeAdapter for NadoAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_adapter_basics() {
         let a = NadoAdapter::new(NadoConfig::default());
