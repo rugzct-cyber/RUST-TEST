@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
+use crate::adapters::dydx::{DydxAdapter, DydxConfig};
 use crate::adapters::ethereal::{EtherealAdapter, EtherealConfig};
 use crate::adapters::extended::{ExtendedAdapter, ExtendedConfig};
 use crate::adapters::grvt::{GrvtAdapter, GrvtConfig};
@@ -40,6 +41,7 @@ pub enum AnyAdapter {
     Nado(NadoAdapter),
     Nord(NordWsAdapter),
     Ethereal(EtherealAdapter),
+    Dydx(DydxAdapter),
 }
 
 /// Macro to reduce boilerplate for delegating trait methods
@@ -58,6 +60,7 @@ macro_rules! delegate {
             AnyAdapter::Nado(a) => a.$method($($arg),*),
             AnyAdapter::Nord(a) => a.$method($($arg),*),
             AnyAdapter::Ethereal(a) => a.$method($($arg),*),
+            AnyAdapter::Dydx(a) => a.$method($($arg),*),
         }
     };
     (await $self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -74,6 +77,7 @@ macro_rules! delegate {
             AnyAdapter::Nado(a) => a.$method($($arg),*).await,
             AnyAdapter::Nord(a) => a.$method($($arg),*).await,
             AnyAdapter::Ethereal(a) => a.$method($($arg),*).await,
+            AnyAdapter::Dydx(a) => a.$method($($arg),*).await,
         }
     };
     (mut $self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -90,6 +94,7 @@ macro_rules! delegate {
             AnyAdapter::Nado(a) => a.$method($($arg),*),
             AnyAdapter::Nord(a) => a.$method($($arg),*),
             AnyAdapter::Ethereal(a) => a.$method($($arg),*),
+            AnyAdapter::Dydx(a) => a.$method($($arg),*),
         }
     };
     (mut await $self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -106,6 +111,7 @@ macro_rules! delegate {
             AnyAdapter::Nado(a) => a.$method($($arg),*).await,
             AnyAdapter::Nord(a) => a.$method($($arg),*).await,
             AnyAdapter::Ethereal(a) => a.$method($($arg),*).await,
+            AnyAdapter::Dydx(a) => a.$method($($arg),*).await,
         }
     };
 }
@@ -172,7 +178,7 @@ impl ExchangeAdapter for AnyAdapter {
 /// All supported exchange adapter names.
 pub const SUPPORTED_EXCHANGES: &[&str] = &[
     "vest", "paradex", "lighter", "hyperliquid", "grvt", "reya",
-    "hotstuff", "pacifica", "extended", "nado", "nord", "ethereal",
+    "hotstuff", "pacifica", "extended", "nado", "nord", "ethereal", "dydx",
 ];
 
 /// Create an adapter from a config name string.
@@ -228,6 +234,10 @@ pub fn create_adapter(name: &str) -> ExchangeResult<AnyAdapter> {
             let config = EtherealConfig::from_env();
             Ok(AnyAdapter::Ethereal(EtherealAdapter::new(config)))
         }
+        "dydx" => {
+            let config = DydxConfig::from_env();
+            Ok(AnyAdapter::Dydx(DydxAdapter::new(config)))
+        }
         _ => Err(ExchangeError::ConnectionFailed(format!(
             "Unknown exchange adapter: '{}'. Supported: {}",
             name,
@@ -253,8 +263,8 @@ pub fn resolve_symbol(exchange: &str, pair: &str) -> String {
         ("lighter", "SOL") => "SOL".to_string(),
         // New exchanges — most use BASE-USD format
         ("hyperliquid" | "grvt" | "reya" | "hotstuff" | "pacifica"
-        | "nado" | "nord" | "ethereal", base) => format!("{}-USD", base),
-        ("extended", base) => format!("{}-USDT-PERP", base),
+        | "nado" | "nord" | "ethereal" | "dydx", base) => format!("{}-USD", base),
+        ("extended", base) => format!("{}-USD", base),
         // Fallback: use pair as-is
         _ => pair.to_string(),
     }

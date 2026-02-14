@@ -3,6 +3,7 @@
 //! This module provides the core abstractions for connecting to
 //! various cryptocurrency exchanges via WebSocket for price monitoring.
 
+pub mod dydx;
 pub mod errors;
 pub mod ethereal;
 pub mod extended;
@@ -24,6 +25,7 @@ pub mod vest;
 
 // Re-export commonly used types for convenience
 pub use errors::{ExchangeError, ExchangeResult};
+pub use dydx::{DydxAdapter, DydxConfig};
 pub use factory::{AnyAdapter, create_adapter, resolve_symbol};
 pub use ethereal::{EtherealAdapter, EtherealConfig};
 pub use extended::{ExtendedAdapter, ExtendedConfig};
