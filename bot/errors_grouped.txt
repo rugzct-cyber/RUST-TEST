@@ -1,0 +1,14 @@
+
+Name                                                                       Count
+----                                                                       -----
+Nado : Nado WS error: WebSocket protocol error: Reserved bits are non-zero   426
+nado : Adapter unhealthy, attempting reconnect...                            426
+Hyperliquid : Hyperliquid message reader loop ended                            1
+nado : Reconnected successfully                                              425
+Pacifica : Pacifica WS closed                                                 12
+Pacifica : Pacifica message reader loop ended                                 12
+pacifica : Adapter unhealthy, attempting reconnect...                         19
+pacifica : Reconnected successfully                                           19
+
+
+

@@ -35,3 +35,20 @@ pub async fn connect_tls(url: &str) -> Result<TlsWebSocketStream, ExchangeError>
 
     Ok(ws_stream)
 }
+
+/// Connect with custom HTTP headers (for exchanges that require User-Agent, Origin, etc.)
+pub async fn connect_tls_with_request(
+    request: tokio_tungstenite::tungstenite::http::Request<()>,
+) -> Result<TlsWebSocketStream, ExchangeError> {
+    let tls = native_tls::TlsConnector::builder()
+        .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
+        .build()
+        .map_err(|e| ExchangeError::ConnectionFailed(format!("TLS error: {}", e)))?;
+
+    let (ws_stream, _response) =
+        connect_async_tls_with_config(request, None, false, Some(Connector::NativeTls(tls)))
+            .await
+            .map_err(|e| ExchangeError::WebSocket(Box::new(e)))?;
+
+    Ok(ws_stream)
+}

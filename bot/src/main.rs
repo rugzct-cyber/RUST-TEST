@@ -56,10 +56,15 @@ async fn main() -> anyhow::Result<()> {
             )
         }
         Err(e) => {
-            warn!(error = %e, "Could not load config.yaml, using defaults");
-            // Fallback defaults: 3 exchanges × 3 symbols
+            warn!(error = %e, "Could not load config.yaml, using all exchanges");
+            // Fallback: connect to ALL supported exchanges × 3 symbols
             (
-                vec!["vest".into(), "paradex".into(), "lighter".into()],
+                vec![
+                    "vest".into(), "paradex".into(), "lighter".into(),
+                    "hyperliquid".into(), "grvt".into(), "reya".into(),
+                    "hotstuff".into(), "pacifica".into(), "extended".into(),
+                    "nado".into(), "nord".into(), "ethereal".into(),
+                ],
                 vec!["BTC".into(), "ETH".into(), "SOL".into()],
             )
         }

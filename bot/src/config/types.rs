@@ -51,6 +51,15 @@ pub enum Dex {
     Vest,
     Paradex,
     Lighter,
+    Hyperliquid,
+    Grvt,
+    Reya,
+    Hotstuff,
+    Pacifica,
+    Extended,
+    Nado,
+    Nord,
+    Ethereal,
 }
 
 impl std::fmt::Display for Dex {
@@ -59,6 +68,15 @@ impl std::fmt::Display for Dex {
             Dex::Vest => write!(f, "vest"),
             Dex::Paradex => write!(f, "paradex"),
             Dex::Lighter => write!(f, "lighter"),
+            Dex::Hyperliquid => write!(f, "hyperliquid"),
+            Dex::Grvt => write!(f, "grvt"),
+            Dex::Reya => write!(f, "reya"),
+            Dex::Hotstuff => write!(f, "hotstuff"),
+            Dex::Pacifica => write!(f, "pacifica"),
+            Dex::Extended => write!(f, "extended"),
+            Dex::Nado => write!(f, "nado"),
+            Dex::Nord => write!(f, "nord"),
+            Dex::Ethereal => write!(f, "ethereal"),
         }
     }
 }

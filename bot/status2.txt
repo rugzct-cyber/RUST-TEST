@@ -1,0 +1,12 @@
+Failed to connect | nado WebSocket error: HTTP error: 403 Forbidden
+Connected | reya 
+Connected | pacifica 
+Connected | grvt 
+Failed to connect | extended WebSocket error: HTTP error: 403 Forbidden
+Connected | vest 
+Connected | hotstuff 
+Connected | lighter 
+Failed to connect | hyperliquid WebSocket error: Trying to work with closed connection
+Connected | paradex 
+Failed to connect | ethereal WebSocket error: HTTP error: 502 Bad Gateway
+Connected | nord 

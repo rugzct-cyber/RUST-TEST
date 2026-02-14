@@ -1,0 +1,19 @@
+﻿[reya #1] {"type":"subscribed","channel":"/v2/prices","contents":[{"symbol":"ADARUSDPERP","oraclePrice":"0.284578855286463052","poolPrice":"0.284578868640354891","updatedAt":1771083587282},{"symbol":"kBONKRUSDPERP","oraclePrice":"0.006628842788809271","poolPrice":"0.006628849363253061","updatedAt":17710835872
+[reya #2] {"type":"channel_data","timestamp":1771083587735,"channel":"/v2/prices","data":[{"symbol":"ADARUSDPERP","oraclePrice":"0.284578855286463052","poolPrice":"0.284578868640354891","updatedAt":1771083587734},{"symbol":"APTRUSDPERP","oraclePrice":"0.964808797800514669","poolPrice":"0.964809390572789144","
+[reya #3] {"type":"channel_data","timestamp":1771083587838,"channel":"/v2/prices","data":[{"symbol":"kBONKRUSDPERP","oraclePrice":"0.006628842788809271","poolPrice":"0.006628849363253061","updatedAt":1771083587834},{"symbol":"kNEIRORUSDPERP","oraclePrice":"0.0795651087218988","poolPrice":"0.0795651087218988",
+[pacifica #1] {"code":400,"err":"Error parsing request","t":1771083588130}
+[grvt #1] {"jsonrpc":"2.0","error":{"code":1107,"message":"JSON RPC version must be 2.0"},"id":1,"method":"subscribe"}
+[extended #1] {"type":"SNAPSHOT","data":{"t":"SNAPSHOT","m":"EDEN-USD","b":[{"q":"21810","p":"0.03438"}],"a":[{"q":"23080","p":"0.0344"}],"d":"1"},"ts":1771083590474,"seq":1}
+[extended #2] {"type":"SNAPSHOT","data":{"t":"SNAPSHOT","m":"ADA-USD","b":[{"q":"37741","p":"0.2846"}],"a":[{"q":"38494","p":"0.2847"}],"d":"1"},"ts":1771083590477,"seq":2}
+[hotstuff #1] {"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}
+[extended #3] {"type":"SNAPSHOT","data":{"t":"SNAPSHOT","m":"ETH-USD","b":[{"q":"221.068","p":"2084.6"}],"a":[{"q":"45.800","p":"2084.7"}],"d":"1"},"ts":1771083590529,"seq":3}
+[nord #1] {"delta":{"last_update_id":1272319590,"update_id":1272319621,"market_symbol":"BTCUSD","asks":[],"bids":[[69764.1,0.00186],[69761.4,0.0],[69795.4,0.55939]]}}
+[nord #2] {"delta":{"last_update_id":1272319621,"update_id":1272319835,"market_symbol":"BTCUSD","asks":[[69830.0,0.0],[69829.3,0.00716],[69826.7,0.00716],[69890.9,0.00143],[69873.1,0.00429],[69817.1,0.01432],[69889.9,0.00214],[69889.8,0.0],[69830.1,0.00716],[69889.7,0.00143],[69890.8,0.00214],[69859.4,0.01432
+[hotstuff #2] {"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}
+[hotstuff #3] {"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}
+[nord #3] {"delta":{"last_update_id":1272319835,"update_id":1272320005,"market_symbol":"BTCUSD","asks":[[69822.9,0.04297],[69844.5,0.00143],[69833.3,0.02146],[69820.9,0.0],[69834.1,0.0],[69822.7,0.05729],[69829.8,0.0],[69806.8,0.00229],[69829.4,0.0],[69831.8,0.09308],[69826.0,0.00163],[69892.9,0.00357],[69840
+[grvt #2] {"jsonrpc":"2.0","error":{"code":1107,"message":"JSON RPC version must be 2.0"},"id":0,"method":"ping"}
+[grvt #3] {"jsonrpc":"2.0","error":{"code":1107,"message":"JSON RPC version must be 2.0"},"id":0,"method":"ping"}
+[pacifica #1] {"code":400,"err":"Error parsing request","t":1771083620802}
+[pacifica #2] {"code":400,"err":"Error parsing request","t":1771083650779}
+[pacifica #1] {"code":400,"err":"Error parsing request","t":1771083681872}

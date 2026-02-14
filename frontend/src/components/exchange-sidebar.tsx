@@ -3,10 +3,9 @@
 import { useState, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 
 // =============================================================================
-// ExchangeSidebar — matches original arbi-v5 Sidebar.module.css
+// ExchangeSidebar — hardcoded exchange list with live status indicators
 // =============================================================================
 
 interface ExchangeSidebarProps {
@@ -15,9 +14,56 @@ interface ExchangeSidebarProps {
     onToggle: (exchange: string) => void;
     onSelectAll: () => void;
     onDeselectAll: () => void;
+    /** Map of exchange name → last received timestamp_ms */
+    lastUpdate?: Map<string, number>;
     favorites?: Set<string>;
     showFavoritesOnly?: boolean;
     onShowFavoritesToggle?: () => void;
+}
+
+/** Freshness threshold — data older than 30s is considered stale */
+const STALE_THRESHOLD_MS = 30_000;
+
+function StatusDot({ exchange, lastUpdate }: { exchange: string; lastUpdate?: Map<string, number> }) {
+    const ts = lastUpdate?.get(exchange);
+    const now = Date.now();
+
+    if (!ts) {
+        // Never received any data
+        return (
+            <span
+                title="No data received"
+                style={{
+                    display: "inline-block",
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    background: "#555",
+                    flexShrink: 0,
+                }}
+            />
+        );
+    }
+
+    const age = now - ts;
+    const isLive = age < STALE_THRESHOLD_MS;
+    const seconds = Math.round(age / 1000);
+    const label = isLive ? `Live — ${seconds}s ago` : `Stale — ${seconds}s ago`;
+
+    return (
+        <span
+            title={label}
+            style={{
+                display: "inline-block",
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: isLive ? "#22c55e" : "#ef4444",
+                boxShadow: isLive ? "0 0 6px rgba(34,197,94,0.6)" : "0 0 6px rgba(239,68,68,0.4)",
+                flexShrink: 0,
+            }}
+        />
+    );
 }
 
 export function ExchangeSidebar({
@@ -26,6 +72,7 @@ export function ExchangeSidebar({
     onToggle,
     onSelectAll,
     onDeselectAll,
+    lastUpdate,
     favorites,
     showFavoritesOnly = false,
     onShowFavoritesToggle,
@@ -40,6 +87,17 @@ export function ExchangeSidebar({
 
     const allSelected = selectedExchanges.size === allExchanges.length;
     const favCount = favorites?.size ?? 0;
+
+    // Count live exchanges
+    const liveCount = useMemo(() => {
+        if (!lastUpdate) return 0;
+        const now = Date.now();
+        let count = 0;
+        for (const [, ts] of lastUpdate) {
+            if (now - ts < STALE_THRESHOLD_MS) count++;
+        }
+        return count;
+    }, [lastUpdate]);
 
     if (isCollapsed) {
         return (
@@ -229,6 +287,7 @@ export function ExchangeSidebar({
                                     onCheckedChange={() => onToggle(exchange)}
                                     className="h-3.5 w-3.5"
                                 />
+                                <StatusDot exchange={exchange} lastUpdate={lastUpdate} />
                                 <span style={{ fontWeight: 600, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em" }}>
                                     {exchange}
                                 </span>
@@ -246,6 +305,9 @@ export function ExchangeSidebar({
                 fontSize: 12,
                 color: "var(--muted-foreground)",
             }}>
+                <span style={{ fontFamily: "monospace", color: "#22c55e" }}>{liveCount}</span>
+                <span> live</span>
+                <span style={{ margin: "0 6px", color: "var(--border)" }}>|</span>
                 <span style={{ fontFamily: "monospace" }}>{selectedExchanges.size}</span> / <span style={{ fontFamily: "monospace" }}>{allExchanges.length}</span>
             </div>
         </aside>

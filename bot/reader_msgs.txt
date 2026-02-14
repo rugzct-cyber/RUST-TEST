@@ -1,0 +1,30 @@
+{"timestamp":"2026-02-14T15:14:29.581692Z","level":"INFO","fields":{"message":"Starting with configuration","exchanges":"[\"vest\", \"paradex\", \"lighter\", \"hyperliquid\", \"grvt\", \"reya\", \"hot
+{"timestamp":"2026-02-14T15:14:29.582442Z","level":"INFO","fields":{"message":"All exchange adapters launched","exchanges":"[\"vest\", \"paradex\", \"lighter\", \"hyperliquid\", \"grvt\", \"reya\", \"
+{"timestamp":"2026-02-14T15:14:29.582484Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"grvt"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582498Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"reya"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582541Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"pacifica"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582586Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"extended"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582529Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"hotstuff"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582619Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"nado"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582693Z","level":"INFO","fields":{"message":"Connecting to Pacifica WebSocket: wss://ws.pacifica.fi/ws"},"target":"hft_bot::adapters::pacifica::adapter"}
+{"timestamp":"2026-02-14T15:14:29.582687Z","level":"INFO","fields":{"message":"Connecting to Reya WebSocket: wss://ws.reya.xyz"},"target":"hft_bot::adapters::reya::adapter"}
+{"timestamp":"2026-02-14T15:14:29.582718Z","level":"INFO","fields":{"message":"Connecting to Extended WebSocket: wss://api.starknet.extended.exchange/stream.extended.exchange/v1/orderbooks?depth=1"},"
+{"timestamp":"2026-02-14T15:14:29.582773Z","level":"INFO","fields":{"message":"Connecting to Nado WebSocket: wss://gateway.prod.nado.xyz/v1/subscribe"},"target":"hft_bot::adapters::nado::adapter"}
+{"timestamp":"2026-02-14T15:14:29.582737Z","level":"INFO","fields":{"message":"Connecting to HotStuff WebSocket: wss://api.hotstuff.trade/ws/"},"target":"hft_bot::adapters::hotstuff::adapter"}
+{"timestamp":"2026-02-14T15:14:29.582815Z","level":"INFO","fields":{"message":"Starting adapter","exchange":"nord"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:29.582817Z","level":"INFO","fields":{"message":"Connecting to GRVT WebSocket: wss://market-data.grvt.io/ws/full"},"target":"hft_bot::adapters::grvt::adapter"}
+{"timestamp":"2026-02-14T15:14:29.582962Z","level":"INFO","fields":{"message":"Connecting to Nord WebSocket: wss://zo-mainnet.n1.xyz/ws/deltas@BTCUSD"},"target":"hft_bot::adapters::nord::adapter"}
+{"timestamp":"2026-02-14T15:14:32.872772Z","level":"INFO","fields":{"message":"Vest message_reader_loop started"},"target":"hft_bot::adapters::vest::adapter"}
+{"timestamp":"2026-02-14T15:14:33.460030Z","level":"INFO","fields":{"message":"Reya message_reader_loop started"},"target":"hft_bot::adapters::reya::adapter"}
+{"timestamp":"2026-02-14T15:14:33.460077Z","level":"INFO","fields":{"message":"Subscribed to /v2/prices","exchange":"reya"},"target":"hft_bot::adapters::reya::adapter"}
+{"timestamp":"2026-02-14T15:14:33.460116Z","level":"INFO","fields":{"message":"Reya WebSocket connected","exchange":"reya"},"target":"hft_bot::adapters::reya::adapter"}
+{"timestamp":"2026-02-14T15:14:33.460135Z","level":"INFO","fields":{"message":"Connected","exchange":"reya"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:33.460173Z","level":"INFO","fields":{"message":"Subscribed","exchange":"reya","symbol":"BTC","exchange_symbol":"BTC-USD"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:33.460196Z","level":"INFO","fields":{"message":"Subscribed","exchange":"reya","symbol":"ETH","exchange_symbol":"ETH-USD"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:33.460215Z","level":"INFO","fields":{"message":"Subscribed","exchange":"reya","symbol":"SOL","exchange_symbol":"SOL-USD"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:33.460234Z","level":"INFO","fields":{"message":"Entering price poll loop","exchange":"reya"},"target":"hft_bot::adapters::manager"}
+{"timestamp":"2026-02-14T15:14:33.763627Z","level":"INFO","fields":{"message":"Hyperliquid message_reader_loop started"},"target":"hft_bot::adapters::hyperliquid::adapter"}
+{"timestamp":"2026-02-14T15:14:33.811842Z","level":"INFO","fields":{"message":"Pacifica message_reader_loop started"},"target":"hft_bot::adapters::pacifica::adapter"}
+{"timestamp":"2026-02-14T15:14:33.811885Z","level":"INFO","fields":{"message":"Subscribed to BBO","exchange":"pacifica","count":8},"target":"hft_bot::adapters::pacifica::adapter"}
+{"timestamp":"2026-02-14T15:14:33.811935Z","level":"INFO","fields":{"message":"Pacifica WebSocket connected","exchange":"pacifica"},"target":"hft_bot::adapters::pacifica::adapter"}
+{"timestamp":"2026-02-14T15:14:33.811966Z","level":"INFO","fields":{"message":"Connected","exchange":"pacifica"},"target":"hft_bot::adapters::manager"}

@@ -2,7 +2,12 @@
 // Constants — Single source of truth for exchanges, symbols, and UI config
 // =============================================================================
 
-export const EXCHANGES = ["vest", "paradex", "lighter"] as const;
+export const EXCHANGES = [
+    "vest", "paradex", "lighter",
+    "hyperliquid", "grvt", "reya",
+    "hotstuff", "pacifica", "extended",
+    "nado", "nord", "ethereal",
+] as const;
 export type Exchange = (typeof EXCHANGES)[number];
 
 export const SYMBOLS = ["BTC", "ETH", "SOL"] as const;
@@ -13,13 +18,31 @@ export const EXCHANGE_LABELS: Record<Exchange, string> = {
     vest: "Vest",
     paradex: "Paradex",
     lighter: "Lighter",
+    hyperliquid: "Hyperliquid",
+    grvt: "GRVT",
+    reya: "Reya",
+    hotstuff: "HotStuff",
+    pacifica: "Pacifica",
+    extended: "Extended",
+    nado: "Nado",
+    nord: "Nord",
+    ethereal: "Ethereal",
 };
 
-/** Accent colors per exchange (tailwind classes) */
+/** Accent colors per exchange */
 export const EXCHANGE_COLORS: Record<Exchange, string> = {
-    vest: "#3b82f6",     // blue
-    paradex: "#a855f7",  // purple
-    lighter: "#22c55e",  // green
+    vest: "#3b82f6",        // blue
+    paradex: "#a855f7",     // purple
+    lighter: "#22c55e",     // green
+    hyperliquid: "#06b6d4", // cyan
+    grvt: "#f97316",        // orange
+    reya: "#ec4899",        // pink
+    hotstuff: "#ef4444",    // red
+    pacifica: "#14b8a6",    // teal
+    extended: "#8b5cf6",    // violet
+    nado: "#eab308",        // yellow
+    nord: "#6366f1",        // indigo
+    ethereal: "#d946ef",    // fuchsia
 };
 
 /** Chart colors for spread lines */

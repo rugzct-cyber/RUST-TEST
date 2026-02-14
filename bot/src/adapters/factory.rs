@@ -1,13 +1,22 @@
 //! Adapter factory for dynamic exchange selection
 //!
-//! Creates `ExchangeAdapter` instances from config strings like "vest", "paradex", "lighter".
+//! Creates `ExchangeAdapter` instances from config strings.
 //! Uses an enum-based dispatch pattern (no `Box<dyn>`) to preserve monomorphization.
 
 use async_trait::async_trait;
 
 use crate::adapters::errors::{ExchangeError, ExchangeResult};
+use crate::adapters::ethereal::{EtherealAdapter, EtherealConfig};
+use crate::adapters::extended::{ExtendedAdapter, ExtendedConfig};
+use crate::adapters::grvt::{GrvtAdapter, GrvtConfig};
+use crate::adapters::hotstuff::{HotstuffAdapter, HotstuffConfig};
+use crate::adapters::hyperliquid::{HyperliquidAdapter, HyperliquidConfig};
 use crate::adapters::lighter::{LighterAdapter, LighterConfig};
+use crate::adapters::nado::{NadoAdapter, NadoConfig};
+use crate::adapters::nord::{NordWsAdapter, NordConfig};
+use crate::adapters::pacifica::{PacificaAdapter, PacificaConfig};
 use crate::adapters::paradex::{ParadexAdapter, ParadexConfig};
+use crate::adapters::reya::{ReyaAdapter, ReyaConfig};
 use crate::adapters::traits::ExchangeAdapter;
 use crate::adapters::types::Orderbook;
 use crate::adapters::vest::{VestAdapter, VestConfig};
@@ -22,6 +31,15 @@ pub enum AnyAdapter {
     Vest(VestAdapter),
     Paradex(ParadexAdapter),
     Lighter(LighterAdapter),
+    Hyperliquid(HyperliquidAdapter),
+    Grvt(GrvtAdapter),
+    Reya(ReyaAdapter),
+    Hotstuff(HotstuffAdapter),
+    Pacifica(PacificaAdapter),
+    Extended(ExtendedAdapter),
+    Nado(NadoAdapter),
+    Nord(NordWsAdapter),
+    Ethereal(EtherealAdapter),
 }
 
 /// Macro to reduce boilerplate for delegating trait methods
@@ -31,6 +49,15 @@ macro_rules! delegate {
             AnyAdapter::Vest(a) => a.$method($($arg),*),
             AnyAdapter::Paradex(a) => a.$method($($arg),*),
             AnyAdapter::Lighter(a) => a.$method($($arg),*),
+            AnyAdapter::Hyperliquid(a) => a.$method($($arg),*),
+            AnyAdapter::Grvt(a) => a.$method($($arg),*),
+            AnyAdapter::Reya(a) => a.$method($($arg),*),
+            AnyAdapter::Hotstuff(a) => a.$method($($arg),*),
+            AnyAdapter::Pacifica(a) => a.$method($($arg),*),
+            AnyAdapter::Extended(a) => a.$method($($arg),*),
+            AnyAdapter::Nado(a) => a.$method($($arg),*),
+            AnyAdapter::Nord(a) => a.$method($($arg),*),
+            AnyAdapter::Ethereal(a) => a.$method($($arg),*),
         }
     };
     (await $self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -38,6 +65,15 @@ macro_rules! delegate {
             AnyAdapter::Vest(a) => a.$method($($arg),*).await,
             AnyAdapter::Paradex(a) => a.$method($($arg),*).await,
             AnyAdapter::Lighter(a) => a.$method($($arg),*).await,
+            AnyAdapter::Hyperliquid(a) => a.$method($($arg),*).await,
+            AnyAdapter::Grvt(a) => a.$method($($arg),*).await,
+            AnyAdapter::Reya(a) => a.$method($($arg),*).await,
+            AnyAdapter::Hotstuff(a) => a.$method($($arg),*).await,
+            AnyAdapter::Pacifica(a) => a.$method($($arg),*).await,
+            AnyAdapter::Extended(a) => a.$method($($arg),*).await,
+            AnyAdapter::Nado(a) => a.$method($($arg),*).await,
+            AnyAdapter::Nord(a) => a.$method($($arg),*).await,
+            AnyAdapter::Ethereal(a) => a.$method($($arg),*).await,
         }
     };
     (mut $self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -45,6 +81,15 @@ macro_rules! delegate {
             AnyAdapter::Vest(a) => a.$method($($arg),*),
             AnyAdapter::Paradex(a) => a.$method($($arg),*),
             AnyAdapter::Lighter(a) => a.$method($($arg),*),
+            AnyAdapter::Hyperliquid(a) => a.$method($($arg),*),
+            AnyAdapter::Grvt(a) => a.$method($($arg),*),
+            AnyAdapter::Reya(a) => a.$method($($arg),*),
+            AnyAdapter::Hotstuff(a) => a.$method($($arg),*),
+            AnyAdapter::Pacifica(a) => a.$method($($arg),*),
+            AnyAdapter::Extended(a) => a.$method($($arg),*),
+            AnyAdapter::Nado(a) => a.$method($($arg),*),
+            AnyAdapter::Nord(a) => a.$method($($arg),*),
+            AnyAdapter::Ethereal(a) => a.$method($($arg),*),
         }
     };
     (mut await $self:expr, $method:ident ( $($arg:expr),* )) => {
@@ -52,6 +97,15 @@ macro_rules! delegate {
             AnyAdapter::Vest(a) => a.$method($($arg),*).await,
             AnyAdapter::Paradex(a) => a.$method($($arg),*).await,
             AnyAdapter::Lighter(a) => a.$method($($arg),*).await,
+            AnyAdapter::Hyperliquid(a) => a.$method($($arg),*).await,
+            AnyAdapter::Grvt(a) => a.$method($($arg),*).await,
+            AnyAdapter::Reya(a) => a.$method($($arg),*).await,
+            AnyAdapter::Hotstuff(a) => a.$method($($arg),*).await,
+            AnyAdapter::Pacifica(a) => a.$method($($arg),*).await,
+            AnyAdapter::Extended(a) => a.$method($($arg),*).await,
+            AnyAdapter::Nado(a) => a.$method($($arg),*).await,
+            AnyAdapter::Nord(a) => a.$method($($arg),*).await,
+            AnyAdapter::Ethereal(a) => a.$method($($arg),*).await,
         }
     };
 }
@@ -115,6 +169,12 @@ impl ExchangeAdapter for AnyAdapter {
 // Factory Functions
 // =============================================================================
 
+/// All supported exchange adapter names.
+pub const SUPPORTED_EXCHANGES: &[&str] = &[
+    "vest", "paradex", "lighter", "hyperliquid", "grvt", "reya",
+    "hotstuff", "pacifica", "extended", "nado", "nord", "ethereal",
+];
+
 /// Create an adapter from a config name string.
 ///
 /// The adapter is created but NOT connected — call `connect()` after.
@@ -132,9 +192,46 @@ pub fn create_adapter(name: &str) -> ExchangeResult<AnyAdapter> {
             let config = LighterConfig::from_env();
             Ok(AnyAdapter::Lighter(LighterAdapter::new(config)))
         }
+        "hyperliquid" => {
+            let config = HyperliquidConfig::from_env();
+            Ok(AnyAdapter::Hyperliquid(HyperliquidAdapter::new(config)))
+        }
+        "grvt" => {
+            let config = GrvtConfig::from_env();
+            Ok(AnyAdapter::Grvt(GrvtAdapter::new(config)))
+        }
+        "reya" => {
+            let config = ReyaConfig::from_env();
+            Ok(AnyAdapter::Reya(ReyaAdapter::new(config)))
+        }
+        "hotstuff" => {
+            let config = HotstuffConfig::from_env();
+            Ok(AnyAdapter::Hotstuff(HotstuffAdapter::new(config)))
+        }
+        "pacifica" => {
+            let config = PacificaConfig::from_env();
+            Ok(AnyAdapter::Pacifica(PacificaAdapter::new(config)))
+        }
+        "extended" => {
+            let config = ExtendedConfig::from_env();
+            Ok(AnyAdapter::Extended(ExtendedAdapter::new(config)))
+        }
+        "nado" => {
+            let config = NadoConfig::from_env();
+            Ok(AnyAdapter::Nado(NadoAdapter::new(config)))
+        }
+        "nord" => {
+            let config = NordConfig::from_env();
+            Ok(AnyAdapter::Nord(NordWsAdapter::new(config)))
+        }
+        "ethereal" => {
+            let config = EtherealConfig::from_env();
+            Ok(AnyAdapter::Ethereal(EtherealAdapter::new(config)))
+        }
         _ => Err(ExchangeError::ConnectionFailed(format!(
-            "Unknown exchange adapter: '{}'. Supported: vest, paradex, lighter",
-            name
+            "Unknown exchange adapter: '{}'. Supported: {}",
+            name,
+            SUPPORTED_EXCHANGES.join(", ")
         ))),
     }
 }
@@ -154,9 +251,11 @@ pub fn resolve_symbol(exchange: &str, pair: &str) -> String {
         ("vest", "SOL") => "SOL-PERP".to_string(),
         ("paradex", "SOL") => "SOL-USD-PERP".to_string(),
         ("lighter", "SOL") => "SOL".to_string(),
+        // New exchanges — most use BASE-USD format
+        ("hyperliquid" | "grvt" | "reya" | "hotstuff" | "pacifica"
+        | "nado" | "nord" | "ethereal", base) => format!("{}-USD", base),
+        ("extended", base) => format!("{}-USDT-PERP", base),
         // Fallback: use pair as-is
         _ => pair.to_string(),
     }
 }
-
-

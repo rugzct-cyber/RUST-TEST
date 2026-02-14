@@ -7,4 +7,4 @@ pub mod reconnect;
 pub mod websocket;
 
 pub use reconnect::{reconnect_with_backoff, ReconnectConfig};
-pub use websocket::connect_tls;
+pub use websocket::{connect_tls, connect_tls_with_request};

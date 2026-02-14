@@ -1,0 +1,32 @@
+﻿=== RAW MESSAGES ===
+[extended #1] {"type":"SNAPSHOT","data":{"t":"SNAPSHOT","m":"BNB-USD","b":[{"q":"11.099","p":"632.4"}],"a":[{"q":"14.968","p":"632.41"}],"d":"1"},"ts":1771085809934,"seq":1}
+[extended #2] {"type":"SNAPSHOT","data":{"t":"SNAPSHOT","m":"ETH-USD","b":[{"q":"193.420","p":"2074.1"}],"a":[{"q":"176.460","p":"2074.2"}],"d":"1"},"ts":1771085809934,"seq":2}
+[extended #3] {"type":"SNAPSHOT","data":{"t":"SNAPSHOT","m":"HYPE-USD","b":[{"q":"799.10","p":"31.126"}],"a":[{"q":"160.66","p":"31.127"}],"d":"1"},"ts":1771085809968,"seq":3}
+[grvt #1] {"jsonrpc":"2.0","error":{"code":3000,"message":"Instrument is invalid"},"id":1,"method":"subscribe"}
+[grvt #2] {"jsonrpc":"2.0","error":{"code":1200,"message":"RPC method not found"},"id":0,"method":"ping"}
+[grvt #3] {"jsonrpc":"2.0","error":{"code":1200,"message":"RPC method not found"},"id":0,"method":"ping"}
+[hotstuff #1] {"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}
+[hotstuff #2] {"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}
+[hotstuff #3] {"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}
+[nord #1] {"delta":{"last_update_id":1273400811,"update_id":1273401079,"market_symbol":"BTCUSD","asks":[[69527.1,0.00709],[69545.3,0.0],[69540.8,0.0],[69606.7,0.0],[69595.9,0.00143],[69538.9,0.00431],[69530.1,0
+[nord #2] {"delta":{"last_update_id":1273401079,"update_id":1273401165,"market_symbol":"BTCUSD","asks":[[69595.9,0.0],[69544.3,0.00719],[69541.0,0.09347],[69606.1,0.03092],[69530.0,0.14671],[69558.3,0.0],[69543
+[nord #3] {"delta":{"last_update_id":1273401165,"update_id":1273401240,"market_symbol":"BTCUSD","asks":[[69606.4,0.00143],[69534.9,0.0],[69533.6,0.0],[69600.2,0.02877],[69519.0,0.00088],[69567.0,0.00431],[69541
+[pacifica #1] {"channel":"subscribe","data":{"source":"prices"}}
+[pacifica #1] {"channel":"subscribe","data":{"source":"prices"}}
+[pacifica #1] {"channel":"subscribe","data":{"source":"prices"}}
+[pacifica #2] {"channel":"prices","data":[{"symbol":"AAVE","funding":"0.000015","next_funding":"0.00000744","oracle":"128.739806","mark":"128.68","mid":"128.64","yesterday_price":"116.84","open_interest":"3451.81",
+[pacifica #2] {"channel":"prices","data":[{"symbol":"ASTER","funding":"0","next_funding":"0.00000538","oracle":"0.723957","mark":"0.72343","mid":"0.722615","yesterday_price":"0.72714","open_interest":"568348.72","v
+[pacifica #2] {"channel":"prices","data":[{"symbol":"BCH","funding":"0.000015","next_funding":"0.000015","oracle":"564.867401","mark":"564.571102","mid":"564.595","yesterday_price":"544.18","open_interest":"575.26"
+[pacifica #3] {"channel":"prices","data":[{"symbol":"ADA","funding":"-0.00000044","next_funding":"-0.0000081","oracle":"0.285701","mark":"0.285525","mid":"0.28537","yesterday_price":"0.27139","open_interest":"85418
+[pacifica #3] {"channel":"prices","data":[{"symbol":"LDO","funding":"0.000015","next_funding":"0.000015","oracle":"0.355292","mark":"0.355","mid":"0.35485","yesterday_price":"0.3486","open_interest":"261228.8","vol
+[pacifica #3] {"channel":"prices","data":[{"symbol":"XAG","funding":"0.000015","next_funding":"0.000015","oracle":"77.377391","mark":"77.409","mid":"77.4275","yesterday_price":"78.077","open_interest":"4484.2","vol
+[reya #1] {"type":"subscribed","channel":"/v2/prices","contents":[{"symbol":"WLFIRUSDPERP","oraclePrice":"0.106023494126468382","poolPrice":"0.106017620540233874","updatedAt":1771085810310},{"symbol":"AAVERUSDP
+[reya #2] {"type":"channel_data","timestamp":1771085810675,"channel":"/v2/prices","data":[{"symbol":"HYPERUSDPERP","oraclePrice":"31.118610034990689644","poolPrice":"31.116618627389941608","updatedAt":177108581
+[reya #3] {"type":"channel_data","timestamp":1771085810727,"channel":"/v2/prices","data":[{"symbol":"kNEIRORUSDPERP","oraclePrice":"0.081064733816545863","poolPrice":"0.081064733816545863","updatedAt":177108581
+
+=== ARB PAIR COUNTS (total: 377) ===
+reya/vest = 218
+vest/nord = 68
+vest/pacifica = 58
+paradex/vest = 26
+vest/lighter = 7

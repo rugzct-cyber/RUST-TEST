@@ -1,0 +1,12 @@
+Failed to connect | lighter Connection failed: Failed to fetch market info: error sending request for url (https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails): error trying to connect: operation timed out
+Connected | vest 
+Connected | reya 
+Connected | pacifica 
+Connected | extended 
+Connected | grvt 
+Connected | hotstuff 
+Connected | nado 
+Connected | nord 
+Failed to connect | hyperliquid WebSocket error: Trying to work with closed connection
+Connected | paradex 
+Failed to connect | ethereal WebSocket error: HTTP error: 502 Bad Gateway

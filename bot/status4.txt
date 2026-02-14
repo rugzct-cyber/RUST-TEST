@@ -1,0 +1,12 @@
+Failed to connect | lighter ERR: Connection failed: Failed to fetch market info: error sendin
+Connected | vest
+Connected | reya
+Connected | pacifica
+Connected | extended
+Connected | grvt
+Connected | hotstuff
+Connected | nado
+Connected | nord
+Failed to connect | hyperliquid ERR: WebSocket error: Trying to work with closed connection
+Connected | paradex
+Failed to connect | ethereal ERR: WebSocket error: HTTP error: 502 Bad Gateway

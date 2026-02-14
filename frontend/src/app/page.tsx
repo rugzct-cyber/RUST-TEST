@@ -289,18 +289,24 @@ function StatCard({ label, value, color }: { label: string; value: string; color
 export default function DashboardPage() {
   const { prices, status } = useWS();
 
-  const { allExchanges, allSymbols } = useMemo(() => {
-    const exchanges = new Set<string>();
+  // Hardcoded exchange list — matches Rust backend adapter names
+  const allExchanges = useMemo(() => [
+    "vest", "paradex", "hyperliquid", "lighter",
+    "reya", "pacifica", "nord", "grvt",
+    "hotstuff", "extended", "nado", "ethereal",
+  ], []);
+
+  // Derive symbols from prices + track last update per exchange
+  const { allSymbols, lastUpdate } = useMemo(() => {
     const symbols = new Set<string>();
-    for (const [key] of prices) {
+    const lu = new Map<string, number>();
+    for (const [key, data] of prices) {
       const [exchange, symbol] = key.split(":");
-      exchanges.add(exchange);
       symbols.add(symbol);
+      const prev = lu.get(exchange) ?? 0;
+      if (data.timestamp_ms > prev) lu.set(exchange, data.timestamp_ms);
     }
-    return {
-      allExchanges: Array.from(exchanges).sort(),
-      allSymbols: Array.from(symbols).sort(),
-    };
+    return { allSymbols: Array.from(symbols).sort(), lastUpdate: lu };
   }, [prices]);
 
   const [selectedExchanges, setSelectedExchanges] = useState<Set<string>>(new Set());
@@ -423,7 +429,8 @@ export default function DashboardPage() {
           if (best > -Infinity) spread = Math.round(best * 10000) / 10000;
         }
       } else {
-        for (const p of validPrices) {
+        const selected = validPrices.filter((p) => selectedExchanges.has(p.exchange));
+        for (const p of selected) {
           if (p.bid > bestBid) { bestBid = p.bid; bestBidExchange = p.exchange; }
           if ((p.ask < bestAsk || bestAsk === 0) && p.ask > 0) { bestAsk = p.ask; bestAskExchange = p.exchange; }
         }
@@ -472,6 +479,7 @@ export default function DashboardPage() {
       {/* Sidebar */}
       <ExchangeSidebar
         allExchanges={allExchanges}
+        lastUpdate={lastUpdate}
         selectedExchanges={selectedExchanges}
         onToggle={handleToggle}
         onSelectAll={handleSelectAll}
