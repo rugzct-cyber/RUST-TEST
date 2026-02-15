@@ -1,7 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ClipboardEvent } from "react";
 import type { Position, ExitSpreadData } from "@/lib/types";
+
+// Sanitize a pasted/typed price string:
+// "69,396.15" → "69396.15"  (comma = thousands separator, dot = decimal)
+// "69.396,15" → "69396.15"  (dot = thousands separator, comma = decimal — EU format)
+function sanitizePrice(raw: string): string {
+    const trimmed = raw.trim();
+    const lastComma = trimmed.lastIndexOf(",");
+    const lastDot = trimmed.lastIndexOf(".");
+    if (lastComma > -1 && lastDot > -1) {
+        if (lastDot > lastComma) return trimmed.replace(/,/g, "");
+        return trimmed.replace(/\./g, "").replace(",", ".");
+    }
+    if (lastComma > -1 && lastDot === -1) {
+        const afterComma = trimmed.slice(lastComma + 1);
+        if (afterComma.length === 3 && /^\d+$/.test(afterComma)) return trimmed.replace(/,/g, "");
+        return trimmed.replace(",", ".");
+    }
+    return trimmed;
+}
 
 interface PositionDetailProps {
     position: Position;
@@ -21,7 +40,7 @@ export function PositionDetail({ position, exitSpreadData, currentPnL, onUpdateP
 
     const handleSaveEdit = () => {
         if (!editingField) return;
-        const newValue = parseFloat(editValue);
+        const newValue = parseFloat(sanitizePrice(editValue));
         if (isNaN(newValue) || newValue <= 0) { setEditingField(null); return; }
         onUpdatePosition({ ...position, [editingField]: newValue });
         setEditingField(null);
@@ -54,11 +73,12 @@ export function PositionDetail({ position, exitSpreadData, currentPnL, onUpdateP
             <span className={statLabel}>{label}</span>
             {editingField === field ? (
                 <input
-                    type="number"
-                    step={step}
+                    type="text"
+                    inputMode="decimal"
                     className="w-full p-2 bg-background border border-primary rounded-md text-foreground text-xl font-bold font-mono text-center focus:outline-none focus:border-ring"
                     value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
+                    onChange={(e) => setEditValue(e.target.value.replace(/[^0-9.,]/g, ""))}
+                    onPaste={(e: ClipboardEvent<HTMLInputElement>) => { e.preventDefault(); setEditValue(sanitizePrice(e.clipboardData.getData("text"))); }}
                     onBlur={handleSaveEdit}
                     onKeyDown={handleEditKeyDown}
                     autoFocus
