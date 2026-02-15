@@ -1,7 +1,52 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, ClipboardEvent } from "react";
 import type { Position } from "@/lib/types";
+
+// Sanitize a pasted/typed price string:
+// "69,396.15" → "69396.15"  (comma = thousands separator, dot = decimal)
+// "69.396,15" → "69396.15"  (dot = thousands separator, comma = decimal — EU format)
+// "69396.15"  → "69396.15"  (already clean)
+function sanitizePrice(raw: string): string {
+    const trimmed = raw.trim();
+    const lastComma = trimmed.lastIndexOf(",");
+    const lastDot = trimmed.lastIndexOf(".");
+
+    if (lastComma > -1 && lastDot > -1) {
+        if (lastDot > lastComma) {
+            // Format: 69,396.15 → comma is thousands sep
+            return trimmed.replace(/,/g, "");
+        } else {
+            // Format: 69.396,15 → dot is thousands sep, comma is decimal
+            return trimmed.replace(/\./g, "").replace(",", ".");
+        }
+    }
+    if (lastComma > -1 && lastDot === -1) {
+        // Only commas: could be "69396,15" (EU decimal) or "69,396" (thousands)
+        // If digits after last comma are exactly 3 and there are digits before → thousands sep
+        const afterComma = trimmed.slice(lastComma + 1);
+        if (afterComma.length === 3 && /^\d+$/.test(afterComma)) {
+            // Ambiguous, but treat as thousands separator (e.g. "69,396")
+            return trimmed.replace(/,/g, "");
+        }
+        // Otherwise treat comma as decimal (e.g. "69396,15")
+        return trimmed.replace(",", ".");
+    }
+    // Only dots or no separator — already fine
+    return trimmed;
+}
+
+function handlePriceChange(value: string, setter: (v: string) => void) {
+    // Allow digits, dots, commas during typing
+    const cleaned = value.replace(/[^0-9.,]/g, "");
+    setter(cleaned);
+}
+
+function handlePricePaste(e: ClipboardEvent<HTMLInputElement>, setter: (v: string) => void) {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData("text");
+    setter(sanitizePrice(pasted));
+}
 
 interface AddPositionFormProps {
     availableTokens: string[];
@@ -49,8 +94,8 @@ export function AddPositionForm({ availableTokens, availableExchanges, onAdd }: 
 
         // Store the token exactly as it appears in the WS data (e.g. "BTC", "ETH", "SOL")
         const normalizedToken = token.toUpperCase().replace(/-USD$/, "").replace(/-PERP$/, "");
-        const pLong = parseFloat(entryPriceLong);
-        const pShort = parseFloat(entryPriceShort);
+        const pLong = parseFloat(sanitizePrice(entryPriceLong));
+        const pShort = parseFloat(sanitizePrice(entryPriceShort));
 
         const newPosition: Position = {
             id: Date.now().toString(),
@@ -134,13 +179,17 @@ export function AddPositionForm({ availableTokens, availableExchanges, onAdd }: 
             {/* Entry prices */}
             <div className="mb-3">
                 <label className={labelClass}>Prix d&apos;entrée LONG ($)</label>
-                <input type="number" step="0.01" placeholder="100.00" value={entryPriceLong}
-                    onChange={(e) => { setEntryPriceLong(e.target.value); setFormError(null); }} className={inputClass} />
+                <input type="text" inputMode="decimal" placeholder="100.00" value={entryPriceLong}
+                    onChange={(e) => { handlePriceChange(e.target.value, setEntryPriceLong); setFormError(null); }}
+                    onPaste={(e) => { handlePricePaste(e, setEntryPriceLong); setFormError(null); }}
+                    className={inputClass} />
             </div>
             <div className="mb-3">
                 <label className={labelClass}>Prix d&apos;entrée SHORT ($)</label>
-                <input type="number" step="0.01" placeholder="100.00" value={entryPriceShort}
-                    onChange={(e) => { setEntryPriceShort(e.target.value); setFormError(null); }} className={inputClass} />
+                <input type="text" inputMode="decimal" placeholder="100.00" value={entryPriceShort}
+                    onChange={(e) => { handlePriceChange(e.target.value, setEntryPriceShort); setFormError(null); }}
+                    onPaste={(e) => { handlePricePaste(e, setEntryPriceShort); setFormError(null); }}
+                    className={inputClass} />
             </div>
 
             {/* Token amount */}
