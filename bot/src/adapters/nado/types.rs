@@ -30,7 +30,6 @@ impl NadoSubscribeMsg {
         }
     }
 
-    #[allow(dead_code)]
     pub fn best_bid_offer(product_id: u32, id: u32) -> Self {
         Self {
             method: "subscribe".to_string(),

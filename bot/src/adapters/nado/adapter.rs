@@ -8,8 +8,7 @@
 //! compressed frames (reserved bits set), so we need both the header AND
 //! the decompression support.
 //!
-//! Subscribes to `book_depth` streams for real-time orderbook data
-//! (matching the original TypeScript nado-ws.ts implementation).
+//! Subscribes to `best_bid_offer` streams for real-time BBO data.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,7 +29,7 @@ use crate::core::channels::{AtomicBestPrices, OrderbookNotify, SharedBestPrices,
 use super::config::NadoConfig;
 use super::types::{
     get_nado_markets, parse_nado_price, product_id_to_symbol,
-    NadoBookDepthEvent, NadoBboEvent, NadoSubscribeMsg,
+    NadoBboEvent, NadoSubscribeMsg,
 };
 
 fn current_time_ms() -> u64 {
@@ -47,6 +46,8 @@ pub struct NadoAdapter {
     shared_best_prices: SharedBestPrices,
     orderbook_notify: Option<OrderbookNotify>,
     connection_health: ConnectionHealth,
+    /// Timestamp (ms) when connect() was last called — used for grace period in is_stale()
+    connect_time_ms: u64,
 }
 
 impl NadoAdapter {
@@ -61,6 +62,7 @@ impl NadoAdapter {
             shared_best_prices: Arc::new(AtomicBestPrices::new()),
             orderbook_notify: None,
             connection_health: ConnectionHealth::default(),
+            connect_time_ms: 0,
         }
     }
 
@@ -84,9 +86,9 @@ impl NadoAdapter {
     }
 
     /// Connects via yawc with:
-    ///   - Options::default() → native permessage-deflate decompression
+    ///   - Options with low_latency_compression → native permessage-deflate decompression
     ///   - .with_request() → explicit Sec-WebSocket-Extensions header for gateway
-    /// Then subscribes to book_depth and reads the push stream.
+    /// Then subscribes to best_bid_offer and reads the push stream.
     async fn ws_subscribe_loop(
         url: String,
         shared_orderbooks: SharedOrderbooks,
@@ -108,8 +110,7 @@ impl NadoAdapter {
         let http_builder = yawc::HttpRequestBuilder::new()
             .header("Sec-WebSocket-Extensions", "permessage-deflate");
 
-        // CRITICAL: Options::default() has compression: None!
-        // We must explicitly enable compression so yawc:
+        // Enable compression so yawc:
         //   1) Sends the Sec-WebSocket-Extensions: permessage-deflate header (gateway requires it)
         //   2) Decompresses the compressed frames Nado sends back
         let options = yawc::Options::default().with_low_latency_compression();
@@ -130,15 +131,15 @@ impl NadoAdapter {
         reader_alive.store(true, Ordering::Relaxed);
         last_data.store(current_time_ms(), Ordering::Relaxed);
 
-        // Subscribe to book_depth for each market (matches original TS adapter)
+        // Subscribe to best_bid_offer for each market (BBO only)
         let markets = get_nado_markets();
         for (i, (product_id, sym)) in markets.iter().enumerate() {
-            let sub_msg = NadoSubscribeMsg::book_depth(*product_id, (i + 1) as u32);
+            let sub_msg = NadoSubscribeMsg::best_bid_offer(*product_id, (i + 1) as u32);
             let json = match serde_json::to_string(&sub_msg) {
                 Ok(j) => j,
                 Err(e) => { tracing::error!(exchange = "nado", error = %e, "Serialize failed"); continue; }
             };
-            tracing::info!(exchange = "nado", symbol = sym, product_id, "Subscribing to book_depth");
+            tracing::info!(exchange = "nado", symbol = sym, product_id, "Subscribing to best_bid_offer");
             let frame = yawc::Frame::text(json);
             if let Err(e) = ws.send(frame).await {
                 tracing::error!(exchange = "nado", error = %e, "Subscribe send failed");
@@ -146,11 +147,6 @@ impl NadoAdapter {
                 return;
             }
         }
-
-        // Pings sent inline in the read loop (every 25s)
-
-        // Bid/Ask price cache per symbol (same pattern as original TS adapter)
-        let mut price_cache: HashMap<String, (f64, f64)> = HashMap::new();
 
         // Read push events
         let mut msg_count: u64 = 0;
@@ -161,7 +157,7 @@ impl NadoAdapter {
             last_data.store(now, Ordering::Relaxed);
             last_pong.store(now, Ordering::Relaxed);
 
-            // Send ping every 25 seconds
+            // Send ping every 25 seconds (Nado docs: keep-alive every 30s)
             if now.saturating_sub(last_ping) > 25_000 {
                 if let Err(e) = ws.send(yawc::Frame::ping(vec![])).await {
                     tracing::warn!(exchange = "nado", error = %e, "Ping send failed");
@@ -182,59 +178,8 @@ impl NadoAdapter {
                         tracing::info!(exchange = "nado", msg_count, raw = %text.chars().take(300).collect::<String>(), "RAW WS message");
                     }
 
-                    // Try parsing as book_depth event (primary)
-                    if let Ok(evt) = serde_json::from_str::<NadoBookDepthEvent>(text) {
-                        if evt.event_type.as_deref() == Some("book_depth") {
-                            if let Some(pid) = evt.product_id {
-                                if let Some(symbol) = product_id_to_symbol(pid) {
-                                    let cached = price_cache.entry(symbol.to_string()).or_insert((0.0, 0.0));
-
-                                    // Update best bid from depth data (same as original TS)
-                                    if let Some(ref bids) = evt.bids {
-                                        for bid in bids {
-                                            if bid.len() >= 2 {
-                                                if let Some(price) = parse_nado_price(&bid[0]) {
-                                                    if bid[1] != "0" {
-                                                        cached.0 = price;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // Update best ask from depth data
-                                    if let Some(ref asks) = evt.asks {
-                                        for ask in asks {
-                                            if ask.len() >= 2 {
-                                                if let Some(price) = parse_nado_price(&ask[0]) {
-                                                    if ask[1] != "0" {
-                                                        cached.1 = price;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    let (bid, ask) = *cached;
-                                    if bid > 0.0 && ask > 0.0 {
-                                        let orderbook = Orderbook {
-                                            bids: vec![OrderbookLevel::new(bid, 0.0)],
-                                            asks: vec![OrderbookLevel::new(ask, 0.0)],
-                                            timestamp: now,
-                                        };
-                                        shared_best_prices.store(bid, ask);
-                                        if let Some(ref n) = orderbook_notify { n.notify_waiters(); }
-                                        let mut books = shared_orderbooks.write().await;
-                                        books.insert(symbol.to_string(), orderbook);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Also handle best_bid_offer events (secondary)
-                    else if let Ok(evt) = serde_json::from_str::<NadoBboEvent>(text) {
+                    // Parse best_bid_offer events (BBO only)
+                    if let Ok(evt) = serde_json::from_str::<NadoBboEvent>(text) {
                         if evt.event_type.as_deref() == Some("best_bid_offer") {
                             if let Some(pid) = evt.product_id {
                                 if let Some(symbol) = product_id_to_symbol(pid) {
@@ -265,7 +210,7 @@ impl NadoAdapter {
             }
         }
 
-        tracing::warn!(exchange = "nado", "WS stream ended");
+        tracing::warn!(exchange = "nado", msg_count, "WS stream ended");
         reader_alive.store(false, Ordering::Relaxed);
     }
 }
@@ -273,10 +218,26 @@ impl NadoAdapter {
 #[async_trait]
 impl ExchangeAdapter for NadoAdapter {
     async fn connect(&mut self) -> ExchangeResult<()> {
+        self.connect_time_ms = current_time_ms();
         self.spawn_ws_task()?;
+
+        // Wait for reader_alive to become true (yawc connected) with a 10s timeout
+        // instead of a blind 500ms sleep. This prevents the race condition where the
+        // manager's health check triggers reconnect before yawc finishes connecting.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if self.connection_health.reader_alive.load(Ordering::Relaxed) {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(exchange = "nado", "Connection timed out waiting for reader_alive (10s)");
+                // Don't abort — the task may still connect; just proceed
+                break;
+            }
+        }
+
         self.connected = true;
-        // Give yawc a moment to establish the connection
-        tokio::time::sleep(Duration::from_millis(500)).await;
         tracing::info!(exchange = "nado", "Nado adapter started (yawc + deflate + explicit header)");
         Ok(())
     }
@@ -315,7 +276,16 @@ impl ExchangeAdapter for NadoAdapter {
 
     fn is_stale(&self) -> bool {
         if !self.connected { return true; }
-        if !self.connection_health.reader_alive.load(Ordering::Relaxed) { return true; }
+        if !self.connection_health.reader_alive.load(Ordering::Relaxed) {
+            // Grace period: allow up to 15s after connect() before declaring stale.
+            // This prevents the manager from triggering reconnect while yawc is
+            // still establishing the WS connection.
+            let age_since_connect = current_time_ms().saturating_sub(self.connect_time_ms);
+            if age_since_connect < 15_000 {
+                return false; // Still within grace period
+            }
+            return true;
+        }
         let last_data = self.connection_health.last_data.load(Ordering::Relaxed);
         if last_data == 0 { return false; }
         use crate::adapters::types::STALE_THRESHOLD_MS;
