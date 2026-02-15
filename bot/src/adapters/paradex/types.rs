@@ -61,6 +61,38 @@ pub struct ParadexOrderbookMessage {
     pub data: ParadexOrderbookData,
 }
 
+// ── BBO (Best Bid Offer) types ─────────────────────────────────────
+
+/// BBO data from bbo.{market_symbol} channel
+#[derive(Debug, Clone, Deserialize)]
+pub struct ParadexBboData {
+    /// Best ask price
+    pub ask: String,
+    /// Best bid price
+    pub bid: String,
+    /// Last update to the orderbook in milliseconds
+    pub last_updated_at: u64,
+    /// Symbol of the market
+    pub market: String,
+}
+
+/// BBO subscription params (wraps data in params.channel + params.data)
+#[derive(Debug, Deserialize)]
+pub(crate) struct BboSubscriptionParams {
+    /// BBO data
+    pub data: ParadexBboData,
+}
+
+/// JSON-RPC subscription notification for BBO channel
+#[derive(Debug, Deserialize)]
+pub(crate) struct BboSubscriptionNotification {
+    #[allow(dead_code)]
+    pub jsonrpc: String,
+    #[allow(dead_code)]
+    pub method: String,
+    pub params: BboSubscriptionParams,
+}
+
 /// Orderbook data with bids and asks (Paradex format)
 #[derive(Debug, Clone, Deserialize)]
 pub struct ParadexOrderbookData {
@@ -144,19 +176,9 @@ impl ParadexOrderbookData {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Take only top N levels after sorting
-        let depth = crate::adapters::types::MAX_ORDERBOOK_DEPTH;
-        if bids.len() > depth || asks.len() > depth {
-            tracing::debug!(
-                exchange = "paradex",
-                raw_bids = bids.len(),
-                raw_asks = asks.len(),
-                max_depth = depth,
-                "Orderbook truncated to max depth"
-            );
-        }
-        bids.truncate(depth);
-        asks.truncate(depth);
+        // BBO: keep only best bid and best ask
+        bids.truncate(1);
+        asks.truncate(1);
 
         let orderbook = Orderbook {
             bids,
@@ -188,12 +210,14 @@ pub(crate) struct ParadexSubscriptionResponse {
     pub id: u64,
 }
 
-/// Generic WebSocket message that could be orderbook, subscription confirmation, etc.
+/// Generic WebSocket message that could be BBO, orderbook, subscription confirmation, etc.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum ParadexWsMessage {
-    /// JSON-RPC subscription notification (orderbook updates)
-    /// Must be listed before JsonRpc as it has more specific structure
+    /// JSON-RPC BBO subscription notification (best bid/ask)
+    /// Must be listed first for serde untagged priority
+    BboNotification(BboSubscriptionNotification),
+    /// JSON-RPC subscription notification (orderbook updates, legacy)
     SubscriptionNotification(JsonRpcSubscriptionNotification),
     /// Orderbook update message with channel field (legacy/direct format)
     Orderbook(ParadexOrderbookMessage),
@@ -265,12 +289,11 @@ mod tests {
 
         // Pass None for usdc_rate (no conversion)
         let orderbook = data.to_orderbook(None).unwrap();
-        // Bids should be sorted descending (best bid first)
+        // BBO: only best bid and best ask after truncation
+        assert_eq!(orderbook.bids.len(), 1);
         assert_eq!(orderbook.bids[0].price, 40100.00);
-        assert_eq!(orderbook.bids[1].price, 40000.00);
-        // Asks should be sorted ascending (best ask first)
+        assert_eq!(orderbook.asks.len(), 1);
         assert_eq!(orderbook.asks[0].price, 40150.00);
-        assert_eq!(orderbook.asks[1].price, 40200.00);
     }
 
     #[test]

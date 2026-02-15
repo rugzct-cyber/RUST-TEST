@@ -1,0 +1,14 @@
+# Rust build artifacts
+bot/target/
+target/
+
+# Node
+node_modules/
+frontend/.next/
+
+# Logs
+*.log
+
+# Debug files
+*.txt
+!README.txt
